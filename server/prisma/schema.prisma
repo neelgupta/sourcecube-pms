@@ -1,0 +1,772 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum CompanyStatus {
+  provisioning
+  invitation_pending
+  trial
+  active
+  suspended
+  deactivated
+}
+
+enum SubscriptionPlan {
+  starter
+  growth
+  enterprise
+}
+
+enum SystemRole {
+  company_super_admin
+  hr_admin
+  department_head
+  team_lead
+  project_manager
+  employee
+  auditor
+}
+
+enum CompanyUserAccountStatus {
+  not_invited
+  invitation_pending
+  invite_expired
+  active
+  suspended
+  deactivated
+}
+
+enum InvitationStatus {
+  sent
+  opened
+  accepted
+  expired
+  revoked
+}
+
+model Company {
+  id                    String           @id @default(cuid())
+  name                  String
+  code                  String           @unique
+  domain                String?
+  logoUrl               String?
+  country               String
+  timezone              String
+  currency              String
+  fiscalYearStart       String
+  status                CompanyStatus    @default(provisioning)
+  plan                  SubscriptionPlan @default(starter)
+  employeeSeatLimit     Int              @default(10)
+  enabledModules        String[]         @default([])
+  onboardingCompletedAt DateTime?
+
+  legalName    String?
+  taxId        String?
+  addressLine1 String?
+  addressLine2 String?
+  city         String?
+  state        String?
+  postalCode   String?
+  contactEmail String?
+  contactPhone String?
+  dateFormat   String  @default("DD/MM/YYYY")
+  weekStart    Int     @default(1) // 0=Sun .. 6=Sat
+
+  createdBy String?
+  updatedBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  companyUsers      CompanyUser[]
+  invitations       Invitation[]
+  auditLogs         AuditLog[]
+  departments       Department[]
+  designations      Designation[]
+  holidays          Holiday[]
+  leaveTypes        LeaveType[]
+  workingSchedules  WorkingSchedule[]
+  onboardingState   OnboardingState?
+  teams             Team[]
+  projects          Project[]
+  projectSections   ProjectSection[]
+  projectTasks      ProjectTask[]
+  projectMilestones ProjectMilestone[]
+  projectMembers    ProjectMember[]
+  taskTimeEntries   TaskTimeEntry[]
+  chatChannels      ChatChannel[]
+}
+
+model PlatformUser {
+  id           String @id @default(cuid())
+  name         String
+  email        String @unique
+  passwordHash String
+  role         String @default("saas_super_admin")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model CompanyUser {
+  id            String                   @id @default(cuid())
+  tenantId      String
+  company       Company                  @relation(fields: [tenantId], references: [id])
+  name          String
+  email         String
+  passwordHash  String?
+  roles         SystemRole[]
+  accountStatus CompanyUserAccountStatus @default(not_invited)
+
+  createdBy String?
+  updatedBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  invitations            Invitation[]
+  departmentsHeaded      Department[]
+  teamsLed               Team[]              @relation("TeamLead")
+  teamMemberships        TeamMember[]        @relation("TeamMembership")
+  projectsManaged        Project[]           @relation("ProjectManager")
+  projectsOwned          Project[]           @relation("ProjectOwner")
+  favouriteProjects      ProjectFavourite[]  @relation("ProjectFavourites")
+  projectMemberships     ProjectMember[]
+  projectTasksAssigned   ProjectTask[]       @relation("TaskAssignee")
+  projectSectionsOwned   ProjectSection[]    @relation("SectionOwner")
+  projectMilestonesOwned ProjectMilestone[]  @relation("MilestoneOwner")
+  taskTimeEntries        TaskTimeEntry[]
+  taskFollowers          TaskFollower[]
+  taskComments           TaskComment[]
+  chatChannelMemberships ChatChannelMember[]
+  chatMessages           ChatMessage[]       @relation("ChatMessageAuthor")
+  chatReactions          ChatReaction[]
+  chatMentionsReceived   ChatMention[]       @relation("ChatMentionTarget")
+  notifications          Notification[]      @relation("NotificationRecipient")
+
+  @@unique([tenantId, email])
+}
+
+model Invitation {
+  id            String           @id @default(cuid())
+  tenantId      String
+  company       Company          @relation(fields: [tenantId], references: [id])
+  companyUserId String
+  companyUser   CompanyUser      @relation(fields: [companyUserId], references: [id])
+  token         String           @unique
+  status        InvitationStatus @default(sent)
+  expiresAt     DateTime
+  message       String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  tenantId   String?
+  company    Company? @relation(fields: [tenantId], references: [id])
+  actorId    String
+  actorKind  String
+  action     String
+  targetType String?
+  targetId   String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+}
+
+model Department {
+  id       String  @id @default(cuid())
+  tenantId String
+  company  Company @relation(fields: [tenantId], references: [id])
+  name     String
+  isActive Boolean @default(true)
+
+  parentId String?
+  parent   Department?  @relation("DepartmentHierarchy", fields: [parentId], references: [id])
+  children Department[] @relation("DepartmentHierarchy")
+
+  headUserId String?
+  headUser   CompanyUser? @relation(fields: [headUserId], references: [id])
+
+  costCenter String?
+  budget     Decimal?  @db.Decimal(14, 2)
+  projects   Project[]
+
+  createdBy String?
+  updatedBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, name])
+}
+
+model Designation {
+  id       String  @id @default(cuid())
+  tenantId String
+  company  Company @relation(fields: [tenantId], references: [id])
+  title    String
+  isActive Boolean @default(true)
+
+  createdBy String?
+  updatedBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, title])
+}
+
+enum HolidayType {
+  national
+  regional
+  company
+}
+
+model Holiday {
+  id       String      @id @default(cuid())
+  tenantId String
+  company  Company     @relation(fields: [tenantId], references: [id])
+  name     String
+  date     DateTime
+  type     HolidayType @default(company)
+  optional Boolean     @default(false)
+
+  createdBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model LeaveType {
+  id           String  @id @default(cuid())
+  tenantId     String
+  company      Company @relation(fields: [tenantId], references: [id])
+  name         String
+  annualQuota  Int
+  paid         Boolean @default(true)
+  carryForward Boolean @default(false)
+  isActive     Boolean @default(true)
+
+  createdBy String?
+  updatedBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, name])
+}
+
+model WorkingSchedule {
+  id           String  @id @default(cuid())
+  tenantId     String
+  company      Company @relation(fields: [tenantId], references: [id])
+  name         String  @default("Standard")
+  workingDays  Int[]   @default([1, 2, 3, 4, 5]) // 0=Sun .. 6=Sat
+  startTime    String  @default("09:00")
+  endTime      String  @default("18:00")
+  breakMinutes Int     @default(60)
+
+  createdBy String?
+  updatedBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, name])
+}
+
+model OnboardingState {
+  id          String    @id @default(cuid())
+  tenantId    String    @unique
+  company     Company   @relation(fields: [tenantId], references: [id])
+  steps       Json      @default("{}")
+  completedAt DateTime?
+
+  updatedAt DateTime @updatedAt
+}
+
+enum TeamStatus {
+  active
+  inactive
+}
+
+model Team {
+  id       String     @id @default(cuid())
+  tenantId String
+  company  Company    @relation(fields: [tenantId], references: [id])
+  name     String
+  purpose  String?
+  status   TeamStatus @default(active)
+
+  leadUserId String?
+  leadUser   CompanyUser? @relation("TeamLead", fields: [leadUserId], references: [id])
+
+  members TeamMember[]
+
+  createdBy String?
+  updatedBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, name])
+}
+
+model TeamMember {
+  id       String      @id @default(cuid())
+  teamId   String
+  team     Team        @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  userId   String
+  user     CompanyUser @relation("TeamMembership", fields: [userId], references: [id])
+  joinedAt DateTime    @default(now())
+
+  @@unique([teamId, userId])
+}
+
+enum ProjectStatus {
+  new
+  planning
+  in_progress
+  on_hold
+  completed
+  cancelled
+}
+
+enum ProjectPriority {
+  low
+  medium
+  high
+  critical
+}
+
+enum ProjectMethodology {
+  agile
+  waterfall
+  kanban
+}
+
+enum ProjectType {
+  internal
+  client
+  product
+  support
+  maintenance
+}
+
+enum ProjectVisibility {
+  public
+  private
+  restricted
+}
+
+enum TaskStatus {
+  new_request
+  in_progress
+  done
+}
+
+enum BudgetStatus {
+  not_set
+  on_track
+  warning
+  over_budget
+  closed
+}
+
+enum HealthStatus {
+  healthy
+  at_risk
+  critical
+  unavailable
+}
+
+enum ProjectMemberAccess {
+  view
+  edit
+  manage
+}
+
+enum ChatChannelType {
+  project
+  group
+  dm
+  announcement
+}
+
+enum ChatAttachmentType {
+  file
+  voice_note
+}
+
+enum NotificationType {
+  mention
+  announcement
+  channel_invite
+  message
+}
+
+model Project {
+  id                String             @id @default(cuid())
+  tenantId          String
+  company           Company            @relation(fields: [tenantId], references: [id])
+  name              String
+  key               String
+  logoUrl           String?
+  clientName        String?
+  description       String?
+  status            ProjectStatus      @default(new)
+  priority          ProjectPriority    @default(medium)
+  methodology       ProjectMethodology @default(kanban)
+  type              ProjectType        @default(internal)
+  visibility        ProjectVisibility  @default(private)
+  category          String?
+  tags              String[]           @default([])
+  startDate         DateTime?
+  dueDate           DateTime?
+  actualStartDate   DateTime?
+  actualEndDate     DateTime?
+  estimatedHours    Int?
+  budget            Decimal?           @db.Decimal(14, 2)
+  budgetSpent       Decimal            @default(0) @db.Decimal(14, 2)
+  budgetStatus      BudgetStatus       @default(not_set)
+  completionPercent Int                @default(0)
+  healthScore       Int?
+  healthStatus      HealthStatus       @default(unavailable)
+  remindersEnabled  Boolean            @default(true)
+  trackedSeconds    Int                @default(0)
+
+  managerId    String?
+  manager      CompanyUser? @relation("ProjectManager", fields: [managerId], references: [id])
+  ownerId      String?
+  owner        CompanyUser? @relation("ProjectOwner", fields: [ownerId], references: [id])
+  departmentId String?
+  department   Department?  @relation(fields: [departmentId], references: [id])
+
+  favouritedBy ProjectFavourite[]
+  members      ProjectMember[]
+  sections     ProjectSection[]
+  tasks        ProjectTask[]
+  milestones   ProjectMilestone[]
+  timeEntries  TaskTimeEntry[]
+  chatChannel  ChatChannel?
+
+  isArchived Boolean @default(false)
+
+  createdBy String?
+  updatedBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, name])
+  @@unique([tenantId, key])
+}
+
+model ProjectFavourite {
+  id        String      @id @default(cuid())
+  projectId String
+  project   Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId    String
+  user      CompanyUser @relation("ProjectFavourites", fields: [userId], references: [id])
+
+  @@unique([projectId, userId])
+}
+
+model ProjectMember {
+  id                String              @id @default(cuid())
+  tenantId          String
+  company           Company             @relation(fields: [tenantId], references: [id])
+  projectId         String
+  project           Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId            String
+  user              CompanyUser         @relation(fields: [userId], references: [id])
+  access            ProjectMemberAccess @default(edit)
+  isFollower        Boolean             @default(false)
+  allocationPercent Int                 @default(100)
+  joinedAt          DateTime            @default(now())
+
+  @@unique([projectId, userId])
+}
+
+model ProjectSection {
+  id        String        @id @default(cuid())
+  tenantId  String
+  company   Company       @relation(fields: [tenantId], references: [id])
+  projectId String
+  project   Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name      String
+  status    TaskStatus
+  position  Int
+  ownerId   String?
+  owner     CompanyUser?  @relation("SectionOwner", fields: [ownerId], references: [id])
+  tasks     ProjectTask[]
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  @@unique([projectId, name])
+}
+
+model ProjectTask {
+  id               String              @id @default(cuid())
+  tenantId         String
+  company          Company             @relation(fields: [tenantId], references: [id])
+  projectId        String
+  project          Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sectionId        String
+  section          ProjectSection      @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  parentTaskId     String?
+  parentTask       ProjectTask?        @relation("TaskHierarchy", fields: [parentTaskId], references: [id], onDelete: Cascade)
+  subtasks         ProjectTask[]       @relation("TaskHierarchy")
+  code             Int
+  name             String
+  description      String?
+  status           TaskStatus          @default(new_request)
+  priority         ProjectPriority     @default(medium)
+  taskType         String?
+  billingType      String              @default("non_billable")
+  tags             String[]            @default([])
+  startDate        DateTime?
+  dueDate          DateTime?
+  estimatedMinutes Int                 @default(0)
+  progress         Int                 @default(0)
+  completedAt      DateTime?
+  trackedMinutes   Int                 @default(0)
+  trackedSeconds   Int                 @default(0)
+  assigneeId       String?
+  assignee         CompanyUser?        @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  milestoneId      String?
+  milestone        ProjectMilestone?   @relation(fields: [milestoneId], references: [id])
+  position         Int
+  createdBy        String?
+  updatedBy        String?
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+  timeEntries      TaskTimeEntry[]
+  followers        TaskFollower[]
+  comments         TaskComment[]
+  checklistItems   TaskChecklistItem[]
+  attachments      TaskAttachment[]
+  dependencies     TaskDependency[]    @relation("TaskDependencies")
+  dependentTasks   TaskDependency[]    @relation("DependentTasks")
+
+  @@unique([projectId, code])
+  @@index([parentTaskId])
+}
+
+model TaskFollower {
+  id        String      @id @default(cuid())
+  tenantId  String
+  taskId    String
+  task      ProjectTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  userId    String
+  user      CompanyUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime    @default(now())
+
+  @@unique([taskId, userId])
+  @@index([tenantId, userId])
+}
+
+model TaskComment {
+  id        String      @id @default(cuid())
+  tenantId  String
+  taskId    String
+  task      ProjectTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    CompanyUser @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  body      String
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  @@index([tenantId, taskId, createdAt])
+}
+
+model TaskChecklistItem {
+  id        String      @id @default(cuid())
+  tenantId  String
+  taskId    String
+  task      ProjectTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  text      String
+  completed Boolean     @default(false)
+  position  Int         @default(0)
+  createdBy String?
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  @@index([tenantId, taskId, position])
+}
+
+model TaskAttachment {
+  id         String      @id @default(cuid())
+  tenantId   String
+  taskId     String
+  task       ProjectTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  name       String
+  url        String
+  mimeType   String?
+  sizeBytes  Int?
+  uploadedBy String?
+  createdAt  DateTime    @default(now())
+
+  @@index([tenantId, taskId])
+}
+
+model TaskDependency {
+  id              String      @id @default(cuid())
+  tenantId        String
+  taskId          String
+  task            ProjectTask @relation("TaskDependencies", fields: [taskId], references: [id], onDelete: Cascade)
+  dependsOnTaskId String
+  dependsOnTask   ProjectTask @relation("DependentTasks", fields: [dependsOnTaskId], references: [id], onDelete: Cascade)
+  type            String      @default("blocked_by")
+  createdAt       DateTime    @default(now())
+
+  @@unique([taskId, dependsOnTaskId])
+  @@index([tenantId, dependsOnTaskId])
+}
+
+model TaskTimeEntry {
+  id              String      @id @default(cuid())
+  tenantId        String
+  company         Company     @relation(fields: [tenantId], references: [id])
+  projectId       String
+  project         Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  taskId          String
+  task            ProjectTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  userId          String
+  user            CompanyUser @relation(fields: [userId], references: [id])
+  activityType    String      @default("Work")
+  billable        Boolean     @default(false)
+  startedAt       DateTime    @default(now())
+  endedAt         DateTime?
+  durationSeconds Int         @default(0)
+  note            String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  @@index([tenantId, projectId, taskId])
+  @@index([userId, endedAt])
+}
+
+model ProjectMilestone {
+  id          String        @id @default(cuid())
+  tenantId    String
+  company     Company       @relation(fields: [tenantId], references: [id])
+  projectId   String
+  project     Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  ownerId     String?
+  owner       CompanyUser?  @relation("MilestoneOwner", fields: [ownerId], references: [id])
+  startDate   DateTime?
+  releaseDate DateTime?
+  progress    Int           @default(0)
+  tags        String[]      @default([])
+  tasks       ProjectTask[]
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+}
+
+model ChatChannel {
+  id          String          @id @default(cuid())
+  tenantId    String
+  company     Company         @relation(fields: [tenantId], references: [id])
+  type        ChatChannelType
+  name        String?
+  description String?
+  projectId   String?         @unique
+  project     Project?        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdBy   String?
+  isArchived  Boolean         @default(false)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  members  ChatChannelMember[]
+  messages ChatMessage[]
+
+  @@index([tenantId, type])
+}
+
+model ChatChannelMember {
+  id         String      @id @default(cuid())
+  tenantId   String
+  channelId  String
+  channel    ChatChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  userId     String
+  user       CompanyUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  isMuted    Boolean     @default(false)
+  lastReadAt DateTime?
+  joinedAt   DateTime    @default(now())
+
+  @@unique([channelId, userId])
+  @@index([tenantId, userId])
+}
+
+model ChatMessage {
+  id              String              @id @default(cuid())
+  tenantId        String
+  channelId       String
+  channel         ChatChannel         @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  authorId        String
+  author          CompanyUser         @relation("ChatMessageAuthor", fields: [authorId], references: [id])
+  parentMessageId String?
+  parentMessage   ChatMessage?        @relation("MessageThread", fields: [parentMessageId], references: [id], onDelete: Cascade)
+  replies         ChatMessage[]       @relation("MessageThread")
+  body            String?
+  attachmentType  ChatAttachmentType?
+  attachmentUrl   String?
+  attachmentName  String?
+  durationSeconds Int?
+  isAnnouncement  Boolean             @default(false)
+  isPinned        Boolean             @default(false)
+  isDeleted       Boolean             @default(false)
+  editedAt        DateTime?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  reactions ChatReaction[]
+  mentions  ChatMention[]
+
+  @@index([tenantId, channelId, createdAt])
+  @@index([parentMessageId])
+}
+
+model ChatReaction {
+  id        String      @id @default(cuid())
+  tenantId  String
+  messageId String
+  message   ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId    String
+  user      CompanyUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emoji     String
+  createdAt DateTime    @default(now())
+
+  @@unique([messageId, userId, emoji])
+}
+
+model ChatMention {
+  id        String      @id @default(cuid())
+  tenantId  String
+  messageId String
+  message   ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId    String
+  user      CompanyUser @relation("ChatMentionTarget", fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime    @default(now())
+
+  @@unique([messageId, userId])
+  @@index([tenantId, userId])
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  tenantId  String
+  userId    String
+  user      CompanyUser      @relation("NotificationRecipient", fields: [userId], references: [id], onDelete: Cascade)
+  type      NotificationType
+  title     String
+  body      String?
+  channelId String?
+  messageId String?
+  actorId   String?
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  @@index([tenantId, userId, readAt])
+}

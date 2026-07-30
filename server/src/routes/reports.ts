@@ -1,0 +1,304 @@
+import { Router } from "express";
+import { Prisma } from "@prisma/client";
+import { z } from "zod";
+import { prisma } from "../lib/prisma.js";
+import { requireAuth, requireCompany, requirePermission } from "../middleware/auth.js";
+
+export const reportsRouter = Router();
+reportsRouter.use(requireAuth, requireCompany);
+
+const elevatedRoles = new Set(["company_super_admin", "hr_admin", "auditor"]);
+const querySchema = z.object({
+  start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  end: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  teamId: z.string().optional(),
+  search: z.string().trim().max(150).optional(),
+});
+
+function tenantId(req: { auth?: { tenantId?: string } }) { return (req.auth as { tenantId: string }).tenantId; }
+function userId(req: { auth?: { userId?: string } }) { return (req.auth as { userId: string }).userId; }
+function dateFromKey(key: string) { return new Date(`${key}T12:00:00.000Z`); }
+function addDays(key: string, amount: number) { const date = dateFromKey(key); date.setUTCDate(date.getUTCDate() + amount); return date.toISOString().slice(0, 10); }
+function keysBetween(start: string, end: string, limit = 366) {
+  const keys: string[] = [];
+  for (let cursor = start; cursor <= end && keys.length < limit; cursor = addDays(cursor, 1)) keys.push(cursor);
+  return keys;
+}
+function localDateKey(value: Date, timezone: string) {
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(value);
+    const get = (type: string) => parts.find((part) => part.type === type)?.value ?? "";
+    return `${get("year")}-${get("month")}-${get("day")}`;
+  } catch { return value.toISOString().slice(0, 10); }
+}
+function effectiveDuration(entry: { durationSeconds: number; startedAt: Date; endedAt: Date | null }) {
+  return entry.endedAt ? entry.durationSeconds : Math.max(entry.durationSeconds, Math.floor((Date.now() - entry.startedAt.getTime()) / 1000));
+}
+function averageProgress(tasks: Array<{ progress: number }>) {
+  return tasks.length ? Math.round(tasks.reduce((sum, task) => sum + task.progress, 0) / tasks.length) : 0;
+}
+function minutesBetween(startTime: string, endTime: string, breakMinutes: number) {
+  const toMinutes = (value: string) => { const [hours, minutes] = value.split(":").map(Number); return hours * 60 + minutes; };
+  return Math.max(0, toMinutes(endTime) - toMinutes(startTime) - breakMinutes);
+}
+
+async function accessibleTaskScope(tid: string, uid: string): Promise<{ scope: Prisma.ProjectTaskWhereInput; elevated: boolean }> {
+  const user = await prisma.companyUser.findFirst({ where: { id: uid, tenantId: tid, accountStatus: "active" }, select: { roles: true } });
+  const roles = user?.roles ?? [];
+  if (roles.some((role) => elevatedRoles.has(role))) return { scope: { tenantId: tid }, elevated: true };
+  const access: Prisma.ProjectTaskWhereInput[] = [{ assigneeId: uid }];
+  if (roles.includes("team_lead")) access.push({ assignee: { teamMemberships: { some: { team: { tenantId: tid, leadUserId: uid } } } } });
+  if (roles.includes("department_head")) access.push({ project: { department: { headUserId: uid } } });
+  if (roles.includes("project_manager")) access.push({ project: { OR: [{ managerId: uid }, { ownerId: uid }] } });
+  return { scope: { tenantId: tid, OR: access }, elevated: false };
+}
+
+reportsRouter.get("/team-productivity", requirePermission("resources", "view"), async (req, res) => {
+  const parsed = querySchema.safeParse(req.query);
+  if (!parsed.success) { res.status(400).json({ error: "A valid report date range is required" }); return; }
+  const input = parsed.data;
+  const dates = keysBetween(input.start, input.end);
+  if (!dates.length || dates[dates.length - 1] !== input.end) { res.status(400).json({ error: "Report range must be between 1 and 366 days" }); return; }
+  const tid = tenantId(req), uid = userId(req);
+  const [{ scope, elevated }, company, teams] = await Promise.all([
+    accessibleTaskScope(tid, uid),
+    prisma.company.findUniqueOrThrow({ where: { id: tid }, select: { timezone: true } }),
+    prisma.team.findMany({
+      where: { tenantId: tid, status: "active" },
+      select: { id: true, name: true, leadUserId: true, leadUser: { select: { id: true, name: true } }, members: { select: { userId: true, user: { select: { id: true, name: true } } } } },
+      orderBy: { name: "asc" },
+    }),
+  ]);
+
+  const taskWhere: Prisma.ProjectTaskWhereInput = { AND: [scope, { project: { isArchived: false } }] };
+  if (input.teamId) taskWhere.AND = [...(taskWhere.AND as Prisma.ProjectTaskWhereInput[]), { assignee: { teamMemberships: { some: { teamId: input.teamId } } } }];
+  const allTasks = await prisma.projectTask.findMany({
+    where: taskWhere,
+    select: {
+      id: true, code: true, name: true, status: true, progress: true, estimatedMinutes: true,
+      startDate: true, dueDate: true, completedAt: true, createdAt: true, assigneeId: true,
+      assignee: { select: { id: true, name: true, teamMemberships: { select: { teamId: true } } } },
+      project: { select: { id: true, name: true, key: true } },
+    },
+  });
+
+  const inRange = allTasks.filter((task) => {
+    const startKey = localDateKey(task.startDate ?? task.createdAt, company.timezone);
+    const endKey = task.completedAt ? localDateKey(task.completedAt, company.timezone) : input.end;
+    const completedInRange = task.completedAt && localDateKey(task.completedAt, company.timezone) >= input.start && localDateKey(task.completedAt, company.timezone) <= input.end;
+    return Boolean(completedInRange || (startKey <= input.end && endKey >= input.start));
+  });
+  const visibleTasks = input.search
+    ? inRange.filter((task) => `${task.name} ${task.project.name} ${task.project.key} ${task.assignee?.name ?? ""}`.toLowerCase().includes(input.search!.toLowerCase()))
+    : inRange;
+  const taskIds = visibleTasks.map((task) => task.id);
+  const entries = await prisma.taskTimeEntry.findMany({
+    where: { tenantId: tid, taskId: { in: taskIds }, startedAt: { gte: new Date(`${addDays(input.start, -1)}T00:00:00.000Z`), lt: new Date(`${addDays(input.end, 2)}T00:00:00.000Z`) } },
+    select: { id: true, taskId: true, userId: true, startedAt: true, endedAt: true, durationSeconds: true, billable: true },
+  });
+  const rangeEntries = entries.filter((entry) => { const key = localDateKey(entry.startedAt, company.timezone); return key >= input.start && key <= input.end; });
+  const contributingTeamIds = new Set<string>();
+  visibleTasks.forEach((task) => task.assignee?.teamMemberships.forEach((membership) => contributingTeamIds.add(membership.teamId)));
+  const allowedTeams = teams.filter((team) => elevated || team.leadUserId === uid || team.members.some((member) => member.userId === uid) || contributingTeamIds.has(team.id));
+
+  const buildMetrics = (teamId: string | null) => {
+    const tasks = visibleTasks.filter((task) => {
+      const ids = task.assignee?.teamMemberships.map((membership) => membership.teamId) ?? [];
+      return teamId ? ids.includes(teamId) : ids.length === 0;
+    });
+    const ids = new Set(tasks.map((task) => task.id));
+    const logs = rangeEntries.filter((entry) => ids.has(entry.taskId));
+    const completed = tasks.filter((task) => task.completedAt && localDateKey(task.completedAt, company.timezone) >= input.start && localDateKey(task.completedAt, company.timezone) <= input.end).length;
+    return {
+      tasks,
+      allocatedTasks: tasks.length,
+      newTasks: tasks.filter((task) => task.status === "new_request").length,
+      inProgressTasks: tasks.filter((task) => task.status === "in_progress").length,
+      completedTasks: completed,
+      overdueTasks: tasks.filter((task) => task.status !== "done" && task.dueDate && localDateKey(task.dueDate, company.timezone) < input.end).length,
+      projectsCount: new Set(tasks.map((task) => task.project.id)).size,
+      plannedMinutes: tasks.reduce((sum, task) => sum + task.estimatedMinutes, 0),
+      trackedSeconds: logs.reduce((sum, entry) => sum + effectiveDuration(entry), 0),
+      billableSeconds: logs.filter((entry) => entry.billable).reduce((sum, entry) => sum + effectiveDuration(entry), 0),
+      completionRate: tasks.length ? Math.round((completed / tasks.length) * 100) : 0,
+      productivityPercent: averageProgress(tasks),
+    };
+  };
+
+  let teamRows = allowedTeams.map((team) => {
+    const metrics = buildMetrics(team.id);
+    const visibleMemberIds = new Set(metrics.tasks.map((task) => task.assigneeId).filter(Boolean));
+    const members = team.members.filter((member) => elevated || team.leadUserId === uid || member.userId === uid || visibleMemberIds.has(member.userId)).map((member) => member.user);
+    return { id: team.id, name: team.name, lead: team.leadUser, memberCount: team.members.length, members, ...metrics, tasks: undefined };
+  });
+  const unassigned = buildMetrics(null);
+  if (!input.teamId && unassigned.allocatedTasks) teamRows.push({ id: "unassigned", name: "Unassigned", lead: null, memberCount: 0, members: [], ...unassigned, tasks: undefined });
+  teamRows = teamRows.filter((team) => elevated || team.allocatedTasks > 0 || team.id !== "unassigned");
+
+  const overallCompleted = visibleTasks.filter((task) => task.completedAt && localDateKey(task.completedAt, company.timezone) >= input.start && localDateKey(task.completedAt, company.timezone) <= input.end).length;
+  const overall = {
+    teamsCount: teamRows.filter((team) => team.id !== "unassigned").length,
+    projectsCount: new Set(visibleTasks.map((task) => task.project.id)).size,
+    allocatedTasks: visibleTasks.length,
+    newTasks: visibleTasks.filter((task) => task.status === "new_request").length,
+    inProgressTasks: visibleTasks.filter((task) => task.status === "in_progress").length,
+    completedTasks: overallCompleted,
+    overdueTasks: visibleTasks.filter((task) => task.status !== "done" && task.dueDate && localDateKey(task.dueDate, company.timezone) < input.end).length,
+    plannedMinutes: visibleTasks.reduce((sum, task) => sum + task.estimatedMinutes, 0),
+    trackedSeconds: rangeEntries.reduce((sum, entry) => sum + effectiveDuration(entry), 0),
+    completionRate: visibleTasks.length ? Math.round((overallCompleted / visibleTasks.length) * 100) : 0,
+    productivityPercent: averageProgress(visibleTasks),
+  };
+
+  const daily = dates.map((date) => {
+    const tasks = visibleTasks.filter((task) => {
+      const startKey = localDateKey(task.startDate ?? task.createdAt, company.timezone);
+      const endKey = task.completedAt ? localDateKey(task.completedAt, company.timezone) : input.end;
+      return startKey <= date && endKey >= date;
+    });
+    const logs = rangeEntries.filter((entry) => localDateKey(entry.startedAt, company.timezone) === date);
+    return {
+      date,
+      allocatedTasks: tasks.length,
+      inProgressTasks: tasks.filter((task) => task.status === "in_progress").length,
+      completedTasks: visibleTasks.filter((task) => task.completedAt && localDateKey(task.completedAt, company.timezone) === date).length,
+      trackedSeconds: logs.reduce((sum, entry) => sum + effectiveDuration(entry), 0),
+      productivityPercent: averageProgress(tasks),
+    };
+  });
+
+  res.json({
+    range: { start: input.start, end: input.end, timezone: company.timezone },
+    overall,
+    teams: teamRows,
+    daily,
+    filterOptions: { teams: allowedTeams.map((team) => ({ id: team.id, name: team.name })) },
+    methodology: "Productivity is the average progress percentage of allocated tasks. Multi-team employees contribute to each team they belong to; company totals deduplicate tasks and logs.",
+  });
+});
+reportsRouter.get("/team-productivity/:teamId/members", requirePermission("resources", "view"), async (req, res) => {
+  const parsed = querySchema.omit({ teamId: true }).safeParse(req.query);
+  if (!parsed.success) { res.status(400).json({ error: "A valid report date range is required" }); return; }
+  const input = parsed.data;
+  const dates = keysBetween(input.start, input.end);
+  if (!dates.length || dates[dates.length - 1] !== input.end) { res.status(400).json({ error: "Report range must be between 1 and 366 days" }); return; }
+  const tid = tenantId(req), uid = userId(req), teamId = req.params.teamId as string;
+  const [{ scope, elevated }, company, schedule, holidays, team] = await Promise.all([
+    accessibleTaskScope(tid, uid),
+    prisma.company.findUniqueOrThrow({ where: { id: tid }, select: { timezone: true } }),
+    prisma.workingSchedule.findFirst({ where: { tenantId: tid }, orderBy: { createdAt: "asc" } }),
+    prisma.holiday.findMany({ where: { tenantId: tid, date: { gte: new Date(`${input.start}T00:00:00.000Z`), lt: new Date(`${addDays(input.end, 1)}T00:00:00.000Z`) } }, select: { date: true, optional: true } }),
+    prisma.team.findFirst({
+      where: { id: teamId, tenantId: tid, status: "active" },
+      select: {
+        id: true, name: true, purpose: true, leadUserId: true,
+        leadUser: { select: { id: true, name: true } },
+        members: { where: { user: { accountStatus: "active" } }, select: { joinedAt: true, userId: true, user: { select: { id: true, name: true } } }, orderBy: { joinedAt: "asc" } },
+      },
+    }),
+  ]);
+  if (!team) { res.status(404).json({ error: "Team not found" }); return; }
+
+  const allTasks = await prisma.projectTask.findMany({
+    where: { AND: [scope, { project: { isArchived: false } }, { assignee: { teamMemberships: { some: { teamId } } } }] },
+    select: {
+      id: true, name: true, status: true, progress: true, estimatedMinutes: true, startDate: true, dueDate: true,
+      completedAt: true, createdAt: true, assigneeId: true,
+      project: { select: { id: true, name: true, key: true } },
+    },
+  });
+  const rangeTasks = allTasks.filter((task) => {
+    const startKey = localDateKey(task.startDate ?? task.createdAt, company.timezone);
+    const endKey = task.completedAt ? localDateKey(task.completedAt, company.timezone) : input.end;
+    return startKey <= input.end && endKey >= input.start;
+  });
+  const accessibleAssigneeIds = new Set(rangeTasks.map((task) => task.assigneeId).filter((id): id is string => Boolean(id)));
+  const canSeeWholeTeam = elevated || team.leadUserId === uid;
+  const visibleMembers = team.members.filter((member) => canSeeWholeTeam || member.userId === uid || accessibleAssigneeIds.has(member.userId));
+  if (!canSeeWholeTeam && !team.members.some((member) => member.userId === uid) && visibleMembers.length === 0) {
+    res.status(404).json({ error: "Team report not found" }); return;
+  }
+
+  const memberIds = visibleMembers.map((member) => member.userId);
+  const taskIds = rangeTasks.map((task) => task.id);
+  const entries = await prisma.taskTimeEntry.findMany({
+    where: {
+      tenantId: tid, taskId: { in: taskIds }, userId: { in: memberIds },
+      startedAt: { gte: new Date(`${addDays(input.start, -1)}T00:00:00.000Z`), lt: new Date(`${addDays(input.end, 2)}T00:00:00.000Z`) },
+    },
+    select: { taskId: true, userId: true, startedAt: true, endedAt: true, durationSeconds: true, billable: true },
+  });
+  const rangeEntries = entries.filter((entry) => { const key = localDateKey(entry.startedAt, company.timezone); return key >= input.start && key <= input.end; });
+  const workingDays = schedule?.workingDays ?? [1, 2, 3, 4, 5];
+  const dailyMinutes = schedule ? minutesBetween(schedule.startTime, schedule.endTime, schedule.breakMinutes) : 480;
+  const holidayByDate = new Map(holidays.map((holiday) => [localDateKey(holiday.date, company.timezone), holiday]));
+  const capacityMinutes = dates.reduce((total, date) => {
+    const holiday = holidayByDate.get(date);
+    const working = workingDays.includes(dateFromKey(date).getUTCDay()) && (!holiday || holiday.optional);
+    return total + (working ? dailyMinutes : 0);
+  }, 0);
+  const search = input.search?.toLowerCase();
+
+  const reportedTaskIds = new Set<string>();
+  const allRangeTaskIds = new Set(rangeTasks.map((task) => task.id));
+  const searchMatchedTaskIds = new Set(rangeTasks.filter((task) => !search || `${task.name} ${task.project.name} ${task.project.key}`.toLowerCase().includes(search)).map((task) => task.id));
+  let members = visibleMembers.map((membership) => {
+    const nameMatches = search ? membership.user.name.toLowerCase().includes(search) : false;
+    const assigned = rangeTasks.filter((task) => task.assigneeId === membership.userId);
+    const tasks = !search || nameMatches ? assigned : assigned.filter((task) => `${task.name} ${task.project.name} ${task.project.key}`.toLowerCase().includes(search));
+    const relevantTaskIds = new Set(tasks.map((task) => task.id));
+    relevantTaskIds.forEach((taskId) => reportedTaskIds.add(taskId));
+    const logTaskIds = !search || nameMatches ? allRangeTaskIds : searchMatchedTaskIds;
+    const logs = rangeEntries.filter((entry) => entry.userId === membership.userId && logTaskIds.has(entry.taskId));
+    const completedTasks = tasks.filter((task) => task.completedAt && localDateKey(task.completedAt, company.timezone) >= input.start && localDateKey(task.completedAt, company.timezone) <= input.end).length;
+    const trackedSeconds = logs.reduce((total, entry) => total + effectiveDuration(entry), 0);
+    const productivityPercent = averageProgress(tasks);
+    return {
+      id: membership.userId, name: membership.user.name, joinedAt: membership.joinedAt,
+      isLead: team.leadUserId === membership.userId,
+      projectsCount: new Set(tasks.map((task) => task.project.id)).size,
+      assignedTasks: tasks.length,
+      newTasks: tasks.filter((task) => task.status === "new_request").length,
+      inProgressTasks: tasks.filter((task) => task.status === "in_progress").length,
+      completedTasks,
+      overdueTasks: tasks.filter((task) => task.status !== "done" && task.dueDate && localDateKey(task.dueDate, company.timezone) < input.end).length,
+      plannedMinutes: tasks.reduce((total, task) => total + task.estimatedMinutes, 0),
+      trackedSeconds,
+      billableSeconds: logs.filter((entry) => entry.billable).reduce((total, entry) => total + effectiveDuration(entry), 0),
+      capacityMinutes,
+      utilizationPercent: capacityMinutes ? Math.round((trackedSeconds / 60 / capacityMinutes) * 100) : 0,
+      completionRate: tasks.length ? Math.round((completedTasks / tasks.length) * 100) : 0,
+      productivityPercent,
+    };
+  });
+  if (search) members = members.filter((member) => member.name.toLowerCase().includes(search) || member.assignedTasks > 0 || member.trackedSeconds > 0);
+  members.sort((a, b) => b.productivityPercent - a.productivityPercent || b.completedTasks - a.completedTasks || a.overdueTasks - b.overdueTasks || b.trackedSeconds - a.trackedSeconds || a.name.localeCompare(b.name));
+  members = members.map((member, index) => ({ ...member, rank: index + 1 }));
+  const activeMembers = members.filter((member) => member.assignedTasks > 0 || member.trackedSeconds > 0);
+  const ranking = activeMembers.slice(0, 3);
+  const uniqueTasks = new Map(rangeTasks.filter((task) => reportedTaskIds.has(task.id)).map((task) => [task.id, task]));
+  const completedTasks = [...uniqueTasks.values()].filter((task) => task.completedAt && localDateKey(task.completedAt, company.timezone) >= input.start && localDateKey(task.completedAt, company.timezone) <= input.end).length;
+  const totalTrackedSeconds = members.reduce((total, member) => total + member.trackedSeconds, 0);
+
+  res.json({
+    range: { start: input.start, end: input.end, timezone: company.timezone },
+    schedule: { name: schedule?.name ?? "Default", workingDays, startTime: schedule?.startTime ?? "09:00", endTime: schedule?.endTime ?? "18:00", breakMinutes: schedule?.breakMinutes ?? 60, dailyMinutes },
+    team: { id: team.id, name: team.name, purpose: team.purpose, lead: team.leadUser, memberCount: team.members.length, visibleMemberCount: members.length },
+    summary: {
+      membersCount: members.length,
+      projectsCount: new Set([...uniqueTasks.values()].map((task) => task.project.id)).size,
+      assignedTasks: uniqueTasks.size,
+      inProgressTasks: [...uniqueTasks.values()].filter((task) => task.status === "in_progress").length,
+      completedTasks,
+      overdueTasks: [...uniqueTasks.values()].filter((task) => task.status !== "done" && task.dueDate && localDateKey(task.dueDate, company.timezone) < input.end).length,
+      plannedMinutes: [...uniqueTasks.values()].reduce((total, task) => total + task.estimatedMinutes, 0),
+      trackedSeconds: totalTrackedSeconds,
+      capacityMinutes: capacityMinutes * members.length,
+      productivityPercent: members.length ? Math.round(members.reduce((total, member) => total + member.productivityPercent, 0) / members.length) : 0,
+      utilizationPercent: capacityMinutes && members.length ? Math.round((totalTrackedSeconds / 60 / (capacityMinutes * members.length)) * 100) : 0,
+    },
+    ranking,
+    members,
+    methodology: "Ranking uses task progress first, then completed tasks, fewer overdue tasks and tracked time. Capacity follows company working days, holidays, shift hours and break policy. Time is counted from saved work logs on tasks allocated to this team.",
+  });
+});
