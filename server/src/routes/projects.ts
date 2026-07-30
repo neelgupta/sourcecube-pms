@@ -1021,7 +1021,7 @@ projectsRouter.patch("/:id/tasks/:taskId", requirePermission("tasks", "edit"), a
   if (destinationStatus === "done") {
     updateData.progress = 100;
     updateData.completedAt = task.completedAt ?? new Date();
-  } else if (destinationStatus && destinationStatus !== "done") {
+  } else if (destinationStatus) {
     updateData.completedAt = null;
     if (data.progress === undefined && task.progress === 100) updateData.progress = 0;
   }

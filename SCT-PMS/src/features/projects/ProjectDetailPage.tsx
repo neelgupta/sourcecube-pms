@@ -1765,7 +1765,8 @@ export function TaskWorkspaceDrawer({
   }, [activeTimer?.id]);
 
   if (!localTask) return null;
-  const taskId = localTask.id;
+  const currentTask: WorkspaceTask = localTask;
+  const taskId = currentTask.id;
   const runningSeconds = activeTimer ? Math.max(0, Math.floor((now - new Date(activeTimer.startedAt).getTime()) / 1000)) : 0;
   const liveSeconds = trackedSeconds + (activeTimer?.taskId === taskId ? runningSeconds : 0);
   const subtasks = allTasks.filter((candidate) => candidate.parentTaskId === taskId);
@@ -1811,15 +1812,15 @@ export function TaskWorkspaceDrawer({
     if (!canEdit) return;
     setError(null);
     if (activeTimer) {
-      const runningTask = activeTimer.taskId === taskId ? localTask : allTasks.find((candidate) => candidate.id === activeTimer.taskId);
+      const runningTask = activeTimer.taskId === taskId ? currentTask : allTasks.find((candidate) => candidate.id === activeTimer.taskId);
       setStopTarget({ entry: activeTimer, task: runningTask });
       return;
     }
     setTimerBusy(true);
     try {
       const result = await api.startTaskTimer(projectId, taskId, {
-        activityType: localTask.taskType ?? "Work",
-        billable: localTask.billingType === "billable",
+        activityType: currentTask.taskType ?? "Work",
+        billable: currentTask.billingType === "billable",
       });
       setActiveTimer(result.entry);
       setEntries((current) => current.some((entry) => entry.id === result.entry.id) ? current : [result.entry, ...current]);
@@ -1849,7 +1850,7 @@ export function TaskWorkspaceDrawer({
         const nextEntries = entries.map((entry) => entry.id === result.entry.id ? result.entry : entry);
         setEntries(nextEntries);
         setTrackedSeconds(result.taskTrackedSeconds);
-        onTaskChanged({ ...localTask, trackedSeconds: result.taskTrackedSeconds, timeEntries: nextEntries });
+        onTaskChanged({ ...currentTask, trackedSeconds: result.taskTrackedSeconds, timeEntries: nextEntries });
       } else {
         const affectedTask = allTasks.find((item) => item.id === stopTarget.entry.taskId);
         if (affectedTask) onTaskChanged({ ...affectedTask, trackedSeconds: result.taskTrackedSeconds });
@@ -1949,7 +1950,7 @@ export function TaskWorkspaceDrawer({
 
   async function addSubtask() {
     if (!subtaskName.trim() || !canEdit) return;
-    const result = await api.createProjectTask(projectId, { name: subtaskName.trim(), sectionId: localTask.sectionId, parentTaskId: taskId });
+    const result = await api.createProjectTask(projectId, { name: subtaskName.trim(), sectionId: currentTask.sectionId, parentTaskId: taskId });
     setSubtaskName("");
     onTaskChanged(result.task);
   }
@@ -2118,10 +2119,6 @@ function EmployeePicker({
       </div>}
     </div>
   );
-}
-
-function TaskField({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
-  return <div className="grid grid-cols-[170px_1fr] gap-4 px-4 py-3 text-sm"><dt className="flex items-center gap-2 text-ink-500">{icon}{label}</dt><dd className="font-medium capitalize text-ink-800">{value}</dd></div>;
 }
 
 function Summary({ label, value }: { label: string; value: string }) {

@@ -3,14 +3,15 @@ import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireCompany, requirePermission } from "../middleware/auth.js";
+import type { AuthTokenPayload } from "../lib/jwt.js";
 
 export const resourcesRouter = Router();
 resourcesRouter.use(requireAuth, requireCompany);
 
-function tenantId(req: { auth?: { tenantId?: string } }) {
+function tenantId(req: { auth?: AuthTokenPayload }) {
   return (req.auth as { tenantId: string }).tenantId;
 }
-function userId(req: { auth?: { userId?: string } }) {
+function userId(req: { auth?: AuthTokenPayload }) {
   return (req.auth as { userId: string }).userId;
 }
 

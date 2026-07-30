@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireCompany, requirePermission } from "../middleware/auth.js";
+import type { AuthTokenPayload } from "../lib/jwt.js";
 
 export const reportsRouter = Router();
 reportsRouter.use(requireAuth, requireCompany);
@@ -15,8 +16,8 @@ const querySchema = z.object({
   search: z.string().trim().max(150).optional(),
 });
 
-function tenantId(req: { auth?: { tenantId?: string } }) { return (req.auth as { tenantId: string }).tenantId; }
-function userId(req: { auth?: { userId?: string } }) { return (req.auth as { userId: string }).userId; }
+function tenantId(req: { auth?: AuthTokenPayload }) { return (req.auth as { tenantId: string }).tenantId; }
+function userId(req: { auth?: AuthTokenPayload }) { return (req.auth as { userId: string }).userId; }
 function dateFromKey(key: string) { return new Date(`${key}T12:00:00.000Z`); }
 function addDays(key: string, amount: number) { const date = dateFromKey(key); date.setUTCDate(date.getUTCDate() + amount); return date.toISOString().slice(0, 10); }
 function keysBetween(start: string, end: string, limit = 366) {
