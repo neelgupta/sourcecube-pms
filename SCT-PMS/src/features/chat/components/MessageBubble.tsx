@@ -50,7 +50,7 @@ function renderBody(body: string, users: ChatUser[]) {
           if (URL_TEST.test(segment)) {
             const href = segment.startsWith("www.") ? `https://${segment}` : segment;
             return (
-              <a key={segIndex} href={href} target="_blank" rel="noreferrer" className="text-brand-600 underline hover:text-brand-700">
+              <a key={segIndex} href={href} target="_blank" rel="noreferrer" className="break-all text-brand-600 underline hover:text-brand-700">
                 {segment}
               </a>
             );

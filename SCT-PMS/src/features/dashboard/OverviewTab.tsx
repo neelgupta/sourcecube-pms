@@ -7,10 +7,58 @@ import { useSession } from "@/lib/session";
 import { formatHoursMinutes, isOverdue, useDashboardData } from "./useDashboardData";
 import { TaskActivityChart } from "./components/TaskActivityCard";
 
-const monthOptions = ["2026-07", "2026-06", "2026-05"];
+export type RangePreset = "today" | "this_week" | "last_week" | "this_month";
+
+export const rangePresetOptions: { value: RangePreset; label: string }[] = [
+  { value: "today", label: "Today" },
+  { value: "this_week", label: "This week" },
+  { value: "last_week", label: "Last week" },
+  { value: "this_month", label: "This month" },
+];
+
+function addDays(date: Date, count: number) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + count);
+  return next;
+}
+/** Monday-start week bounds for the week containing `date`. */
+function weekBounds(date: Date) {
+  const weekday = (date.getDay() + 6) % 7; // 0 = Monday
+  const start = new Date(date.getFullYear(), date.getMonth(), date.getDate() - weekday);
+  return { start, end: addDays(start, 6) };
+}
+function atMidnight(date: Date) {
+  const next = new Date(date);
+  next.setHours(0, 0, 0, 0);
+  return next;
+}
+function atEndOfDay(date: Date) {
+  const next = new Date(date);
+  next.setHours(23, 59, 59, 999);
+  return next;
+}
+function presetRange(preset: RangePreset): { start: Date; end: Date } {
+  const today = new Date();
+  if (preset === "today") return { start: atMidnight(today), end: atEndOfDay(today) };
+  if (preset === "this_week") { const { start, end } = weekBounds(today); return { start: atMidnight(start), end: atEndOfDay(end) }; }
+  if (preset === "last_week") { const { start } = weekBounds(addDays(today, -7)); return { start: atMidnight(start), end: atEndOfDay(addDays(start, 6)) }; }
+  const start = new Date(today.getFullYear(), today.getMonth(), 1);
+  const end = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+  return { start: atMidnight(start), end: atEndOfDay(end) };
+}
+function dayKeysBetween(start: Date, end: Date) {
+  const keys: Date[] = [];
+  let cursor = atMidnight(start);
+  const last = atMidnight(end);
+  while (cursor <= last) {
+    keys.push(cursor);
+    cursor = addDays(cursor, 1);
+  }
+  return keys;
+}
 
 export function OverviewTab() {
-  const [month, setMonth] = useState(monthOptions[0]);
+  const [preset, setPreset] = useState<RangePreset>("this_week");
   const { session } = useSession();
   const { projects, myTasks, loading, error } = useDashboardData();
 
@@ -49,13 +97,14 @@ export function OverviewTab() {
       .sort((a, b) => b.seconds - a.seconds);
   }, [myTasks]);
 
+  const range = useMemo(() => presetRange(preset), [preset]);
+
   const leaderboard = useMemo(() => {
-    const monthDate = new Date(`${month}-01`);
     const counts = new Map<string, { name: string; count: number }>();
     for (const task of myTasks) {
       if (!task.completedAt || !task.assignee) continue;
       const completed = new Date(task.completedAt);
-      if (completed.getFullYear() !== monthDate.getFullYear() || completed.getMonth() !== monthDate.getMonth()) continue;
+      if (completed < range.start || completed > range.end) continue;
       const entry = counts.get(task.assignee.id) ?? { name: task.assignee.name, count: 0 };
       entry.count += 1;
       counts.set(task.assignee.id, entry);
@@ -64,20 +113,28 @@ export function OverviewTab() {
       .map(([id, value]) => ({ id, ...value }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 5);
-  }, [myTasks, month]);
+  }, [myTasks, range]);
 
   const activitySeries = useMemo(() => {
-    const monthDate = new Date(`${month}-01`);
-    const daysInMonth = new Date(monthDate.getFullYear(), monthDate.getMonth() + 1, 0).getDate();
-    const byDay = new Array(daysInMonth).fill(0);
+    const days = dayKeysBetween(range.start, range.end);
+    const byDay = new Map(days.map((day) => [atMidnight(day).getTime(), 0]));
     for (const task of myTasks) {
       if (!task.completedAt) continue;
-      const completed = new Date(task.completedAt);
-      if (completed.getFullYear() !== monthDate.getFullYear() || completed.getMonth() !== monthDate.getMonth()) continue;
-      byDay[completed.getDate() - 1] += 1;
+      const completed = atMidnight(new Date(task.completedAt));
+      if (completed.getTime() < atMidnight(range.start).getTime() || completed.getTime() > atMidnight(range.end).getTime()) continue;
+      const key = completed.getTime();
+      byDay.set(key, (byDay.get(key) ?? 0) + 1);
     }
-    return byDay.map((value, index) => ({ day: String(index + 1).padStart(2, "0"), value }));
-  }, [myTasks, month]);
+    const labelOptions: Intl.DateTimeFormatOptions = preset === "today"
+      ? { hour: "numeric" }
+      : preset === "this_month"
+      ? { day: "2-digit" }
+      : { weekday: "short", day: "2-digit" };
+    return days.map((day) => ({
+      day: preset === "today" ? "Today" : day.toLocaleDateString(undefined, labelOptions),
+      value: byDay.get(day.getTime()) ?? 0,
+    }));
+  }, [myTasks, range, preset]);
 
   const activeProjects = projects.filter((p) => p.status === "in_progress" || p.status === "planning" || p.status === "new").slice(0, 5);
   const overdueProjects = projects.filter((p) => isOverdue(p.dueDate, p.status)).slice(0, 5);
@@ -107,19 +164,19 @@ export function OverviewTab() {
               title="Leaderboard"
               action={
                 <select
-                  value={month}
-                  onChange={(event) => setMonth(event.target.value)}
+                  value={preset}
+                  onChange={(event) => setPreset(event.target.value as RangePreset)}
                   className="h-9 rounded-lg border border-ink-200 bg-white px-2.5 text-xs font-medium text-ink-700"
                 >
-                  {monthOptions.map((value) => (
-                    <option key={value} value={value}>{new Date(`${value}-01`).toLocaleDateString(undefined, { month: "short", year: "numeric" })}</option>
+                  {rangePresetOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
                   ))}
                 </select>
               }
             />
             <CardBody className="pt-0">
               {leaderboard.length === 0 ? (
-                <EmptyState title="No completions yet" description="Ranked by tasks completed this month." className="py-8" />
+                <EmptyState title="No completions yet" description="Ranked by tasks completed in this period." className="py-8" />
               ) : (
                 <ul className="space-y-1">
                   {leaderboard.map((entry, index) => (
@@ -140,7 +197,7 @@ export function OverviewTab() {
             </CardBody>
           </Card>
 
-          <TaskActivityChart data={activitySeries} month={month} monthOptions={monthOptions} onMonthChange={setMonth} />
+          <TaskActivityChart data={activitySeries} preset={preset} onPresetChange={setPreset} />
         </div>
 
         <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">

@@ -1,7 +1,7 @@
 import { useNavigate } from "react-router-dom";
 // import { Plus, Search, Star, Timer } from "lucide-react";
 import { LogOut, Menu, Settings, User as UserIcon } from "lucide-react";
-import { Avatar, DropdownMenu } from "@/components/common";
+import { DropdownMenu, MemberAvatar } from "@/components/common";
 import { useSession } from "@/lib/session";
 import { NotificationBell } from "@/features/chat/components/NotificationBell";
 
@@ -9,9 +9,6 @@ export function Topbar({ title, onMenuClick }: { title: string; onMenuClick: () 
   const navigate = useNavigate();
   const { session, logout } = useSession();
   const currentUser = session?.user;
-  const initials = currentUser?.name
-    ? currentUser.name.split(" ").map((n) => n[0]).slice(0, 2).join("").toUpperCase()
-    : "?";
 
   return (
     <header className="sticky top-0 z-20 flex h-16 shrink-0 items-center gap-3 border-b border-ink-200 bg-white px-4 lg:px-6">
@@ -39,7 +36,7 @@ export function Topbar({ title, onMenuClick }: { title: string; onMenuClick: () 
           <DropdownMenu
             trigger={
               <button className="flex items-center gap-2 rounded-full p-0.5 transition-colors hover:bg-ink-100">
-                <Avatar initials={initials} color="bg-brand-600" size="md" />
+                <MemberAvatar id={currentUser?.id} name={currentUser?.name ?? "?"} size="md" />
               </button>
             }
             items={[

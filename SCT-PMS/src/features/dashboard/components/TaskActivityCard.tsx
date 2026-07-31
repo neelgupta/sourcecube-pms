@@ -2,17 +2,16 @@ import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YA
 import { CalendarDays } from "lucide-react";
 import { Card, CardBody, CardHeader } from "@/components/common";
 import { ChartTooltip, axisProps, gridProps } from "./chartPrimitives";
+import { rangePresetOptions, type RangePreset } from "../OverviewTab";
 
 export function TaskActivityChart({
   data,
-  month,
-  monthOptions,
-  onMonthChange,
+  preset,
+  onPresetChange,
 }: {
   data: { day: string; value: number }[];
-  month: string;
-  monthOptions: string[];
-  onMonthChange: (m: string) => void;
+  preset: RangePreset;
+  onPresetChange: (preset: RangePreset) => void;
 }) {
   return (
     <Card className="flex flex-col">
@@ -21,9 +20,9 @@ export function TaskActivityChart({
         action={
           <div className="flex items-center gap-1.5 rounded-lg border border-ink-200 bg-white px-2.5 py-1.5 text-xs font-medium text-ink-700">
             <CalendarDays size={14} className="text-ink-400" />
-            <select value={month} onChange={(event) => onMonthChange(event.target.value)} className="bg-transparent outline-none">
-              {monthOptions.map((value) => (
-                <option key={value} value={value}>{new Date(`${value}-01`).toLocaleDateString(undefined, { month: "short", year: "numeric" })}</option>
+            <select value={preset} onChange={(event) => onPresetChange(event.target.value as RangePreset)} className="bg-transparent outline-none">
+              {rangePresetOptions.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
               ))}
             </select>
           </div>

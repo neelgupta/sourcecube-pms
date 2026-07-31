@@ -18,6 +18,7 @@ import {
   DataTable,
   DropdownMenu,
   FilterSelect,
+  memberColor,
   Modal,
   SearchBar,
   type Column,
@@ -161,7 +162,7 @@ export function ProjectsPage() {
       header: "Project Name",
       render: (p) => (
         <div className="flex items-center gap-3">
-          <Avatar initials={initialsOf(p.name)} color="bg-brand-600" size="sm" className="ring-0" />
+          <Avatar initials={initialsOf(p.name)} color={memberColor(p.id)} size="sm" className="ring-0" />
           <div className="min-w-0">
             <button
               onClick={() => navigate(`/projects/${p.id}`)}
