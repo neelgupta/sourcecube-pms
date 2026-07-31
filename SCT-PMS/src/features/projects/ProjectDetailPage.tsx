@@ -1,4 +1,5 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   Activity,
@@ -25,6 +26,7 @@ import {
   List,
   Maximize2,
   MoreHorizontal,
+  Pencil,
   PiggyBank,
   Play,
   Paperclip,
@@ -51,6 +53,7 @@ import {
   Badge,
   Button,
   Card,
+  DatePicker,
   Drawer,
   DropdownMenu,
   Field,
@@ -59,6 +62,7 @@ import {
   Modal,
   ProgressBar,
   Select,
+  Textarea,
 } from "@/components/common";
 import { api, ApiError } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -157,7 +161,10 @@ export function ProjectDetailPage() {
   const [searchParams] = useSearchParams();
   const [workspace, setWorkspace] = useState<ProjectWorkspace | null>(null);
   const [companyUsers, setCompanyUsers] = useState<CompanyUser[]>([]);
-  const [activeView, setActiveView] = useState<ViewId>("list");
+  const requestedView = searchParams.get("view");
+  const [activeView, setActiveView] = useState<ViewId>(
+    views.some((view) => view.id === requestedView) ? (requestedView as ViewId) : "list",
+  );
   const [search, setSearch] = useState("");
   const [taskFilters, setTaskFilters] = useState<ProjectTaskFilters>({});
   const [serverTasks, setServerTasks] = useState<WorkspaceTask[] | null>(null);
@@ -622,6 +629,7 @@ function TaskListWorkspace({
   const [activeTimer, setActiveTimer] = useState<ActiveTaskTimer | null>(null);
   const [stopTarget, setStopTarget] = useState<StopTimerTarget | null>(null);
   const [timerBusy, setTimerBusy] = useState<string | null>(null);
+  const [timerError, setTimerError] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());  useEffect(() => {
     const next: Record<string, boolean> = {};
     sections.flatMap((section) => section.tasks).forEach((task) => {
@@ -642,10 +650,13 @@ function TaskListWorkspace({
 
   async function startTimer(task: WorkspaceTask) {
     setTimerBusy(task.id);
+    setTimerError(null);
     try {
       const { entry } = await api.startTaskTimer(projectId, task.id);
       setActiveTimer(entry);
       setNow(Date.now());
+    } catch (err) {
+      setTimerError(err instanceof ApiError ? err.message : "Timer could not be started");
     } finally {
       setTimerBusy(null);
     }
@@ -719,6 +730,12 @@ function TaskListWorkspace({
   return (
     <>
     <div className="h-full overflow-auto bg-white">
+      {timerError && (
+        <div className="m-3 flex items-center justify-between rounded-lg border border-danger-200 bg-danger-50 px-3.5 py-2.5 text-sm text-danger-700">
+          {timerError}
+          <button onClick={() => setTimerError(null)} className="text-danger-500 hover:text-danger-700">×</button>
+        </div>
+      )}
       <table className="w-full min-w-[1450px] border-collapse text-sm">
         <thead className="sticky top-0 z-10 bg-white">
           <tr className="border-b border-ink-200">
@@ -918,10 +935,12 @@ function AssigneeCell({
       saving={saving}
       display={display}
       editor={
-        <FilterSelect
-          value={task.assigneeId ?? ""}
-          onChange={(value) => onChange(value || null)}
-          options={[{ value: "", label: "Unassigned" }, ...employees.map((user) => ({ value: user.id, label: user.name }))]}
+        <EmployeePicker
+          employees={employees}
+          value={task.assigneeId}
+          onChange={onChange}
+          allowClear
+          placeholder="Unassigned"
         />
       }
     />
@@ -946,12 +965,11 @@ function DueDateCell({
   );
   if (!canEdit) return <div className="text-xs">{display}</div>;
   return (
-    <input
-      type="date"
+    <DatePicker
       value={task.dueDate ? task.dueDate.slice(0, 10) : ""}
-      onChange={(event) => onChange(event.target.value ? new Date(event.target.value).toISOString() : null)}
+      onChange={(value) => onChange(value ? new Date(value).toISOString() : null)}
       disabled={saving}
-      className={cn("h-8 w-36 rounded-md border border-transparent bg-transparent px-1 text-xs outline-none hover:border-ink-200 focus:border-brand-500", saving && "opacity-50")}
+      className={cn("w-40", saving && "opacity-50")}
     />
   );
 }
@@ -1206,6 +1224,7 @@ function KanbanWorkspace({
   const [activeTimer, setActiveTimer] = useState<ActiveTaskTimer | null>(null);
   const [stopTarget, setStopTarget] = useState<StopTimerTarget | null>(null);
   const [timerBusy, setTimerBusy] = useState<string | null>(null);
+  const [timerError, setTimerError] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
@@ -1284,11 +1303,14 @@ function KanbanWorkspace({
 
   async function startTimer(task: WorkspaceTask) {
     setTimerBusy(task.id);
+    setTimerError(null);
     try {
       const { entry } = await api.startTaskTimer(projectId, task.id);
       setActiveTimer(entry);
       setNow(Date.now());
       onChanged();
+    } catch (err) {
+      setTimerError(err instanceof ApiError ? err.message : "Timer could not be started");
     } finally {
       setTimerBusy(null);
     }
@@ -1334,7 +1356,14 @@ function KanbanWorkspace({
   }
   return (
     <>
-    <div className="flex h-full min-w-max gap-2.5 overflow-auto bg-white p-3">
+    <div className="flex h-full min-w-max flex-col overflow-auto bg-white">
+      {timerError && (
+        <div className="mx-3 mt-3 flex items-center justify-between rounded-lg border border-danger-200 bg-danger-50 px-3.5 py-2.5 text-sm text-danger-700">
+          {timerError}
+          <button onClick={() => setTimerError(null)} className="text-danger-500 hover:text-danger-700">×</button>
+        </div>
+      )}
+    <div className="flex min-w-max flex-1 gap-2.5 p-3">
       {sections.map((section) => {
         const cards = collapseSubtasks
           ? section.tasks.filter((task) => !task.parentTaskId || !section.tasks.some((candidate) => candidate.id === task.parentTaskId))
@@ -1438,6 +1467,7 @@ function KanbanWorkspace({
         <div className="mt-2 flex gap-2"><Button size="sm" onClick={addSection} disabled={savingSection || !sectionDraft.trim()}>Add Section</Button><Button size="sm" variant="outline" onClick={() => { setAddingSection(false); setSectionError(null); }}>Cancel</Button></div>
       </div> : <button onClick={() => setAddingSection(true)} className="flex h-11 w-full items-center gap-2 rounded-xl border border-dashed border-ink-300 px-3 text-sm font-medium text-ink-500 hover:border-brand-400 hover:text-brand-600"><Plus size={16} />Add Section</button>}</div>}
     </div>
+    </div>
     <TimerStopDialog target={stopTarget} busy={timerBusy !== null} onCancel={() => setStopTarget(null)} onSave={saveTimerLog} onDiscard={discardTimer} />
     </>
   );
@@ -1490,20 +1520,153 @@ function MilestoneWorkspace({
 }) {
   const [name, setName] = useState("");
   const [ownerId, setOwnerId] = useState("");
+  const [editingMilestone, setEditingMilestone] = useState<ProjectMilestone | null>(null);
+  const [deletingMilestone, setDeletingMilestone] = useState<ProjectMilestone | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
   async function add() {
     if (!name.trim()) return;
     await api.createProjectMilestone(projectId, { name, ownerId: ownerId || null });
     setName("");
     onChanged();
   }
+
+  async function confirmDelete() {
+    if (!deletingMilestone) return;
+    setDeleting(true);
+    try {
+      await api.deleteProjectMilestone(projectId, deletingMilestone.id);
+      setDeletingMilestone(null);
+      onChanged();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Milestone could not be deleted");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   return (
     <div className="bg-white">
       <div className="flex items-center justify-between border-b border-ink-200 px-4 py-3"><p className="font-semibold text-ink-900">{milestones.length} Milestones</p>{canEdit && <div className="flex gap-2"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Milestone name" className="w-52" /><Select value={ownerId} onChange={(e) => setOwnerId(e.target.value)} className="w-44"><option value="">No owner</option>{companyUsers.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}</Select><Button onClick={add}>Add</Button></div>}</div>
+      {error && <div className="m-3 rounded-lg border border-danger-200 bg-danger-50 px-3.5 py-2.5 text-sm text-danger-700">{error}</div>}
       <table className="w-full min-w-[900px] text-sm">
-        <thead><tr className="border-b border-ink-200 bg-surface-subtle">{["Milestone Name", "Owner", "Start Date", "Release Date", "Progress", "Total Tasks", "Tags", "Description"].map((header) => <th key={header} className="px-4 py-3 text-left text-xs font-semibold text-ink-600">{header}</th>)}</tr></thead>
-        <tbody>{milestones.map((milestone) => <tr key={milestone.id} className="border-b border-ink-100"><td className="px-4 py-3 font-medium text-ink-900">{milestone.name}</td><td className="px-4 py-3">{milestone.owner?.name ?? "—"}</td><td className="px-4 py-3">{formatDate(milestone.startDate)}</td><td className="px-4 py-3">{formatDate(milestone.releaseDate)}</td><td className="px-4 py-3"><span className="inline-flex h-9 w-9 items-center justify-center rounded-full border-2 border-brand-500 text-[10px] font-semibold">{milestone.progress}%</span></td><td className="px-4 py-3">{milestone._count?.tasks ?? 0}</td><td className="px-4 py-3">{milestone.tags.join(", ") || "—"}</td><td className="px-4 py-3 text-ink-500">{milestone.description ?? "—"}</td></tr>)}</tbody>
+        <thead><tr className="border-b border-ink-200 bg-surface-subtle">{["Milestone Name", "Owner", "Start Date", "Release Date", "Progress", "Total Tasks", "Tags", "Description", ""].map((header) => <th key={header} className="px-4 py-3 text-left text-xs font-semibold text-ink-600">{header}</th>)}</tr></thead>
+        <tbody>{milestones.map((milestone) => <tr key={milestone.id} className="border-b border-ink-100"><td className="px-4 py-3 font-medium text-ink-900">{milestone.name}</td><td className="px-4 py-3">{milestone.owner?.name ?? "—"}</td><td className="px-4 py-3">{formatDate(milestone.startDate)}</td><td className="px-4 py-3">{formatDate(milestone.releaseDate)}</td><td className="px-4 py-3"><span className="inline-flex h-9 w-9 items-center justify-center rounded-full border-2 border-brand-500 text-[10px] font-semibold">{milestone.progress}%</span></td><td className="px-4 py-3">{milestone._count?.tasks ?? 0}</td><td className="px-4 py-3">{milestone.tags.join(", ") || "—"}</td><td className="px-4 py-3 text-ink-500">{milestone.description ?? "—"}</td><td className="px-4 py-3">{canEdit && <div className="flex items-center gap-0.5"><button onClick={() => setEditingMilestone(milestone)} title="Edit milestone" className="rounded p-1.5 text-ink-400 hover:bg-ink-100 hover:text-ink-900"><Pencil size={14} /></button><button onClick={() => setDeletingMilestone(milestone)} title="Delete milestone" className="rounded p-1.5 text-ink-400 hover:bg-danger-50 hover:text-danger-600"><Trash2 size={14} /></button></div>}</td></tr>)}</tbody>
       </table>
+
+      <ProjectMilestoneEditModal
+        projectId={projectId}
+        milestone={editingMilestone}
+        companyUsers={companyUsers}
+        onClose={() => setEditingMilestone(null)}
+        onSaved={() => { setEditingMilestone(null); onChanged(); }}
+      />
+
+      <Modal
+        open={!!deletingMilestone}
+        onClose={() => setDeletingMilestone(null)}
+        title={`Delete ${deletingMilestone?.name}?`}
+        size="sm"
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setDeletingMilestone(null)} disabled={deleting}>Cancel</Button>
+            <Button variant="danger" onClick={confirmDelete} disabled={deleting}>{deleting ? "Deleting…" : "Delete Milestone"}</Button>
+          </>
+        }
+      >
+        <p className="text-sm text-ink-600">
+          This permanently deletes <strong>{deletingMilestone?.name}</strong>. Tasks linked to it will keep their history but lose this milestone reference.
+        </p>
+      </Modal>
     </div>
+  );
+}
+
+function ProjectMilestoneEditModal({
+  projectId,
+  milestone,
+  companyUsers,
+  onClose,
+  onSaved,
+}: {
+  projectId: string;
+  milestone: ProjectMilestone | null;
+  companyUsers: CompanyUser[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [ownerId, setOwnerId] = useState("");
+  const [startDate, setStartDate] = useState("");
+  const [releaseDate, setReleaseDate] = useState("");
+  const [description, setDescription] = useState("");
+  const [tags, setTags] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!milestone) return;
+    setName(milestone.name);
+    setOwnerId(milestone.owner?.id ?? "");
+    setStartDate(milestone.startDate ? milestone.startDate.slice(0, 10) : "");
+    setReleaseDate(milestone.releaseDate ? milestone.releaseDate.slice(0, 10) : "");
+    setDescription(milestone.description ?? "");
+    setTags(milestone.tags.join(", "));
+    setError(null);
+  }, [milestone]);
+
+  async function save() {
+    if (!milestone || !name.trim()) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await api.updateProjectMilestone(projectId, milestone.id, {
+        name: name.trim(),
+        ownerId: ownerId || null,
+        startDate: startDate || null,
+        releaseDate: releaseDate || null,
+        description: description.trim() || null,
+        tags: tags.split(",").map((tag) => tag.trim()).filter(Boolean),
+      });
+      onSaved();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Milestone could not be updated");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal
+      open={!!milestone}
+      onClose={onClose}
+      title="Edit milestone"
+      size="md"
+      footer={
+        <>
+          <Button variant="outline" onClick={onClose} disabled={saving}>Cancel</Button>
+          <Button onClick={save} disabled={saving || !name.trim()}>{saving ? "Saving…" : "Save"}</Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <Field label="Milestone name"><Input value={name} onChange={(event) => setName(event.target.value)} /></Field>
+        <Field label="Owner">
+          <Select value={ownerId} onChange={(event) => setOwnerId(event.target.value)}>
+            <option value="">No owner</option>
+            {companyUsers.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}
+          </Select>
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Start date"><DatePicker value={startDate} onChange={(value) => setStartDate(value ?? "")} max={releaseDate || null} /></Field>
+          <Field label="Release date"><DatePicker value={releaseDate} onChange={(value) => setReleaseDate(value ?? "")} min={startDate || null} /></Field>
+        </div>
+        <Field label="Tags (comma separated)"><Input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="Design, Paid" /></Field>
+        <Field label="Description"><Textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={3} /></Field>
+        {error && <p className="text-sm text-danger-600">{error}</p>}
+      </div>
+    </Modal>
   );
 }
 
@@ -1749,6 +1912,15 @@ export function TaskWorkspaceDrawer({
   const [attachmentUrl, setAttachmentUrl] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [showLogForm, setShowLogForm] = useState(false);
+  const [logDate, setLogDate] = useState("");
+  const [logHours, setLogHours] = useState("");
+  const [logMinutes, setLogMinutes] = useState("");
+  const [logActivity, setLogActivity] = useState("");
+  const [logBillable, setLogBillable] = useState(false);
+  const [logNote, setLogNote] = useState("");
+  const [logSaving, setLogSaving] = useState(false);
+  const [logError, setLogError] = useState<string | null>(null);
 
   useEffect(() => {
     setLocalTask(task);
@@ -1841,6 +2013,37 @@ export function TaskWorkspaceDrawer({
     setEstimateHours("");
     setEstimateMinutes("");
     await updateTask({ estimatedMinutes: 0 });
+  }
+
+  async function logTime() {
+    if (!canEdit) return;
+    const hours = Math.max(0, Math.floor(Number(logHours || 0)));
+    const minutes = Math.max(0, Math.floor(Number(logMinutes || 0)));
+    const durationMinutes = hours * 60 + minutes;
+    if (!logDate) { setLogError("Please choose a date"); return; }
+    if (durationMinutes <= 0) { setLogError("Duration must be greater than 0"); return; }
+    if (!logActivity) { setLogError("Please select an activity"); return; }
+    if (!logNote.trim()) { setLogError("Please add a description"); return; }
+    setLogSaving(true);
+    setLogError(null);
+    try {
+      const result = await api.logTaskTime(projectId, taskId, {
+        date: logDate,
+        durationMinutes,
+        activityType: logActivity,
+        billable: logBillable,
+        note: logNote.trim(),
+      });
+      setEntries((current) => [result.entry, ...current]);
+      setTrackedSeconds(result.taskTrackedSeconds);
+      if (result.entry.projectId === projectId) onProjectTimeChanged(result.projectTrackedSeconds);
+      setShowLogForm(false);
+      setLogDate(""); setLogHours(""); setLogMinutes(""); setLogActivity(""); setLogBillable(false); setLogNote("");
+    } catch (err) {
+      setLogError(err instanceof ApiError ? err.message : "Time log could not be saved");
+    } finally {
+      setLogSaving(false);
+    }
   }
 
   async function toggleTimer() {
@@ -2045,8 +2248,8 @@ export function TaskWorkspaceDrawer({
               <TaskRow icon={<Users size={15} />} label="Assignee">
                 <EmployeePicker employees={activeEmployees} value={localTask.assigneeId} onChange={(employeeId) => updateTask({ assigneeId: employeeId })} disabled={!canEdit || saving} placeholder="Unassigned" allowClear />
               </TaskRow>
-              <TaskRow icon={<CalendarDays size={15} />} label="Start Date"><Input type="date" value={dateValue(localTask.startDate)} onChange={(event) => updateTask({ startDate: event.target.value || null })} disabled={!canEdit} /></TaskRow>
-              <TaskRow icon={<CalendarDays size={15} />} label="Due Date"><Input type="date" value={dateValue(localTask.dueDate)} onChange={(event) => updateTask({ dueDate: event.target.value || null })} disabled={!canEdit} /></TaskRow>
+              <TaskRow icon={<CalendarDays size={15} />} label="Start Date"><DatePicker value={dateValue(localTask.startDate)} onChange={(value) => updateTask({ startDate: value })} disabled={!canEdit} max={dateValue(localTask.dueDate) || null} /></TaskRow>
+              <TaskRow icon={<CalendarDays size={15} />} label="Due Date"><DatePicker value={dateValue(localTask.dueDate)} onChange={(value) => updateTask({ dueDate: value })} disabled={!canEdit} min={dateValue(localTask.startDate) || null} /></TaskRow>
               <TaskRow icon={<Clock3 size={15} />} label="Estimation Hours">
                 <div className="flex max-w-sm items-center gap-2 rounded-lg bg-surface-subtle px-3 py-2">
                   <input type="number" min="0" inputMode="numeric" value={estimateHours} onChange={(event) => setEstimateHours(event.target.value)} onBlur={(event) => saveEstimate(event.currentTarget.value, estimateMinutes)} onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()} disabled={!canEdit || saving} placeholder="00" aria-label="Estimated hours" className="w-14 border-0 border-b border-ink-300 bg-transparent px-1 py-1 text-center text-sm font-semibold text-ink-800 outline-none focus:border-brand-500 disabled:text-ink-400" />
@@ -2092,7 +2295,49 @@ export function TaskWorkspaceDrawer({
           <div className="flex overflow-x-auto border-b border-ink-200">{(["activities", "worklog", "approval", "planner"] as const).map((id) => <button key={id} onClick={() => setPanel(id)} className={cn("shrink-0 border-b-2 px-4 py-3 text-xs font-semibold capitalize", panel === id ? "border-brand-600 text-brand-600" : "border-transparent text-ink-500")}>{id === "worklog" ? "Work Log" : id}</button>)}</div>
           <div className="min-h-0 flex-1 overflow-y-auto p-4 text-sm text-ink-600">
             {panel === "activities" && <ActivityTimeline activities={taskActivities} comments={localTask.comments} employees={employees} canEdit={canEdit} currentUserId={currentUserId} onRemoveComment={removeComment} />}
-            {panel === "worklog" && <div className="space-y-3">{entries.length === 0 ? <p>No work logs recorded yet.</p> : entries.map((entry) => <Card key={entry.id} className="p-3"><div className="flex justify-between"><b>{entry.user.name}</b><span className="font-mono">{entry.endedAt ? formatSeconds(entry.durationSeconds) : "Running"}</span></div><p className="mt-1 text-xs text-ink-500">{entry.activityType} · {entry.billable ? "Billable" : "Non-billable"} · {new Date(entry.startedAt).toLocaleString()}</p>{entry.note && <p className="mt-2 text-xs">{entry.note}</p>}</Card>)}</div>}
+            {panel === "worklog" && (
+              <div className="space-y-3">
+                {canEdit && (
+                  showLogForm ? (
+                    <Card className="p-3">
+                      <p className="mb-3 text-sm font-semibold text-ink-900">Log time</p>
+                      <div className="grid gap-2.5 sm:grid-cols-2">
+                        <Field label="Date" className="mb-0"><DatePicker value={logDate} onChange={(value) => setLogDate(value ?? "")} max={dateValue(new Date().toISOString())} allowClear={false} /></Field>
+                        <Field label="Duration" className="mb-0">
+                          <div className="flex items-center gap-2">
+                            <Input type="number" min="0" inputMode="numeric" value={logHours} onChange={(event) => setLogHours(event.target.value)} placeholder="Hours" className="w-full" />
+                            <Input type="number" min="0" max="59" inputMode="numeric" value={logMinutes} onChange={(event) => setLogMinutes(event.target.value)} placeholder="Minutes" className="w-full" />
+                          </div>
+                        </Field>
+                        <Field label="Activity" className="mb-0">
+                          <Select value={logActivity} onChange={(event) => setLogActivity(event.target.value)}>
+                            <option value="">Select activity</option>
+                            {timerActivityOptions.map((activity) => <option key={activity} value={activity}>{activity}</option>)}
+                          </Select>
+                        </Field>
+                        <Field label="Billing" className="mb-0">
+                          <Select value={logBillable ? "billable" : "non_billable"} onChange={(event) => setLogBillable(event.target.value === "billable")}>
+                            <option value="non_billable">Non-billable</option>
+                            <option value="billable">Billable</option>
+                          </Select>
+                        </Field>
+                      </div>
+                      <Field label="Description" className="mb-0 mt-2.5">
+                        <Textarea value={logNote} onChange={(event) => setLogNote(event.target.value)} rows={2} placeholder="What did you work on?" />
+                      </Field>
+                      {logError && <p className="mt-2 text-xs text-danger-600">{logError}</p>}
+                      <div className="mt-3 flex justify-end gap-2">
+                        <Button size="sm" variant="outline" onClick={() => { setShowLogForm(false); setLogError(null); }} disabled={logSaving}>Cancel</Button>
+                        <Button size="sm" onClick={logTime} disabled={logSaving}>{logSaving ? "Saving…" : "Save log"}</Button>
+                      </div>
+                    </Card>
+                  ) : (
+                    <Button size="sm" variant="outline" onClick={() => setShowLogForm(true)}><Plus size={14} className="mr-1.5" />Add time log</Button>
+                  )
+                )}
+                {entries.length === 0 ? <p>No work logs recorded yet.</p> : entries.map((entry) => <Card key={entry.id} className="p-3"><div className="flex justify-between"><b>{entry.user.name}</b><span className="font-mono">{entry.endedAt ? formatSeconds(entry.durationSeconds) : "Running"}</span></div><p className="mt-1 text-xs text-ink-500">{entry.activityType} · {entry.billable ? "Billable" : "Non-billable"} · {new Date(entry.startedAt).toLocaleString()}</p>{entry.note && <p className="mt-2 text-xs">{entry.note}</p>}</Card>)}
+              </div>
+            )}
             {panel === "approval" && <div className="rounded-lg border border-dashed border-ink-200 p-6 text-center"><CheckCircle2 className="mx-auto text-ink-300" /><p className="mt-2">No approvals requested for this task.</p></div>}
             {panel === "planner" && <div className="space-y-3"><Summary label="Assignee" value={localTask.assignee?.name ?? "Unassigned"} /><Summary label="Estimate" value={formatMinutes(localTask.estimatedMinutes)} /><Summary label="Tracked" value={formatSeconds(liveSeconds)} /><Summary label="Due" value={formatDate(localTask.dueDate)} /><Summary label="Followers" value={localTask.followers.map((follower) => follower.user.name).join(", ") || "None"} /></div>}
           </div>
@@ -2143,6 +2388,9 @@ function EmployeePicker({
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [coords, setCoords] = useState<{ top: number; left: number; width: number } | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const selected = employees.find((employee) => employee.id === value);
   const available = employees.filter((employee) => !excludeIds.includes(employee.id) && `${employee.name} ${employee.email}`.toLowerCase().includes(query.toLowerCase()));
   const choose = (employeeId: string | null) => {
@@ -2151,28 +2399,58 @@ function EmployeePicker({
     setQuery("");
   };
 
+  useEffect(() => {
+    if (!open) return;
+    function updatePosition() {
+      const rect = triggerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      setCoords({ top: rect.bottom + 6, left: rect.left, width: Math.max(rect.width, 280) });
+    }
+    updatePosition();
+    function handleOutside(event: MouseEvent) {
+      const target = event.target as Node;
+      if (triggerRef.current?.contains(target)) return;
+      if (panelRef.current?.contains(target)) return;
+      setOpen(false);
+    }
+    document.addEventListener("mousedown", handleOutside);
+    window.addEventListener("scroll", updatePosition, true);
+    window.addEventListener("resize", updatePosition);
+    return () => {
+      document.removeEventListener("mousedown", handleOutside);
+      window.removeEventListener("scroll", updatePosition, true);
+      window.removeEventListener("resize", updatePosition);
+    };
+  }, [open]);
+
   return (
     <div className="relative">
-      <button type="button" disabled={disabled} onClick={() => setOpen((current) => !current)} className="flex h-10 w-full items-center gap-2 rounded-lg border border-ink-200 bg-white px-3 text-left text-sm transition hover:border-brand-300 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 disabled:bg-ink-100">
+      <button ref={triggerRef} type="button" disabled={disabled} onClick={() => setOpen((current) => !current)} className="flex h-10 w-full items-center gap-2 rounded-lg border border-ink-200 bg-white px-3 text-left text-sm transition hover:border-brand-300 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 disabled:bg-ink-100">
         {selected ? <MemberAvatar id={selected.id} name={selected.name} size="xs" status={selected.accountStatus === "active" ? "active" : "inactive"} /> : <span className="flex h-6 w-6 items-center justify-center rounded-full bg-ink-100 text-[10px] font-semibold text-ink-500"><Users size={13} /></span>}
         <span className={cn("min-w-0 flex-1 truncate", selected ? "font-medium text-ink-800" : "text-ink-400")}>{selected?.name ?? placeholder}</span>
         <ChevronDown size={15} className={cn("shrink-0 text-ink-400 transition", open && "rotate-180")} />
       </button>
-      {open && !disabled && <div className="absolute left-0 top-[calc(100%+6px)] z-[80] w-full min-w-[280px] overflow-hidden rounded-xl border border-ink-200 bg-white shadow-popover">
-        <div className="border-b border-ink-100 p-2"><Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search employee..." leftIcon={<Search size={14} />} autoFocus /></div>
-        <div className="max-h-64 overflow-y-auto p-1.5">
-          {allowClear && <button type="button" onClick={() => choose(null)} className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left text-sm text-ink-500 hover:bg-ink-50"><span className="flex h-7 w-7 items-center justify-center rounded-full bg-ink-100"><X size={13} /></span>Unassigned</button>}
-          {available.map((employee) => {
-            const teamNames = employee.teamMemberships?.map((membership) => membership.team.name).join(", ");
-            return <button key={employee.id} type="button" onClick={() => choose(employee.id)} className={cn("flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left transition hover:bg-brand-50", employee.id === value && "bg-brand-50")}>
-              <MemberAvatar id={employee.id} name={employee.name} size="sm" status={employee.accountStatus === "active" ? "active" : "inactive"} />
-              <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium text-ink-800">{employee.name}</span><span className="block truncate text-[11px] text-ink-400">{teamNames || employee.email}</span></span>
-              {employee.id === value && <CheckCircle2 size={16} className="text-brand-600" />}
-            </button>;
-          })}
-          {available.length === 0 && <p className="px-3 py-5 text-center text-xs text-ink-400">No employees found</p>}
-        </div>
-      </div>}
+      {open && !disabled && coords && createPortal(
+        <div
+          ref={panelRef}
+          style={{ position: "fixed", top: coords.top, left: coords.left, width: coords.width }}
+          className="z-[80] overflow-hidden rounded-xl border border-ink-200 bg-white shadow-popover"
+        >
+          <div className="border-b border-ink-100 p-2"><Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search employee..." leftIcon={<Search size={14} />} autoFocus /></div>
+          <div className="max-h-64 overflow-y-auto p-1.5">
+            {allowClear && <button type="button" onClick={() => choose(null)} className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left text-sm text-ink-500 hover:bg-ink-50"><span className="flex h-7 w-7 items-center justify-center rounded-full bg-ink-100"><X size={13} /></span>Unassigned</button>}
+            {available.map((employee) => (
+              <button key={employee.id} type="button" onClick={() => choose(employee.id)} className={cn("flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left transition hover:bg-brand-50", employee.id === value && "bg-brand-50")}>
+                <MemberAvatar id={employee.id} name={employee.name} size="sm" status={employee.accountStatus === "active" ? "active" : "inactive"} />
+                <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink-800">{employee.name}</span>
+                {employee.id === value && <CheckCircle2 size={16} className="text-brand-600" />}
+              </button>
+            ))}
+            {available.length === 0 && <p className="px-3 py-5 text-center text-xs text-ink-400">No employees found</p>}
+          </div>
+        </div>,
+        document.body,
+      )}
     </div>
   );
 }

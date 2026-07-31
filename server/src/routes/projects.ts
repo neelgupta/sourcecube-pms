@@ -247,6 +247,30 @@ projectsRouter.get("/tasks/breakdown", requirePermission("tasks", "view"), async
 
   res.json({ employees: rows });
 });
+
+projectsRouter.get("/milestones/all", requirePermission("projects", "view"), async (req, res) => {
+  const tid = tenantId(req);
+  const uid = userId(req);
+  const scope = await projectReadScope(tid, uid);
+  const milestones = await prisma.projectMilestone.findMany({
+    where: { tenantId: tid, project: scope },
+    include: {
+      owner: { select: userSelect },
+      project: { select: { id: true, name: true, key: true } },
+      tasks: { select: { status: true, estimatedMinutes: true, trackedSeconds: true } },
+    },
+    orderBy: [{ project: { name: "asc" } }, { releaseDate: "asc" }],
+  });
+  const rows = milestones.map(({ tasks, ...milestone }) => ({
+    ...milestone,
+    taskCount: tasks.length,
+    completedTaskCount: tasks.filter((task) => task.status === "done").length,
+    estimatedMinutes: tasks.reduce((sum, task) => sum + task.estimatedMinutes, 0),
+    trackedSeconds: tasks.reduce((sum, task) => sum + task.trackedSeconds, 0),
+  }));
+  res.json({ milestones: rows });
+});
+
 projectsRouter.get("/:id", requirePermission("projects", "view"), async (req, res) => {
   const tid = tenantId(req);
   const uid = userId(req);
@@ -1362,7 +1386,64 @@ projectsRouter.post("/:id/milestones", requirePermission("projects", "edit"), as
     },
     include: { owner: { select: userSelect }, _count: { select: { tasks: true } } },
   });
+  await recordAudit({ actor: req.auth!, action: "project.milestone.created", tenantId: tid, targetType: "ProjectMilestone", targetId: milestone.id, metadata: { projectId: id, name: milestone.name } });
   res.status(201).json({ milestone });
+});
+
+const milestoneUpdateSchema = milestoneSchema.partial();
+
+projectsRouter.patch("/:id/milestones/:milestoneId", requirePermission("projects", "edit"), async (req, res) => {
+  const parsed = milestoneUpdateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.issues.map((issue) => issue.message).join(", ") });
+    return;
+  }
+  const tid = tenantId(req);
+  const id = req.params.id as string;
+  const milestoneId = req.params.milestoneId as string;
+  if (!(await requireProjectAccess(tid, userId(req), id, "edit"))) {
+    res.status(403).json({ error: "You do not have sufficient access to this project" });
+    return;
+  }
+  const existing = await prisma.projectMilestone.findFirst({ where: { id: milestoneId, projectId: id, tenantId: tid } });
+  if (!existing) {
+    res.status(404).json({ error: "Milestone not found" });
+    return;
+  }
+  const data = parsed.data;
+  const milestone = await prisma.projectMilestone.update({
+    where: { id: milestoneId },
+    data: {
+      name: data.name,
+      ownerId: data.ownerId !== undefined ? data.ownerId : undefined,
+      startDate: data.startDate !== undefined ? (data.startDate ? new Date(data.startDate) : null) : undefined,
+      releaseDate: data.releaseDate !== undefined ? (data.releaseDate ? new Date(data.releaseDate) : null) : undefined,
+      description: data.description !== undefined ? data.description : undefined,
+      tags: data.tags,
+    },
+    include: { owner: { select: userSelect }, _count: { select: { tasks: true } } },
+  });
+  await recordAudit({ actor: req.auth!, action: "project.milestone.updated", tenantId: tid, targetType: "ProjectMilestone", targetId: milestoneId, metadata: { projectId: id, changes: Object.keys(data) } });
+  res.json({ milestone });
+});
+
+projectsRouter.delete("/:id/milestones/:milestoneId", requirePermission("projects", "edit"), async (req, res) => {
+  const tid = tenantId(req);
+  const id = req.params.id as string;
+  const milestoneId = req.params.milestoneId as string;
+  if (!(await requireProjectAccess(tid, userId(req), id, "edit"))) {
+    res.status(403).json({ error: "You do not have sufficient access to this project" });
+    return;
+  }
+  const existing = await prisma.projectMilestone.findFirst({ where: { id: milestoneId, projectId: id, tenantId: tid } });
+  if (!existing) {
+    res.status(404).json({ error: "Milestone not found" });
+    return;
+  }
+  await prisma.projectTask.updateMany({ where: { milestoneId }, data: { milestoneId: null } });
+  await prisma.projectMilestone.delete({ where: { id: milestoneId } });
+  await recordAudit({ actor: req.auth!, action: "project.milestone.deleted", tenantId: tid, targetType: "ProjectMilestone", targetId: milestoneId, metadata: { projectId: id, name: existing.name } });
+  res.status(204).end();
 });
 
 const timerSchema = z.object({
@@ -1407,6 +1488,10 @@ projectsRouter.post("/:id/tasks/:taskId/timer/start", requirePermission("tasks",
   }
   if (!(await canEditTaskForProject(tid, uid, id, task.assigneeId))) {
     res.status(403).json({ error: "You do not have access to track time on this task" });
+    return;
+  }
+  if (!task.estimatedMinutes) {
+    res.status(400).json({ error: "Please add estimate hours" });
     return;
   }
   const active = await prisma.taskTimeEntry.findFirst({
@@ -1526,6 +1611,81 @@ projectsRouter.post("/:id/tasks/:taskId/timer/stop", requirePermission("tasks", 
     projectTrackedSeconds: project.trackedSeconds,
   });
 });
+const manualLogSchema = z.object({
+  date: z.string().min(1, "Date is required"),
+  durationMinutes: z.number().int().positive("Duration must be greater than 0"),
+  activityType: z.string().trim().min(1, "Activity is required").max(100),
+  billable: z.boolean(),
+  note: z.string().trim().min(1, "Description is required").max(500),
+});
+
+projectsRouter.post("/:id/tasks/:taskId/timer/log", requirePermission("tasks", "edit"), async (req, res) => {
+  const parsed = manualLogSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.issues.map((issue) => issue.message).join(", ") });
+    return;
+  }
+  const tid = tenantId(req);
+  const uid = userId(req);
+  const id = req.params.id as string;
+  const taskId = req.params.taskId as string;
+  const task = await prisma.projectTask.findFirst({ where: { id: taskId, projectId: id, tenantId: tid } });
+  if (!task) {
+    res.status(404).json({ error: "Task not found" });
+    return;
+  }
+  if (!(await canEditTaskForProject(tid, uid, id, task.assigneeId))) {
+    res.status(403).json({ error: "You do not have access to log time on this task" });
+    return;
+  }
+  const startedAt = new Date(`${parsed.data.date}T00:00:00`);
+  if (Number.isNaN(startedAt.getTime())) {
+    res.status(400).json({ error: "Invalid date" });
+    return;
+  }
+  const durationSeconds = parsed.data.durationMinutes * 60;
+  const endedAt = new Date(startedAt.getTime() + durationSeconds * 1000);
+
+  const [entry, updatedTask, updatedProject] = await prisma.$transaction([
+    prisma.taskTimeEntry.create({
+      data: {
+        tenantId: tid,
+        projectId: id,
+        taskId,
+        userId: uid,
+        activityType: parsed.data.activityType,
+        billable: parsed.data.billable,
+        note: parsed.data.note,
+        startedAt,
+        endedAt,
+        durationSeconds,
+      },
+      include: { user: { select: userSelect } },
+    }),
+    prisma.projectTask.update({
+      where: { id: taskId },
+      data: { trackedSeconds: { increment: durationSeconds }, updatedBy: uid },
+    }),
+    prisma.project.update({
+      where: { id },
+      data: { trackedSeconds: { increment: durationSeconds }, updatedBy: uid },
+    }),
+  ]);
+  await recordAudit({
+    actor: req.auth!,
+    action: "project.task.timer.logged",
+    tenantId: tid,
+    targetType: "ProjectTask",
+    targetId: taskId,
+    metadata: { projectId: id, timeEntryId: entry.id, durationSeconds, date: parsed.data.date },
+  });
+  res.status(201).json({
+    entry,
+    taskTrackedSeconds: updatedTask.trackedSeconds,
+    projectTrackedSeconds: updatedProject.trackedSeconds,
+  });
+});
+
 projectsRouter.delete("/:id/tasks/:taskId/timer", requirePermission("tasks", "edit"), async (req, res) => {
   const tid = tenantId(req);
   const uid = userId(req);

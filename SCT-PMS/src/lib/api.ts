@@ -29,6 +29,7 @@ import type {
   AssignedTask,
   TaskBreakdownRow,
   ProjectMilestone,
+  AllMilestone,
   TaskTimeEntry,
   TaskComment,
   TaskChecklistItem,
@@ -134,7 +135,7 @@ export const api = {
 
   listSchedules: () => request<{ schedules: WorkingSchedule[] }>("/onboarding/schedules"),
 
-  getResourcePlanner: (input: { start: string; end: string; search?: string; occupancy?: "all" | "occupied" | "unoccupied"; teamId?: string }) => {
+  getResourcePlanner: (input: { start: string; end: string; search?: string; occupancy?: "all" | "occupied" | "unoccupied"; teamId?: string; employeeIds?: string }) => {
     const params = new URLSearchParams();
     Object.entries(input).forEach(([key, value]) => { if (value) params.set(key, value); });
     return request<ResourcePlannerResponse>(`/resources/planner?${params.toString()}`);
@@ -386,6 +387,25 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  updateProjectMilestone: (
+    projectId: string,
+    milestoneId: string,
+    input: Partial<{
+      name: string;
+      ownerId: string | null;
+      startDate: string | null;
+      releaseDate: string | null;
+      description: string | null;
+      tags: string[];
+    }>,
+  ) =>
+    request<{ milestone: ProjectMilestone }>(`/projects/${projectId}/milestones/${milestoneId}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+  deleteProjectMilestone: (projectId: string, milestoneId: string) =>
+    request<void>(`/projects/${projectId}/milestones/${milestoneId}`, { method: "DELETE" }),
+  listAllMilestones: () => request<{ milestones: AllMilestone[] }>("/projects/milestones/all"),
   getActiveTaskTimer: (projectId: string) =>
     request<{ entry: (TaskTimeEntry & { task?: { id: string; code: number; name: string; projectId: string }; project?: { id: string; name: string } }) | null }>(`/projects/${projectId}/timer/active`),
   startTaskTimer: (
@@ -408,6 +428,15 @@ export const api = {
     ),
   discardTaskTimer: (projectId: string, taskId: string) =>
     request<void>(`/projects/${projectId}/tasks/${taskId}/timer`, { method: "DELETE" }),
+  logTaskTime: (
+    projectId: string,
+    taskId: string,
+    input: { date: string; durationMinutes: number; activityType: string; billable: boolean; note: string },
+  ) =>
+    request<{ entry: TaskTimeEntry; taskTrackedSeconds: number; projectTrackedSeconds: number }>(
+      `/projects/${projectId}/tasks/${taskId}/timer/log`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
 
   // ---- Chat ----
   listChatUsers: () => request<{ users: ChatUser[] }>("/chat/users"),

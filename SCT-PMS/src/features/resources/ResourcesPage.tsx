@@ -4,8 +4,6 @@ import {
   Briefcase,
   CalendarDays,
   CheckCircle2,
-  ChevronLeft,
-  ChevronRight,
   Clock3,
   HelpCircle,
   ListChecks,
@@ -15,20 +13,25 @@ import {
   SlidersHorizontal,
   X,
 } from "lucide-react";
-import { Badge, Button, Card, FilterSelect, MemberAvatar, SearchBar } from "@/components/common";
+import { Badge, Button, Card, DateRangePicker, EmployeeMultiPicker, FilterSelect, MemberAvatar } from "@/components/common";
 import { api, ApiError } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import type { ResourcePlannerDay, ResourcePlannerDayDetail, ResourcePlannerEmployee, ResourcePlannerResponse } from "@/types/tenant";
 
-const rangeOptions = [
-  { value: "1w", label: "1 Week" },
-  { value: "1m", label: "1 Month" },
-  { value: "3m", label: "3 Months" },
-];
 const occupancyOptions = [
   { value: "all", label: "All Employees" },
   { value: "occupied", label: "Employees With Tasks" },
   { value: "unoccupied", label: "Employees Without Tasks" },
+];
+
+type RangePreset = "today" | "this_week" | "last_week" | "this_month" | "custom";
+
+const presetOptions: { value: RangePreset; label: string }[] = [
+  { value: "today", label: "Today" },
+  { value: "this_week", label: "This week" },
+  { value: "last_week", label: "Last week" },
+  { value: "this_month", label: "This month" },
+  { value: "custom", label: "Custom range" },
 ];
 
 function dateKey(date: Date) {
@@ -40,17 +43,23 @@ function addDays(date: Date, count: number) {
   next.setDate(next.getDate() + count);
   return next;
 }
-function period(anchor: Date, range: string) {
-  if (range === "1w") return { start: dateKey(anchor), end: dateKey(addDays(anchor, 6)) };
-  const start = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
-  const months = range === "3m" ? 3 : 1;
-  const end = new Date(start.getFullYear(), start.getMonth() + months, 0);
-  return { start: dateKey(start), end: dateKey(end) };
+/** Monday-start week bounds for the week containing `date`. */
+function weekBounds(date: Date) {
+  const weekday = (date.getDay() + 6) % 7; // 0 = Monday
+  const start = addDays(date, -weekday);
+  return { start, end: addDays(start, 6) };
 }
-function movePeriod(anchor: Date, range: string, direction: number) {
-  if (range === "1w") return addDays(anchor, 7 * direction);
-  const months = range === "3m" ? 3 : 1;
-  return new Date(anchor.getFullYear(), anchor.getMonth() + months * direction, 1);
+function presetRange(preset: RangePreset): { start: string; end: string } {
+  const today = new Date();
+  if (preset === "today") return { start: dateKey(today), end: dateKey(today) };
+  if (preset === "this_week") { const { start, end } = weekBounds(today); return { start: dateKey(start), end: dateKey(end) }; }
+  if (preset === "last_week") { const { start } = weekBounds(addDays(today, -7)); return { start: dateKey(start), end: dateKey(addDays(start, 6)) }; }
+  if (preset === "this_month") {
+    const start = new Date(today.getFullYear(), today.getMonth(), 1);
+    const end = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+    return { start: dateKey(start), end: dateKey(end) };
+  }
+  return { start: dateKey(today), end: dateKey(today) };
 }
 function hoursFromMinutes(minutes: number) {
   const value = minutes / 60;
@@ -70,9 +79,9 @@ function displayDate(key: string) {
 
 export function ResourcesPage() {
   const navigate = useNavigate();
-  const [anchor, setAnchor] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth(), 1));
-  const [search, setSearch] = useState("");
-  const [range, setRange] = useState("1m");
+  const [preset, setPreset] = useState<RangePreset>("this_week");
+  const [customRange, setCustomRange] = useState<{ start: string; end: string }>(() => presetRange("this_week"));
+  const [employeeIds, setEmployeeIds] = useState<string[]>([]);
   const [occupancy, setOccupancy] = useState<"all" | "occupied" | "unoccupied">("all");
   const [teamId, setTeamId] = useState("");
   const [showFilters, setShowFilters] = useState(false);
@@ -84,19 +93,28 @@ export function ResourcesPage() {
   const [selectedDay, setSelectedDay] = useState<{ employeeId: string; date: string } | null>(null);
   const [detail, setDetail] = useState<ResourcePlannerDayDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
-  const selectedPeriod = useMemo(() => period(anchor, range), [anchor, range]);
+  const selectedPeriod = useMemo(
+    () => (preset === "custom" ? customRange : presetRange(preset)),
+    [preset, customRange],
+  );
+
+  function choosePreset(value: RangePreset) {
+    setPreset(value);
+    if (value !== "custom") setCustomRange(presetRange(value));
+  }
 
   useEffect(() => {
+    if (!selectedPeriod.start || !selectedPeriod.end || selectedPeriod.start > selectedPeriod.end) return;
     let cancelled = false;
     const timeout = window.setTimeout(() => {
       setLoading(true);
-      api.getResourcePlanner({ ...selectedPeriod, search: search.trim() || undefined, occupancy, teamId: teamId || undefined })
+      api.getResourcePlanner({ ...selectedPeriod, occupancy, teamId: teamId || undefined, employeeIds: employeeIds.length ? employeeIds.join(",") : undefined })
         .then((result) => { if (!cancelled) { setPlanner(result); setError(null); } })
         .catch((err) => { if (!cancelled) setError(err instanceof ApiError ? err.message : "Failed to load resource planner"); })
         .finally(() => { if (!cancelled) setLoading(false); });
     }, 250);
     return () => { cancelled = true; window.clearTimeout(timeout); };
-  }, [selectedPeriod.start, selectedPeriod.end, search, occupancy, teamId, revision]);
+  }, [selectedPeriod.start, selectedPeriod.end, employeeIds, occupancy, teamId, revision]);
 
   useEffect(() => {
     if (!selectedDay) { setDetail(null); return; }
@@ -117,16 +135,42 @@ export function ResourcesPage() {
         <div className="flex flex-wrap items-center gap-2">
           <p className="text-sm font-medium text-ink-700"><span className="text-lg font-bold text-ink-900">{employees.length}</span> Employees</p>
           <button className="text-ink-400 hover:text-ink-700" title="Tracked hours come from task work logs. Planned hours come from assigned task estimates across their working dates."><HelpCircle size={16} /></button>
-          <div className="ml-2 flex items-center gap-1">
-            <IconBtn title="Previous period" onClick={() => setAnchor((value) => movePeriod(value, range, -1))}><ChevronLeft size={16} /></IconBtn>
-            <span className="flex items-center gap-2 rounded-lg border border-ink-200 bg-white px-3 py-1.5 text-sm font-medium text-ink-700"><CalendarDays size={15} className="text-ink-400" />{displayDate(selectedPeriod.start)} – {displayDate(selectedPeriod.end)}</span>
-            <IconBtn title="Next period" onClick={() => setAnchor((value) => movePeriod(value, range, 1))}><ChevronRight size={16} /></IconBtn>
+          <div className="ml-2 flex items-center gap-2">
+            <div className="flex items-center rounded-lg border border-ink-200 bg-white p-0.5">
+              {presetOptions.map((option) => (
+                <button
+                  key={option.value}
+                  onClick={() => choosePreset(option.value)}
+                  className={cn(
+                    "whitespace-nowrap rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors",
+                    preset === option.value ? "bg-brand-600 text-white" : "text-ink-500 hover:bg-ink-100",
+                  )}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            {preset === "custom" ? (
+              <DateRangePicker
+                from={customRange.start}
+                to={customRange.end}
+                onChange={(next) => setCustomRange((current) => ({ start: next.from ?? current.start, end: next.to ?? current.end }))}
+                className="w-64"
+              />
+            ) : (
+              <span className="flex items-center gap-2 rounded-lg border border-ink-200 bg-white px-3 py-1.5 text-sm font-medium text-ink-700"><CalendarDays size={15} className="text-ink-400" />{displayDate(selectedPeriod.start)} – {displayDate(selectedPeriod.end)}</span>
+            )}
             <IconBtn title="Refresh" onClick={() => setRevision((value) => value + 1)}><RefreshCw size={15} className={loading ? "animate-spin" : ""} /></IconBtn>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <SearchBar value={search} onChange={setSearch} placeholder="Search employees" className="w-44" />
-          <FilterSelect value={range} options={rangeOptions} onChange={(value) => setRange(value)} className="w-36" />
+          <EmployeeMultiPicker
+            employees={planner?.filterOptions.employees ?? []}
+            value={employeeIds}
+            onChange={setEmployeeIds}
+            placeholder="All employees"
+            className="w-56"
+          />
           <FilterSelect value={occupancy} options={occupancyOptions} onChange={(value) => setOccupancy(value as typeof occupancy)} className="w-52" />
           <Button variant={teamId ? "secondary" : "outline"} size="sm" leftIcon={<SlidersHorizontal size={14} />} onClick={() => setShowFilters((value) => !value)}>Filter{teamId ? " (1)" : ""}</Button>
           <Button variant="outline" size="icon" title="Company working hours" onClick={() => setShowSchedule((value) => !value)}><Settings size={16} /></Button>

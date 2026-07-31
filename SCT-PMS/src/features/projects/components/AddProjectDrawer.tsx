@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { ImagePlus } from "lucide-react";
-import { Button, Drawer, Field, Input, Select, Textarea } from "@/components/common";
+import { Button, DatePicker, Drawer, Field, Input, Select, Textarea } from "@/components/common";
 import { api, ApiError } from "@/lib/api";
 import type {
   CompanyUser,
@@ -251,11 +251,11 @@ export function AddProjectDrawer({ open, companyUsers, departments, editingProje
           </Field>
 
           <Field label="Start Date">
-            <Input type="date" value={form.startDate} onChange={(e) => set("startDate", e.target.value)} />
+            <DatePicker value={form.startDate} onChange={(value) => set("startDate", value ?? "")} max={form.dueDate || null} />
           </Field>
 
           <Field label="End Date">
-            <Input type="date" value={form.dueDate} onChange={(e) => set("dueDate", e.target.value)} />
+            <DatePicker value={form.dueDate} onChange={(value) => set("dueDate", value ?? "")} min={form.startDate || null} />
           </Field>
 
           <Field label="Project Status">

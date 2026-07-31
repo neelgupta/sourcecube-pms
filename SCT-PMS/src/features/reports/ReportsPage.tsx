@@ -13,7 +13,7 @@ import {
   TrendingUp,
   Users,
 } from "lucide-react";
-import { Badge, Button, Card, FilterSelect, MemberAvatar, ProgressBar, SearchBar } from "@/components/common";
+import { Badge, Button, Card, DateRangePicker, FilterSelect, MemberAvatar, ProgressBar, SearchBar } from "@/components/common";
 import { api, ApiError } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import type { TeamProductivityReport } from "@/types/tenant";
@@ -106,8 +106,7 @@ export function ReportsPage() {
         <Card className="overflow-visible p-4">
           <div className="flex flex-wrap items-end gap-3">
             <div><p className="mb-1 text-xs font-medium text-ink-500">Date range</p><FilterSelect value={rangePreset} onChange={chooseRange} className="w-36" options={[{ value: "today", label: "Today" }, { value: "7d", label: "Last 7 days" }, { value: "30d", label: "Last 30 days" }, { value: "custom", label: "Custom range" }]} /></div>
-            <label><span className="mb-1 block text-xs font-medium text-ink-500">From</span><input type="date" value={start} max={end} onChange={(event) => { setStart(event.target.value); setRangePreset("custom"); }} className="h-10 rounded-lg border border-ink-200 bg-white px-3 text-sm outline-none focus:border-brand-500" /></label>
-            <label><span className="mb-1 block text-xs font-medium text-ink-500">To</span><input type="date" value={end} min={start} onChange={(event) => { setEnd(event.target.value); setRangePreset("custom"); }} className="h-10 rounded-lg border border-ink-200 bg-white px-3 text-sm outline-none focus:border-brand-500" /></label>
+            <div className="w-64"><p className="mb-1 text-xs font-medium text-ink-500">From – To</p><DateRangePicker from={start} to={end} onChange={(range) => { if (range.from) setStart(range.from); if (range.to) setEnd(range.to); setRangePreset("custom"); }} /></div>
             <div><p className="mb-1 text-xs font-medium text-ink-500">Team</p><FilterSelect value={teamId} onChange={setTeamId} className="w-52" options={[{ value: "", label: "All visible teams" }, ...(report?.filterOptions.teams ?? []).map((team) => ({ value: team.id, label: team.name }))]} /></div>
             <div className="min-w-56 flex-1"><p className="mb-1 text-xs font-medium text-ink-500">Project, task or employee</p><SearchBar value={search} onChange={setSearch} placeholder="Search report data" /></div>
             <Button variant="outline" leftIcon={<Download size={15} />} onClick={exportCsv} disabled={!report || loading}>Export CSV</Button>

@@ -7,6 +7,7 @@ import { AccountSuspendedPage } from "@/features/auth/AccountSuspendedPage";
 import { DashboardPage } from "@/features/dashboard/DashboardPage";
 import { ProjectsPage } from "@/features/projects/ProjectsPage";
 import { ProjectDetailPage } from "@/features/projects/ProjectDetailPage";
+import { MilestonesPage } from "@/features/projects/MilestonesPage";
 import { ResourcesPage } from "@/features/resources/ResourcesPage";
 import { ReportsPage } from "@/features/reports/ReportsPage";
 import { TeamReportDetailPage } from "@/features/reports/TeamReportDetailPage";
@@ -51,7 +52,7 @@ export const router = createBrowserRouter([
     children: [{ element: <AppLayout />, children: [
       { path: "/projects", element: <ProjectsPage /> },
       { path: "/projects/:projectId", element: <ProjectDetailPage /> },
-      { path: "/milestones", element: <PlaceholderPage title="Milestones" /> },
+      { path: "/milestones", element: <MilestonesPage /> },
     ] }],
   },
   {

@@ -13,7 +13,7 @@ import {
   Trophy,
   Users,
 } from "lucide-react";
-import { Badge, Card, FilterSelect, MemberAvatar, ProgressBar, SearchBar, initialsOf } from "@/components/common";
+import { Badge, Card, DateRangePicker, FilterSelect, MemberAvatar, ProgressBar, SearchBar, initialsOf } from "@/components/common";
 import { api, ApiError } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import type { TeamMemberProductivityReport, TeamMemberProductivityRow } from "@/types/tenant";
@@ -73,8 +73,7 @@ export function TeamReportDetailPage() {
 
       <Card className="overflow-visible p-4"><div className="flex flex-wrap items-end gap-3">
         <div><p className="mb-1 text-xs font-medium text-ink-500">Date range</p><FilterSelect value={preset} onChange={chooseRange} className="w-36" options={[{ value: "today", label: "Today" }, { value: "7d", label: "Last 7 days" }, { value: "30d", label: "Last 30 days" }, { value: "custom", label: "Custom range" }]} /></div>
-        <label><span className="mb-1 block text-xs font-medium text-ink-500">From</span><input type="date" value={start} max={end} onChange={(event) => { setStart(event.target.value); setPreset("custom"); }} className="h-10 rounded-lg border border-ink-200 bg-white px-3 text-sm outline-none focus:border-brand-500" /></label>
-        <label><span className="mb-1 block text-xs font-medium text-ink-500">To</span><input type="date" value={end} min={start} onChange={(event) => { setEnd(event.target.value); setPreset("custom"); }} className="h-10 rounded-lg border border-ink-200 bg-white px-3 text-sm outline-none focus:border-brand-500" /></label>
+        <div className="w-64"><p className="mb-1 text-xs font-medium text-ink-500">From – To</p><DateRangePicker from={start} to={end} onChange={(range) => { if (range.from) setStart(range.from); if (range.to) setEnd(range.to); setPreset("custom"); }} /></div>
         <div className="min-w-64 flex-1"><p className="mb-1 text-xs font-medium text-ink-500">Member, project or task</p><SearchBar value={search} onChange={setSearch} placeholder="Search team performance" /></div>
       </div>{start > end && <p className="mt-3 rounded-lg bg-danger-50 px-3 py-2 text-sm text-danger-700">The start date must be before the end date.</p>}</Card>
 

@@ -80,6 +80,7 @@ const plannerQuery = z.object({
   search: z.string().trim().max(255).optional(),
   occupancy: z.enum(["all", "occupied", "unoccupied"]).default("all"),
   teamId: z.string().optional(),
+  employeeIds: z.string().optional(),
 });
 
 resourcesRouter.get("/planner", requirePermission("resources", "view"), async (req, res) => {
@@ -96,6 +97,7 @@ resourcesRouter.get("/planner", requirePermission("resources", "view"), async (r
     resourceUserScope(tid, uid),
     prisma.team.findMany({ where: { tenantId: tid, status: "active" }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
   ]);
+  const employeeOptions = await prisma.companyUser.findMany({ where: scope, select: { id: true, name: true, email: true }, orderBy: { name: "asc" } });
   const workingDays = schedule?.workingDays ?? [1, 2, 3, 4, 5];
   const capacityMinutes = schedule ? minutesBetween(schedule.startTime, schedule.endTime, schedule.breakMinutes) : 480;
   const holidayByDate = new Map(holidays.map((holiday) => [localDateKey(holiday.date, company.timezone), holiday]));
@@ -105,6 +107,8 @@ resourcesRouter.get("/planner", requirePermission("resources", "view"), async (r
     where.AND = [...(where.AND as Prisma.CompanyUserWhereInput[]), { OR: [{ name: { contains: input.search, mode: "insensitive" } }, { email: { contains: input.search, mode: "insensitive" } }, { id: { contains: employeeIdSearch, mode: "insensitive" } }] }];
   }
   if (input.teamId) where.AND = [...(where.AND as Prisma.CompanyUserWhereInput[]), { teamMemberships: { some: { teamId: input.teamId } } }];
+  const employeeIds = input.employeeIds ? input.employeeIds.split(",").map((id) => id.trim()).filter(Boolean) : [];
+  if (employeeIds.length) where.AND = [...(where.AND as Prisma.CompanyUserWhereInput[]), { id: { in: employeeIds } }];
   const users = await prisma.companyUser.findMany({
     where,
     select: {
@@ -172,7 +176,7 @@ resourcesRouter.get("/planner", requirePermission("resources", "view"), async (r
   res.json({
     range: { start: input.start, end: input.end, timezone: company.timezone },
     schedule: { id: schedule?.id ?? null, name: schedule?.name ?? "Default", workingDays, startTime: schedule?.startTime ?? "09:00", endTime: schedule?.endTime ?? "18:00", breakMinutes: schedule?.breakMinutes ?? 60, dailyMinutes: capacityMinutes },
-    days: globalDays, employees, filterOptions: { teams },
+    days: globalDays, employees, filterOptions: { teams, employees: employeeOptions },
   });
 });
 

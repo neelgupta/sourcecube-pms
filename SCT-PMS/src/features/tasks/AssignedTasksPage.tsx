@@ -98,10 +98,13 @@ export function AssignedTasksPage() {
 
   async function startTimer(task: AssignedTask) {
     setTimerBusy(task.id);
+    setError(null);
     try {
       const { entry } = await api.startTaskTimer(task.project.id, task.id);
       setActiveTimer(entry);
       setNow(Date.now());
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Timer could not be started");
     } finally {
       setTimerBusy(null);
     }

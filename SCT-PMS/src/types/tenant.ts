@@ -290,7 +290,7 @@ export interface ResourcePlannerResponse {
   schedule: { id?: ID | null; name: string; workingDays: number[]; startTime: string; endTime: string; breakMinutes: number; dailyMinutes: number };
   days: ResourcePlannerDay[];
   employees: ResourcePlannerEmployee[];
-  filterOptions: { teams: { id: ID; name: string }[] };
+  filterOptions: { teams: { id: ID; name: string }[]; employees: { id: ID; name: string; email: string }[] };
 }
 
 export interface ResourcePlannerDayDetail {
@@ -555,6 +555,22 @@ export interface ProjectMilestone {
   progress: number;
   tags: string[];
   _count?: { tasks: number };
+}
+
+export interface AllMilestone {
+  id: ID;
+  name: string;
+  description?: string | null;
+  owner?: TeamMemberSummary | null;
+  startDate?: string | null;
+  releaseDate?: string | null;
+  progress: number;
+  tags: string[];
+  project: { id: ID; name: string; key: string };
+  taskCount: number;
+  completedTaskCount: number;
+  estimatedMinutes: number;
+  trackedSeconds: number;
 }
 
 export interface ProjectWorkspace {

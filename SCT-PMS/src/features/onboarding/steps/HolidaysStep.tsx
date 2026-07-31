@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Trash2 } from "lucide-react";
-import { Button, Checkbox, Field, Input, Select } from "@/components/common";
+import { Button, Checkbox, DatePicker, Field, Input, Select } from "@/components/common";
 import { api, ApiError } from "@/lib/api";
 import type { Holiday, HolidayType } from "@/types/tenant";
 
@@ -57,7 +57,7 @@ export function HolidaysStep({ onSaved }: { onSaved: () => void }) {
           <Input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} required />
         </Field>
         <Field label="Date" className="mb-0">
-          <Input type="date" value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} required />
+          <DatePicker value={form.date} onChange={(value) => setForm((f) => ({ ...f, date: value ?? "" }))} allowClear={false} />
         </Field>
         <Field label="Type" className="mb-0">
           <Select value={form.type} onChange={(e) => setForm((f) => ({ ...f, type: e.target.value as HolidayType }))}>

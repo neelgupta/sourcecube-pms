@@ -157,28 +157,34 @@ export function OverviewTab() {
               {dueTasks.length === 0 ? (
                 <EmptyState title="Nothing due" className="py-8" />
               ) : (
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-y border-ink-200 bg-surface-subtle">
-                      <th className="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-ink-500">Task Name</th>
-                      <th className="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-ink-500">Project Name</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {dueTasks.map((task) => (
-                      <tr key={task.id} className="border-b border-ink-100 last:border-0 hover:bg-brand-50/40">
-                        <td className="px-3 py-2.5">
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs font-medium text-ink-400">{task.code}</span>
-                            <CheckCircle2 size={15} className="text-ink-300" />
-                            <Link to={`/projects/${task.project.id}?task=${task.id}`} className="truncate font-medium text-brand-600 hover:underline">{task.name}</Link>
-                          </div>
-                        </td>
-                        <td className="truncate px-3 py-2.5 text-ink-700">{task.project.name}</td>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[420px] table-fixed text-sm">
+                    <colgroup>
+                      <col className="w-2/3" />
+                      <col className="w-1/3" />
+                    </colgroup>
+                    <thead>
+                      <tr className="border-y border-ink-200 bg-surface-subtle">
+                        <th className="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-ink-500">Task Name</th>
+                        <th className="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-ink-500">Project Name</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {dueTasks.map((task) => (
+                        <tr key={task.id} className="border-b border-ink-100 last:border-0 hover:bg-brand-50/40">
+                          <td className="px-3 py-2.5">
+                            <div className="flex min-w-0 items-center gap-2">
+                              <span className="shrink-0 text-xs font-medium text-ink-400">{task.code}</span>
+                              <CheckCircle2 size={15} className="shrink-0 text-ink-300" />
+                              <Link to={`/projects/${task.project.id}?task=${task.id}`} className="truncate font-medium text-brand-600 hover:underline">{task.name}</Link>
+                            </div>
+                          </td>
+                          <td className="truncate px-3 py-2.5 text-ink-700">{task.project.name}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               )}
             </CardBody>
           </Card>
