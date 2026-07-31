@@ -53,6 +53,7 @@ function isOverdue(task: AssignedTask) {
 export function AssignedTasksPage() {
   const { session } = useSession();
   const canEditTaskPermission = usePermission("tasks", "edit");
+  const canDeleteTaskPermission = usePermission("tasks", "manage");
   const [tasks, setTasks] = useState<AssignedTask[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -231,7 +232,9 @@ export function AssignedTasksPage() {
         taskActivities={[]}
         currentUserId={currentUserId}
         canEdit={canEditTaskPermission}
+        canDelete={canDeleteTaskPermission}
         onTaskChanged={syncOpenTask}
+        onTaskDeleted={() => { setOpenTask(null); setDrawerContext(null); load(); }}
         onProjectTimeChanged={() => {}}
         onClose={() => { setOpenTask(null); setDrawerContext(null); load(); }}
       />
