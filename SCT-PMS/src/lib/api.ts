@@ -41,6 +41,8 @@ import type {
   ResourcePlannerDayDetail,
   TeamProductivityReport,
   TeamMemberProductivityReport,
+  ProjectPerformanceReport,
+  TimeUtilisationReport,
   ChatChannel,
   ChatMessage,
   ChatUser,
@@ -94,6 +96,8 @@ export const api = {
     }),
   logout: () => request<void>("/auth/logout", { method: "POST" }),
   me: () => request<{ user: unknown; company?: unknown }>("/auth/me"),
+  changePassword: (input: { currentPassword: string; newPassword: string }) =>
+    request<void>("/auth/change-password", { method: "POST", body: JSON.stringify(input) }),
 
   listCompanies: () => request<{ companies: Company[]; stats: CompanyStats }>("/companies"),
   getCompany: (id: string) => request<{ company: Company & { companyUsers: CompanyUser[] } }>(`/companies/${id}`),
@@ -151,7 +155,18 @@ export const api = {
     const params = new URLSearchParams();
     Object.entries(input).forEach(([key, value]) => { if (value) params.set(key, value); });
     return request<TeamMemberProductivityReport>(`/reports/team-productivity/${teamId}/members?${params.toString()}`);
-  },  saveSchedule: (input: { name?: string; workingDays: number[]; startTime: string; endTime: string; breakMinutes: number }) =>
+  },
+  getProjectPerformanceReport: (input: { start: string; end: string; search?: string }) => {
+    const params = new URLSearchParams();
+    Object.entries(input).forEach(([key, value]) => { if (value) params.set(key, value); });
+    return request<ProjectPerformanceReport>(`/reports/project-performance?${params.toString()}`);
+  },
+  getTimeUtilisationReport: (input: { start: string; end: string; teamId?: string; search?: string; billable?: "all" | "billable" | "non_billable" }) => {
+    const params = new URLSearchParams();
+    Object.entries(input).forEach(([key, value]) => { if (value) params.set(key, value); });
+    return request<TimeUtilisationReport>(`/reports/time-utilisation?${params.toString()}`);
+  },
+  saveSchedule: (input: { name?: string; workingDays: number[]; startTime: string; endTime: string; breakMinutes: number }) =>
     request<{ schedule: WorkingSchedule }>("/onboarding/schedules", { method: "POST", body: JSON.stringify(input) }),
 
   listDepartments: () => request<{ departments: Department[] }>("/onboarding/departments"),

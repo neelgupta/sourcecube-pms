@@ -53,7 +53,16 @@ export function MessageThread({
 
     const socket = getChatSocket();
     socket.emit("channel:join", channel.id);
-    return () => { socket.emit("channel:leave", channel.id); };
+    // Socket.IO rejoins no rooms automatically after a dropped connection recovers —
+    // "connect" fires on every reconnect too, so without this the client silently stops
+    // receiving message:new/channel:read for whatever channel is open until it's switched
+    // away from and back (this was the cause of intermittent missed realtime updates).
+    function rejoinOnReconnect() { socket.emit("channel:join", channel.id); }
+    socket.on("connect", rejoinOnReconnect);
+    return () => {
+      socket.off("connect", rejoinOnReconnect);
+      socket.emit("channel:leave", channel.id);
+    };
   }, [channel.id]);
 
   useEffect(() => {
@@ -171,8 +180,10 @@ export function MessageThread({
         <header className="flex items-center gap-2 border-b border-ink-200 px-4 py-3">
           <div className="min-w-0">
             <p className="truncate font-semibold text-ink-900">{channelTitle(channel, currentUserId)}</p>
-            {channel.type === "dm" ? (
+            {channel.type === "dm" && otherMember ? (
               <p className={cn("truncate text-xs", isOtherOnline ? "text-success-600" : "text-ink-400")}>{isOtherOnline ? "Online" : "Offline"}</p>
+            ) : channel.type === "dm" ? (
+              <p className="truncate text-xs text-ink-400">Only visible to you</p>
             ) : channel.description ? (
               <p className="truncate text-xs text-ink-500">{channel.description}</p>
             ) : null}
@@ -307,7 +318,11 @@ function channelTitle(channel: ChatChannel, currentUserId: string) {
   if (channel.type === "project") return channel.project?.name ?? channel.name ?? "Project channel";
   if (channel.type === "dm") {
     const other = channel.members.find((member) => member.userId !== currentUserId);
-    return other?.user.name ?? "Direct message";
+    if (!other) {
+      const self = channel.members.find((member) => member.userId === currentUserId);
+      return self ? `${self.user.name} (you)` : "Notes to self";
+    }
+    return other.user.name;
   }
   return channel.name ?? "Group";
 }

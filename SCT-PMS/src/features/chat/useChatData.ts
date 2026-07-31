@@ -70,6 +70,19 @@ export function useChatData() {
       });
     }
 
+    // A dropped connection can miss events entirely (Socket.IO doesn't replay them), so on
+    // every reconnect — not just first connect — pull a fresh snapshot to backfill whatever
+    // was missed while offline, rather than leaving stale unread counts/notifications.
+    let hasConnectedBefore = false;
+    function onConnect() {
+      if (hasConnectedBefore) {
+        loadChannels();
+        loadNotifications();
+      }
+      hasConnectedBefore = true;
+    }
+
+    socket.on("connect", onConnect);
     socket.on("message:new", bumpChannel);
     socket.on("channel:new", onNewChannel);
     socket.on("channel:updated", onChannelUpdated);
@@ -78,6 +91,7 @@ export function useChatData() {
     socket.on("presence:online", onPresenceOnline);
     socket.on("presence:offline", onPresenceOffline);
     return () => {
+      socket.off("connect", onConnect);
       socket.off("message:new", bumpChannel);
       socket.off("channel:new", onNewChannel);
       socket.off("channel:updated", onChannelUpdated);

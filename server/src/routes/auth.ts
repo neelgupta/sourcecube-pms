@@ -87,6 +87,41 @@ authRouter.post("/logout", (_req, res) => {
   res.status(204).end();
 });
 
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1),
+  newPassword: z.string().min(8, "New password must be at least 8 characters"),
+});
+
+authRouter.post("/change-password", requireAuth, async (req, res) => {
+  const parsed = changePasswordSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.issues.map((issue) => issue.message).join(", ") });
+    return;
+  }
+  const { currentPassword, newPassword } = parsed.data;
+
+  if (req.auth!.kind === "platform") {
+    const user = await prisma.platformUser.findUnique({ where: { id: req.auth!.userId } });
+    if (!user || !(await bcrypt.compare(currentPassword, user.passwordHash))) {
+      res.status(400).json({ error: "Current password is incorrect" });
+      return;
+    }
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+    await prisma.platformUser.update({ where: { id: user.id }, data: { passwordHash } });
+    res.status(204).end();
+    return;
+  }
+
+  const user = await prisma.companyUser.findUnique({ where: { id: req.auth!.userId } });
+  if (!user || !user.passwordHash || !(await bcrypt.compare(currentPassword, user.passwordHash))) {
+    res.status(400).json({ error: "Current password is incorrect" });
+    return;
+  }
+  const passwordHash = await bcrypt.hash(newPassword, 10);
+  await prisma.companyUser.update({ where: { id: user.id }, data: { passwordHash } });
+  res.status(204).end();
+});
+
 authRouter.get("/me", requireAuth, async (req, res) => {
   if (req.auth!.kind === "platform") {
     const user = await prisma.platformUser.findUnique({ where: { id: req.auth!.userId } });

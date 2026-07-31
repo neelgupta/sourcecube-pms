@@ -15,6 +15,7 @@ const titles: Record<string, string> = {
   "/resources": "Resource",
   "/timesheet": "Timesheet",
   "/reports": "Reports",
+  "/account": "Account settings",
 };
 
 export function AppLayout() {

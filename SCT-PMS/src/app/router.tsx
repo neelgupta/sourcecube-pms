@@ -21,6 +21,7 @@ import { AuditLogPage } from "@/features/saas/AuditLogPage";
 import { OnboardingWizardPage } from "@/features/onboarding/OnboardingWizardPage";
 import { TeamRolesPage } from "@/features/team/TeamRolesPage";
 import { SettingsPage } from "@/features/settings/SettingsPage";
+import { AccountSettingsPage } from "@/features/settings/AccountSettingsPage";
 import { DepartmentsPage } from "@/features/departments/DepartmentsPage";
 import { TeamsPage } from "@/features/teams/TeamsPage";
 
@@ -106,6 +107,12 @@ export const router = createBrowserRouter([
   {
     element: <ProtectedRoute requireKind="platform" />,
     children: [{ element: <AppLayout />, children: saasPortalRoutes }],
+  },
+  {
+    // Personal account settings (change password) — open to any authenticated user,
+    // company or platform, unlike /settings which is tenant-wide and admin-only.
+    element: <ProtectedRoute />,
+    children: [{ element: <AppLayout />, children: [{ path: "/account", element: <AccountSettingsPage /> }] }],
   },
   { path: "*", element: <RootRedirect /> },
 ]);

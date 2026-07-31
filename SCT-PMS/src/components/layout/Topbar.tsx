@@ -40,8 +40,8 @@ export function Topbar({ title, onMenuClick }: { title: string; onMenuClick: () 
               </button>
             }
             items={[
-              { id: "profile", label: currentUser?.name ?? "Account", icon: <UserIcon size={15} /> },
-              { id: "settings", label: "Settings", icon: <Settings size={15} /> },
+              { id: "profile", label: currentUser?.name ?? "Account", icon: <UserIcon size={15} />, onSelect: () => navigate("/account") },
+              { id: "settings", label: "Settings", icon: <Settings size={15} />, onSelect: () => navigate("/account") },
               {
                 id: "logout",
                 label: "Log out",

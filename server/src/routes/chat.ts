@@ -143,20 +143,23 @@ chatRouter.post("/channels", requirePermission("chat", "create"), async (req, re
   const memberIds = [...new Set([uid, ...data.memberIds])];
 
   if (data.type === "dm") {
-    if (memberIds.length !== 2) {
+    const isSelfDm = memberIds.length === 1 && memberIds[0] === uid;
+    if (!isSelfDm && memberIds.length !== 2) {
       res.status(400).json({ error: "A direct message must have exactly 2 participants" });
       return;
     }
     const existing = await prisma.chatChannel.findFirst({
-      where: {
-        tenantId: tid,
-        type: "dm",
-        members: { every: { userId: { in: memberIds } } },
-        AND: [{ members: { some: { userId: memberIds[0] } } }, { members: { some: { userId: memberIds[1] } } }],
-      },
+      where: isSelfDm
+        ? { tenantId: tid, type: "dm", members: { every: { userId: uid } } }
+        : {
+            tenantId: tid,
+            type: "dm",
+            members: { every: { userId: { in: memberIds } } },
+            AND: [{ members: { some: { userId: memberIds[0] } } }, { members: { some: { userId: memberIds[1] } } }],
+          },
       include: { members: true },
     });
-    if (existing && existing.members.length === 2) {
+    if (existing && existing.members.length === memberIds.length) {
       res.json({ channel: await channelSummary(tid, existing.id) });
       return;
     }
@@ -181,10 +184,13 @@ chatRouter.post("/channels", requirePermission("chat", "create"), async (req, re
 
   await recordAudit({ actor: req.auth!, action: "chat.channel.created", tenantId: tid, targetType: "ChatChannel", targetId: channel.id, metadata: { type: data.type } });
 
-  for (const memberId of memberIds) {
-    if (memberId === uid) continue;
-    getChatIO()?.to(`user:${memberId}`).emit("channel:new", { channelId: channel.id });
-    await createNotification({ tenantId: tid, userId: memberId, type: "channel_invite", title: data.type === "dm" ? "New direct message" : `Added to ${data.name ?? "a group"}`, channelId: channel.id, actorId: uid });
+  if (memberIds.some((memberId) => memberId !== uid)) {
+    const creator = await prisma.companyUser.findFirst({ where: { id: uid, tenantId: tid }, select: { name: true } });
+    for (const memberId of memberIds) {
+      if (memberId === uid) continue;
+      getChatIO()?.to(`user:${memberId}`).emit("channel:new", { channelId: channel.id });
+      await createNotification({ tenantId: tid, userId: memberId, type: "channel_invite", title: data.type === "dm" ? `New direct message from ${creator?.name ?? "someone"}` : `${creator?.name ?? "Someone"} added you to ${data.name ?? "a group"}`, channelId: channel.id, actorId: uid });
+    }
   }
 
   res.status(201).json({ channel: await channelSummary(tid, channel.id) });
@@ -255,9 +261,10 @@ chatRouter.post("/channels/:id/members", requirePermission("chat", "invite"), as
     data: newMemberIds.map((memberId) => ({ tenantId: tid, channelId, userId: memberId })),
   });
   await recordAudit({ actor: req.auth!, action: "chat.channel.members_added", tenantId: tid, targetType: "ChatChannel", targetId: channelId, metadata: { memberIds: newMemberIds } });
+  const inviter = await prisma.companyUser.findFirst({ where: { id: uid, tenantId: tid }, select: { name: true } });
   for (const memberId of newMemberIds) {
     getChatIO()?.to(`user:${memberId}`).emit("channel:new", { channelId });
-    await createNotification({ tenantId: tid, userId: memberId, type: "channel_invite", title: `Added to ${channel.name ?? "a group"}`, channelId, actorId: uid });
+    await createNotification({ tenantId: tid, userId: memberId, type: "channel_invite", title: `${inviter?.name ?? "Someone"} added you to ${channel.name ?? "a group"}`, channelId, actorId: uid });
   }
   const updated = await channelSummary(tid, channelId);
   getChatIO()?.to(`channel:${channelId}`).emit("channel:updated", updated);
@@ -451,20 +458,21 @@ chatRouter.post("/channels/:id/messages", requirePermission("chat", "create"), a
 
   const notificationBody = data.body ? plainTextBody(data.body).slice(0, 140) : undefined;
 
+  const senderName = message.author.name;
   if (channel.type === "announcement") {
     const everyone = await prisma.companyUser.findMany({ where: { tenantId: tid, accountStatus: "active", id: { not: uid } }, select: { id: true } });
     for (const target of everyone) {
-      await createNotification({ tenantId: tid, userId: target.id, type: "announcement", title: "New announcement", body: notificationBody, channelId, messageId: message.id, actorId: uid });
+      await createNotification({ tenantId: tid, userId: target.id, type: "announcement", title: `New announcement from ${senderName}`, body: notificationBody, channelId, messageId: message.id, actorId: uid });
     }
   } else {
     const recipients = await prisma.chatChannelMember.findMany({ where: { channelId, userId: { not: uid } }, select: { userId: true } });
     for (const recipient of recipients) {
       if (mentionIds.includes(recipient.userId)) continue;
-      await createNotification({ tenantId: tid, userId: recipient.userId, type: "message", title: "New message", body: notificationBody, channelId, messageId: message.id, actorId: uid });
+      await createNotification({ tenantId: tid, userId: recipient.userId, type: "message", title: `New message from ${senderName}`, body: notificationBody, channelId, messageId: message.id, actorId: uid });
     }
   }
   for (const mentionUserId of mentionIds) {
-    await createNotification({ tenantId: tid, userId: mentionUserId, type: "mention", title: "You were mentioned", body: notificationBody, channelId, messageId: message.id, actorId: uid });
+    await createNotification({ tenantId: tid, userId: mentionUserId, type: "mention", title: `${senderName} mentioned you`, body: notificationBody, channelId, messageId: message.id, actorId: uid });
   }
 
   res.status(201).json({ message });

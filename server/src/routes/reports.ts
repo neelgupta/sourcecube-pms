@@ -54,6 +54,24 @@ async function accessibleTaskScope(tid: string, uid: string): Promise<{ scope: P
   return { scope: { tenantId: tid, OR: access }, elevated: false };
 }
 
+/** Mirrors projects.ts's projectReadScope — kept as a local copy rather than a cross-file
+ *  import since every route file in this codebase owns its own visibility scoping
+ *  (see accessibleTaskScope above, resourceUserScope in resources.ts). */
+async function accessibleProjectScope(tid: string, uid: string): Promise<{ scope: Prisma.ProjectWhereInput; elevated: boolean }> {
+  const user = await prisma.companyUser.findFirst({ where: { id: uid, tenantId: tid, accountStatus: "active" }, select: { roles: true } });
+  const roles = user?.roles ?? [];
+  if (roles.some((role) => elevatedRoles.has(role))) return { scope: { tenantId: tid }, elevated: true };
+  const access: Prisma.ProjectWhereInput[] = [
+    { ownerId: uid },
+    { managerId: uid },
+    { members: { some: { userId: uid } } },
+    { tasks: { some: { assigneeId: uid } } },
+  ];
+  if (roles.includes("department_head")) access.push({ department: { headUserId: uid } });
+  if (roles.includes("team_lead")) access.push({ tasks: { some: { assignee: { teamMemberships: { some: { team: { leadUserId: uid } } } } } } });
+  return { scope: { tenantId: tid, OR: access }, elevated: false };
+}
+
 reportsRouter.get("/team-productivity", requirePermission("resources", "view"), async (req, res) => {
   const parsed = querySchema.safeParse(req.query);
   if (!parsed.success) { res.status(400).json({ error: "A valid report date range is required" }); return; }
@@ -301,5 +319,220 @@ reportsRouter.get("/team-productivity/:teamId/members", requirePermission("resou
     ranking,
     members,
     methodology: "Ranking uses task progress first, then completed tasks, fewer overdue tasks and tracked time. Capacity follows company working days, holidays, shift hours and break policy. Time is counted from saved work logs on tasks allocated to this team.",
+  });
+});
+
+// ---- Project Performance ----
+reportsRouter.get("/project-performance", requirePermission("projects", "view"), async (req, res) => {
+  const parsed = querySchema.omit({ teamId: true }).safeParse(req.query);
+  if (!parsed.success) { res.status(400).json({ error: "A valid report date range is required" }); return; }
+  const input = parsed.data;
+  const tid = tenantId(req), uid = userId(req);
+  const [{ scope }, company] = await Promise.all([
+    accessibleProjectScope(tid, uid),
+    prisma.company.findUniqueOrThrow({ where: { id: tid }, select: { timezone: true } }),
+  ]);
+
+  const projects = await prisma.project.findMany({
+    where: { AND: [scope, { isArchived: false }] },
+    select: {
+      id: true, name: true, key: true, clientName: true, status: true, priority: true,
+      startDate: true, dueDate: true, actualStartDate: true, actualEndDate: true,
+      completionPercent: true, healthScore: true, healthStatus: true,
+      budget: true, budgetSpent: true, budgetStatus: true, trackedSeconds: true,
+      estimatedHours: true, createdAt: true,
+      manager: { select: { id: true, name: true } },
+      owner: { select: { id: true, name: true } },
+      _count: { select: { tasks: true, milestones: true } },
+      tasks: { select: { status: true } },
+      milestones: { select: { progress: true } },
+    },
+    orderBy: { dueDate: "asc" },
+  });
+
+  const search = input.search?.toLowerCase();
+  const visible = search
+    ? projects.filter((project) => `${project.name} ${project.key} ${project.clientName ?? ""} ${project.manager?.name ?? ""}`.toLowerCase().includes(search))
+    : projects;
+
+  const today = new Date();
+  const rows = visible.map((project) => {
+    const doneTasks = project.tasks.filter((task) => task.status === "done").length;
+    const isOverdue = project.status !== "completed" && project.status !== "cancelled" && project.dueDate != null && project.dueDate < today;
+    const daysRemaining = project.dueDate ? Math.ceil((project.dueDate.getTime() - today.getTime()) / 86400000) : null;
+    const milestoneProgress = project.milestones.length
+      ? Math.round(project.milestones.reduce((sum, milestone) => sum + milestone.progress, 0) / project.milestones.length)
+      : null;
+    const budgetNumber = project.budget != null ? Number(project.budget) : null;
+    const spentNumber = Number(project.budgetSpent);
+    return {
+      id: project.id, name: project.name, key: project.key, clientName: project.clientName,
+      status: project.status, priority: project.priority,
+      manager: project.manager, owner: project.owner,
+      startDate: project.startDate, dueDate: project.dueDate,
+      actualStartDate: project.actualStartDate, actualEndDate: project.actualEndDate,
+      completionPercent: project.completionPercent,
+      healthScore: project.healthScore, healthStatus: project.healthStatus,
+      budget: budgetNumber, budgetSpent: spentNumber, budgetStatus: project.budgetStatus,
+      budgetUtilizationPercent: budgetNumber ? Math.round((spentNumber / budgetNumber) * 100) : null,
+      estimatedHours: project.estimatedHours,
+      trackedSeconds: project.trackedSeconds,
+      totalTasks: project._count.tasks, completedTasks: doneTasks,
+      milestonesCount: project._count.milestones, milestoneProgress,
+      isOverdue, daysRemaining,
+    };
+  });
+
+  const inRange = rows.filter((row) => {
+    const createdKey = row.startDate ? localDateKey(row.startDate, company.timezone) : null;
+    const completedKey = row.actualEndDate ? localDateKey(row.actualEndDate, company.timezone) : null;
+    if (completedKey) return completedKey >= input.start && completedKey <= input.end;
+    if (createdKey) return createdKey <= input.end;
+    return true;
+  });
+
+  const overall = {
+    totalProjects: rows.length,
+    activeProjects: rows.filter((row) => row.status === "in_progress" || row.status === "planning").length,
+    completedProjects: rows.filter((row) => row.status === "completed").length,
+    onHoldProjects: rows.filter((row) => row.status === "on_hold").length,
+    overdueProjects: rows.filter((row) => row.isOverdue).length,
+    atRiskProjects: rows.filter((row) => row.healthStatus === "at_risk" || row.healthStatus === "critical").length,
+    avgCompletionPercent: rows.length ? Math.round(rows.reduce((sum, row) => sum + row.completionPercent, 0) / rows.length) : 0,
+    avgHealthScore: (() => {
+      const scored = rows.filter((row) => row.healthScore != null);
+      return scored.length ? Math.round(scored.reduce((sum, row) => sum + (row.healthScore ?? 0), 0) / scored.length) : null;
+    })(),
+    totalBudget: rows.reduce((sum, row) => sum + (row.budget ?? 0), 0),
+    totalBudgetSpent: rows.reduce((sum, row) => sum + row.budgetSpent, 0),
+    totalTrackedSeconds: rows.reduce((sum, row) => sum + row.trackedSeconds, 0),
+  };
+
+  const statusBreakdown = (["new", "planning", "in_progress", "on_hold", "completed", "cancelled"] as const)
+    .map((status) => ({ status, count: rows.filter((row) => row.status === status).length }))
+    .filter((entry) => entry.count > 0);
+
+  const dates = keysBetween(input.start, input.end);
+  const completionTrend = dates.map((date) => ({
+    date,
+    completed: rows.filter((row) => row.actualEndDate && localDateKey(row.actualEndDate, company.timezone) === date).length,
+  }));
+
+  res.json({
+    range: { start: input.start, end: input.end },
+    overall,
+    statusBreakdown,
+    completionTrend,
+    projects: inRange.sort((a, b) => (a.dueDate?.getTime() ?? Infinity) - (b.dueDate?.getTime() ?? Infinity)),
+    methodology: "Health score and completion percentage are computed server-side whenever a task changes and stored on the project. Budget utilisation compares logged spend against the set budget. The trend counts projects whose actual end date falls inside the selected range.",
+  });
+});
+
+// ---- Time & Utilisation ----
+const timeUtilisationQuery = querySchema.extend({ billable: z.enum(["all", "billable", "non_billable"]).optional() });
+
+reportsRouter.get("/time-utilisation", requirePermission("resources", "view"), async (req, res) => {
+  const parsed = timeUtilisationQuery.safeParse(req.query);
+  if (!parsed.success) { res.status(400).json({ error: "A valid report date range is required" }); return; }
+  const input = parsed.data;
+  const dates = keysBetween(input.start, input.end);
+  if (!dates.length || dates[dates.length - 1] !== input.end) { res.status(400).json({ error: "Report range must be between 1 and 366 days" }); return; }
+  const tid = tenantId(req), uid = userId(req);
+  const [{ scope, elevated }, company, schedule, holidays, teams] = await Promise.all([
+    accessibleTaskScope(tid, uid),
+    prisma.company.findUniqueOrThrow({ where: { id: tid }, select: { timezone: true } }),
+    prisma.workingSchedule.findFirst({ where: { tenantId: tid }, orderBy: { createdAt: "asc" } }),
+    prisma.holiday.findMany({ where: { tenantId: tid, date: { gte: new Date(`${input.start}T00:00:00.000Z`), lt: new Date(`${addDays(input.end, 1)}T00:00:00.000Z`) } }, select: { date: true, optional: true } }),
+    prisma.team.findMany({ where: { tenantId: tid, status: "active" }, select: { id: true, name: true } }),
+  ]);
+
+  const employeeWhere: Prisma.CompanyUserWhereInput = elevated
+    ? { tenantId: tid, accountStatus: "active" }
+    : { tenantId: tid, accountStatus: "active", OR: [{ id: uid }, { projectTasksAssigned: { some: scope } }] };
+  const employees = await prisma.companyUser.findMany({
+    where: input.teamId ? { AND: [employeeWhere, { teamMemberships: { some: { teamId: input.teamId } } }] } : employeeWhere,
+    select: { id: true, name: true, email: true, teamMemberships: { select: { team: { select: { id: true, name: true } } } } },
+    orderBy: { name: "asc" },
+  });
+  const search = input.search?.toLowerCase();
+  const visibleEmployees = search ? employees.filter((employee) => employee.name.toLowerCase().includes(search)) : employees;
+  const employeeIds = visibleEmployees.map((employee) => employee.id);
+
+  const entries = await prisma.taskTimeEntry.findMany({
+    where: {
+      tenantId: tid, userId: { in: employeeIds },
+      startedAt: { gte: new Date(`${addDays(input.start, -1)}T00:00:00.000Z`), lt: new Date(`${addDays(input.end, 2)}T00:00:00.000Z`) },
+    },
+    select: { userId: true, startedAt: true, endedAt: true, durationSeconds: true, billable: true },
+  });
+  const rangeEntries = entries.filter((entry) => { const key = localDateKey(entry.startedAt, company.timezone); return key >= input.start && key <= input.end; });
+
+  const workingDays = schedule?.workingDays ?? [1, 2, 3, 4, 5];
+  const dailyMinutes = schedule ? minutesBetween(schedule.startTime, schedule.endTime, schedule.breakMinutes) : 480;
+  const holidayByDate = new Map(holidays.map((holiday) => [localDateKey(holiday.date, company.timezone), holiday]));
+  const capacityMinutes = dates.reduce((total, date) => {
+    const holiday = holidayByDate.get(date);
+    const working = workingDays.includes(dateFromKey(date).getUTCDay()) && (!holiday || holiday.optional);
+    return total + (working ? dailyMinutes : 0);
+  }, 0);
+  const workingDayCount = dates.filter((date) => {
+    const holiday = holidayByDate.get(date);
+    return workingDays.includes(dateFromKey(date).getUTCDay()) && (!holiday || holiday.optional);
+  }).length;
+
+  let members = visibleEmployees.map((employee) => {
+    const logs = rangeEntries.filter((entry) => entry.userId === employee.id);
+    const trackedSeconds = logs.reduce((total, entry) => total + effectiveDuration(entry), 0);
+    const billableSeconds = logs.filter((entry) => entry.billable).reduce((total, entry) => total + effectiveDuration(entry), 0);
+    const nonBillableSeconds = trackedSeconds - billableSeconds;
+    const activeDays = new Set(logs.map((entry) => localDateKey(entry.startedAt, company.timezone))).size;
+    return {
+      id: employee.id, name: employee.name, email: employee.email,
+      teams: employee.teamMemberships.map((membership) => membership.team),
+      capacityMinutes, workingDayCount, activeDays, idleDays: Math.max(0, workingDayCount - activeDays),
+      trackedSeconds, billableSeconds, nonBillableSeconds,
+      billablePercent: trackedSeconds ? Math.round((billableSeconds / trackedSeconds) * 100) : 0,
+      utilizationPercent: capacityMinutes ? Math.round((trackedSeconds / 60 / capacityMinutes) * 100) : 0,
+      overtimeMinutes: Math.max(0, Math.round(trackedSeconds / 60) - capacityMinutes),
+    };
+  });
+  if (input.billable === "billable") members = members.filter((member) => member.billableSeconds > 0);
+  if (input.billable === "non_billable") members = members.filter((member) => member.nonBillableSeconds > 0);
+  members.sort((a, b) => b.trackedSeconds - a.trackedSeconds || a.name.localeCompare(b.name));
+
+  const totalTrackedSeconds = members.reduce((sum, member) => sum + member.trackedSeconds, 0);
+  const totalBillableSeconds = members.reduce((sum, member) => sum + member.billableSeconds, 0);
+  const totalCapacityMinutes = capacityMinutes * members.length;
+
+  const daily = dates.map((date) => {
+    const logs = rangeEntries.filter((entry) => localDateKey(entry.startedAt, company.timezone) === date);
+    const trackedSeconds = logs.reduce((sum, entry) => sum + effectiveDuration(entry), 0);
+    const billableSeconds = logs.filter((entry) => entry.billable).reduce((sum, entry) => sum + effectiveDuration(entry), 0);
+    const holiday = holidayByDate.get(date);
+    const isWorkingDay = workingDays.includes(dateFromKey(date).getUTCDay()) && (!holiday || holiday.optional);
+    const dayCapacityMinutes = isWorkingDay ? dailyMinutes * members.length : 0;
+    return {
+      date, trackedSeconds, billableSeconds,
+      utilizationPercent: dayCapacityMinutes ? Math.round((trackedSeconds / 60 / dayCapacityMinutes) * 100) : 0,
+    };
+  });
+
+  res.json({
+    range: { start: input.start, end: input.end, timezone: company.timezone },
+    schedule: { name: schedule?.name ?? "Default", workingDays, startTime: schedule?.startTime ?? "09:00", endTime: schedule?.endTime ?? "18:00", breakMinutes: schedule?.breakMinutes ?? 60, dailyMinutes },
+    overall: {
+      employeesCount: members.length,
+      workingDayCount,
+      totalCapacityMinutes,
+      totalTrackedSeconds,
+      totalBillableSeconds,
+      totalNonBillableSeconds: totalTrackedSeconds - totalBillableSeconds,
+      billablePercent: totalTrackedSeconds ? Math.round((totalBillableSeconds / totalTrackedSeconds) * 100) : 0,
+      utilizationPercent: totalCapacityMinutes ? Math.round((totalTrackedSeconds / 60 / totalCapacityMinutes) * 100) : 0,
+    },
+    daily,
+    members,
+    filterOptions: { teams },
+    methodology: "Capacity follows the company working schedule (working days, shift hours, break policy) minus non-optional holidays, multiplied by the number of employees in view. Tracked and billable time comes from saved work logs on tasks the viewer can access.",
   });
 });

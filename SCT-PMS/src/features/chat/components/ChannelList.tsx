@@ -14,7 +14,11 @@ function channelLabel(channel: ChatChannel, currentUserId: string) {
   if (channel.type === "project") return channel.project?.name ?? channel.name ?? "Project";
   if (channel.type === "dm") {
     const other = channel.members.find((member) => member.userId !== currentUserId);
-    return other?.user.name ?? "Direct message";
+    if (!other) {
+      const self = channel.members.find((member) => member.userId === currentUserId);
+      return self ? `${self.user.name} (you)` : "Notes to self";
+    }
+    return other.user.name;
   }
   return channel.name ?? "Group";
 }
@@ -98,6 +102,7 @@ function Section({
         const lastMessage = channel.messages?.[0];
         const isDm = channel.type === "dm";
         const otherUser = isDm ? channel.members.find((m) => m.userId !== currentUserId)?.user : undefined;
+        const selfUser = isDm && !otherUser ? channel.members.find((m) => m.userId === currentUserId)?.user : undefined;
         const isOnline = isDm && otherUser ? onlineUserIds.has(otherUser.id) : false;
         return (
           <div
@@ -111,6 +116,8 @@ function Section({
               <span className="relative shrink-0">
                 {isDm && otherUser ? (
                   <MemberAvatar id={otherUser.id} name={otherUser.name} size="sm" status={isOnline ? "online" : "offline"} className="ring-0" />
+                ) : isDm && selfUser ? (
+                  <MemberAvatar id={selfUser.id} name={selfUser.name} size="sm" status="active" className="ring-0" />
                 ) : (
                   <span className="flex h-7 w-7 items-center justify-center rounded-full bg-ink-100 text-ink-500">{channelIcon(channel)}</span>
                 )}

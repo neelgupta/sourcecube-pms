@@ -28,6 +28,10 @@ export function NewChannelModal({
 
   const otherUsers = users.filter((user) => user.id !== currentUserId);
   const filtered = otherUsers.filter((user) => user.name.toLowerCase().includes(search.toLowerCase()));
+  const currentUser = users.find((user) => user.id === currentUserId);
+  const query = search.trim().toLowerCase();
+  const showSelfOption = mode === "dm" && Boolean(currentUser) &&
+    (query === "" || currentUser!.name.toLowerCase().includes(query) || "notes to self".includes(query) || "myself".includes(query));
 
   function toggle(userId: string) {
     if (mode === "dm") {
@@ -74,7 +78,17 @@ export function NewChannelModal({
           <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search people..." />
         </Field>
         <div className="max-h-64 space-y-1 overflow-y-auto rounded-lg border border-ink-200 p-1.5">
-          {filtered.length === 0 ? (
+          {showSelfOption && currentUser && (
+            <button onClick={() => toggle(currentUser.id)} className={`flex w-full items-center gap-2.5 rounded-md px-2 py-2 text-left transition-colors ${selected.includes(currentUser.id) ? "bg-brand-50" : "hover:bg-ink-100/60"}`}>
+              <MemberAvatar id={currentUser.id} name={currentUser.name} size="sm" status="active" className="ring-0" />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium text-ink-900">{currentUser.name} (you)</p>
+                <p className="truncate text-xs text-ink-400">Notes to self — save anything just for you</p>
+              </div>
+              {selected.includes(currentUser.id) && <span className="text-xs font-semibold text-brand-600">Selected</span>}
+            </button>
+          )}
+          {filtered.length === 0 && !showSelfOption ? (
             <p className="p-3 text-center text-sm text-ink-400">No matching people</p>
           ) : (
             filtered.map((user) => (

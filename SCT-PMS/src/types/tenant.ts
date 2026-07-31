@@ -247,6 +247,94 @@ export interface TeamMemberProductivityReport {
   members: TeamMemberProductivityRow[];
   methodology: string;
 }
+
+export interface ProjectPerformanceRow {
+  id: ID;
+  name: string;
+  key: string;
+  clientName?: string | null;
+  status: RealProjectStatus;
+  priority: ProjectPriority;
+  manager?: { id: ID; name: string } | null;
+  owner?: { id: ID; name: string } | null;
+  startDate?: string | null;
+  dueDate?: string | null;
+  actualStartDate?: string | null;
+  actualEndDate?: string | null;
+  completionPercent: number;
+  healthScore?: number | null;
+  healthStatus: ProjectHealthStatus;
+  budget?: number | null;
+  budgetSpent: number;
+  budgetStatus: ProjectBudgetStatus;
+  budgetUtilizationPercent?: number | null;
+  estimatedHours?: number | null;
+  trackedSeconds: number;
+  totalTasks: number;
+  completedTasks: number;
+  milestonesCount: number;
+  milestoneProgress?: number | null;
+  isOverdue: boolean;
+  daysRemaining?: number | null;
+}
+
+export interface ProjectPerformanceReport {
+  range: { start: string; end: string };
+  overall: {
+    totalProjects: number;
+    activeProjects: number;
+    completedProjects: number;
+    onHoldProjects: number;
+    overdueProjects: number;
+    atRiskProjects: number;
+    avgCompletionPercent: number;
+    avgHealthScore?: number | null;
+    totalBudget: number;
+    totalBudgetSpent: number;
+    totalTrackedSeconds: number;
+  };
+  statusBreakdown: Array<{ status: RealProjectStatus; count: number }>;
+  completionTrend: Array<{ date: string; completed: number }>;
+  projects: ProjectPerformanceRow[];
+  methodology: string;
+}
+
+export interface TimeUtilisationMemberRow {
+  id: ID;
+  name: string;
+  email: string;
+  teams: Array<{ id: ID; name: string }>;
+  capacityMinutes: number;
+  workingDayCount: number;
+  activeDays: number;
+  idleDays: number;
+  trackedSeconds: number;
+  billableSeconds: number;
+  nonBillableSeconds: number;
+  billablePercent: number;
+  utilizationPercent: number;
+  overtimeMinutes: number;
+}
+
+export interface TimeUtilisationReport {
+  range: { start: string; end: string; timezone: string };
+  schedule: { name: string; workingDays: number[]; startTime: string; endTime: string; breakMinutes: number; dailyMinutes: number };
+  overall: {
+    employeesCount: number;
+    workingDayCount: number;
+    totalCapacityMinutes: number;
+    totalTrackedSeconds: number;
+    totalBillableSeconds: number;
+    totalNonBillableSeconds: number;
+    billablePercent: number;
+    utilizationPercent: number;
+  };
+  daily: Array<{ date: string; trackedSeconds: number; billableSeconds: number; utilizationPercent: number }>;
+  members: TimeUtilisationMemberRow[];
+  filterOptions: { teams: Array<{ id: ID; name: string }> };
+  methodology: string;
+}
+
 export interface ResourcePlannerDay {
   date: string;
   label: string;
