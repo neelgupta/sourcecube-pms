@@ -56,6 +56,7 @@ import {
   Field,
   FilterSelect,
   Input,
+  Modal,
   ProgressBar,
   Select,
 } from "@/components/common";
@@ -174,6 +175,7 @@ export function ProjectDetailPage() {
   const canCreateTaskPermission = usePermission("tasks", "create");
   const canEditTaskPermission = usePermission("tasks", "edit");
   const canExportTaskPermission = usePermission("tasks", "export");
+  const canDeleteTaskPermission = usePermission("tasks", "manage");
 
   function load(silent = true) {
     if (!silent) setLoading(true);
@@ -204,6 +206,15 @@ export function ProjectDetailPage() {
       }),
     } : current);
     setSelectedTask((current) => current?.id === nextTask.id ? nextTask : current);
+    setFilterRevision((value) => value + 1);
+  }
+
+  function removeWorkspaceTask(taskId: string) {
+    setWorkspace((current) => current ? {
+      ...current,
+      sections: current.sections.map((section) => ({ ...section, tasks: section.tasks.filter((item) => item.id !== taskId) })),
+    } : current);
+    setSelectedTask((current) => current?.id === taskId ? null : current);
     setFilterRevision((value) => value + 1);
   }
 
@@ -459,7 +470,9 @@ export function ProjectDetailPage() {
         taskActivities={workspace.activities.filter((activity) => activity.targetId === selectedTask?.id)}
         currentUserId={currentUserId}
         canEdit={selectedTask ? canEditTask(selectedTask) : false}
+        canDelete={canDeleteTaskPermission}
         onTaskChanged={syncWorkspaceTask}
+        onTaskDeleted={removeWorkspaceTask}
         onProjectTimeChanged={syncProjectTrackedSeconds}
         onClose={() => setSelectedTask(null)}
       />
@@ -1693,7 +1706,9 @@ export function TaskWorkspaceDrawer({
   taskActivities,
   currentUserId,
   canEdit,
+  canDelete,
   onTaskChanged,
+  onTaskDeleted,
   onProjectTimeChanged,
   onClose,
 }: {
@@ -1706,7 +1721,9 @@ export function TaskWorkspaceDrawer({
   taskActivities: AuditLogEntry[];
   currentUserId: string;
   canEdit: boolean;
+  canDelete: boolean;
   onTaskChanged: (task: WorkspaceTask) => void;
+  onTaskDeleted: (taskId: string) => void;
   onProjectTimeChanged: (trackedSeconds: number) => void;
   onClose: () => void;
 }) {
@@ -1730,6 +1747,8 @@ export function TaskWorkspaceDrawer({
   const [subtaskName, setSubtaskName] = useState("");
   const [attachmentName, setAttachmentName] = useState("");
   const [attachmentUrl, setAttachmentUrl] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     setLocalTask(task);
@@ -1789,6 +1808,22 @@ export function TaskWorkspaceDrawer({
       setError(err instanceof ApiError ? err.message : "Task could not be updated");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function deleteTask() {
+    if (!canDelete) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      await api.deleteProjectTask(projectId, taskId);
+      setConfirmDelete(false);
+      onTaskDeleted(taskId);
+      onClose();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Task could not be deleted");
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -1987,6 +2022,11 @@ export function TaskWorkspaceDrawer({
               <Button size="sm" onClick={toggleTimer} disabled={!canEdit || timerBusy} className={cn("px-3", activeTimer ? "bg-danger-500 hover:bg-danger-600" : "bg-success-500 hover:bg-success-600")}>
                 {activeTimer ? <><span className="mr-1.5 h-3 w-3 rounded-sm bg-white" /> Stop</> : <><Play size={14} className="mr-1.5 fill-white" /> Start</>}
               </Button>
+              {canDelete && (
+                <Button size="sm" variant="outline" onClick={() => setConfirmDelete(true)} className="border-danger-200 px-3 text-danger-600 hover:bg-danger-50">
+                  <Trash2 size={14} className="mr-1.5" /> Delete
+                </Button>
+              )}
             </div>
           </div>
 
@@ -2061,6 +2101,22 @@ export function TaskWorkspaceDrawer({
       </div>
     </Drawer>
     <TimerStopDialog target={stopTarget} busy={timerBusy} onCancel={() => setStopTarget(null)} onSave={saveTimerLog} onDiscard={discardTimer} />
+    <Modal
+      open={confirmDelete}
+      onClose={() => setConfirmDelete(false)}
+      title={`Delete task ${currentTask.code}?`}
+      size="sm"
+      footer={
+        <>
+          <Button variant="outline" onClick={() => setConfirmDelete(false)} disabled={deleting}>Cancel</Button>
+          <Button variant="danger" onClick={deleteTask} disabled={deleting}>{deleting ? "Deleting…" : "Delete Task"}</Button>
+        </>
+      }
+    >
+      <p className="text-sm text-ink-600">
+        This permanently deletes <strong>{currentTask.name}</strong>, its subtasks, comments, checklist items, attachments, and time entries. This cannot be undone.
+      </p>
+    </Modal>
     </>
   );
 }

@@ -14,7 +14,7 @@ export function ChatPage() {
   const canPost = usePermission("chat", "create");
   const canManage = usePermission("chat", "manage");
   const canInvite = usePermission("chat", "invite") || canManage;
-  const { channels, loading, error, currentUserId, onlineUserIds, reloadChannels, markChannelRead, createChannel, updateChannel } = useChatData();
+  const { channels, loading, error, currentUserId, onlineUserIds, reloadChannels, markChannelRead, createChannel, updateChannel, setChannelFavorite } = useChatData();
 
   const [users, setUsers] = useState<ChatUser[]>([]);
   const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
@@ -57,9 +57,10 @@ export function ChatPage() {
         onlineUserIds={onlineUserIds}
         onSelect={selectChannel}
         onCreateNew={() => setShowNewChannel(true)}
+        onToggleFavorite={setChannelFavorite}
       />
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
         <div className="flex items-center gap-1 border-b border-ink-200 px-3 py-1.5">
           <button
             onClick={() => setShowDirectory(true)}

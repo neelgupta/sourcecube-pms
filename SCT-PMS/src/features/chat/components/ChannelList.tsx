@@ -1,4 +1,4 @@
-import { Hash, Megaphone, Plus, Users } from "lucide-react";
+import { Hash, Megaphone, Plus, Star, Users } from "lucide-react";
 import { Badge, MemberAvatar } from "@/components/common";
 import { cn } from "@/lib/cn";
 import type { ChatChannel } from "@/types/tenant";
@@ -34,6 +34,7 @@ export function ChannelList({
   onlineUserIds,
   onSelect,
   onCreateNew,
+  onToggleFavorite,
 }: {
   channels: ChatChannel[];
   activeChannelId?: string;
@@ -42,7 +43,9 @@ export function ChannelList({
   onlineUserIds: Set<string>;
   onSelect: (channel: ChatChannel) => void;
   onCreateNew: () => void;
+  onToggleFavorite: (channelId: string, isFavorite: boolean) => void;
 }) {
+  const favorites = channels.filter((c) => c.isFavorite);
   const announcement = channels.filter((c) => c.type === "announcement");
   const projects = channels.filter((c) => c.type === "project");
   const groups = channels.filter((c) => c.type === "group");
@@ -59,10 +62,11 @@ export function ChannelList({
         )}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto py-2">
-        <Section title="Announcements" channels={announcement} activeChannelId={activeChannelId} currentUserId={currentUserId} onlineUserIds={onlineUserIds} onSelect={onSelect} />
-        <Section title="Projects" channels={projects} activeChannelId={activeChannelId} currentUserId={currentUserId} onlineUserIds={onlineUserIds} onSelect={onSelect} />
-        <Section title="Groups" channels={groups} activeChannelId={activeChannelId} currentUserId={currentUserId} onlineUserIds={onlineUserIds} onSelect={onSelect} />
-        <Section title="Direct messages" channels={dms} activeChannelId={activeChannelId} currentUserId={currentUserId} onlineUserIds={onlineUserIds} onSelect={onSelect} />
+        <Section title="Favorites" channels={favorites} activeChannelId={activeChannelId} currentUserId={currentUserId} onlineUserIds={onlineUserIds} onSelect={onSelect} onToggleFavorite={onToggleFavorite} />
+        <Section title="Announcements" channels={announcement} activeChannelId={activeChannelId} currentUserId={currentUserId} onlineUserIds={onlineUserIds} onSelect={onSelect} onToggleFavorite={onToggleFavorite} />
+        <Section title="Projects" channels={projects} activeChannelId={activeChannelId} currentUserId={currentUserId} onlineUserIds={onlineUserIds} onSelect={onSelect} onToggleFavorite={onToggleFavorite} />
+        <Section title="Groups" channels={groups} activeChannelId={activeChannelId} currentUserId={currentUserId} onlineUserIds={onlineUserIds} onSelect={onSelect} onToggleFavorite={onToggleFavorite} />
+        <Section title="Direct messages" channels={dms} activeChannelId={activeChannelId} currentUserId={currentUserId} onlineUserIds={onlineUserIds} onSelect={onSelect} onToggleFavorite={onToggleFavorite} />
       </div>
     </div>
   );
@@ -75,6 +79,7 @@ function Section({
   currentUserId,
   onlineUserIds,
   onSelect,
+  onToggleFavorite,
 }: {
   title: string;
   channels: ChatChannel[];
@@ -82,6 +87,7 @@ function Section({
   currentUserId: string;
   onlineUserIds: Set<string>;
   onSelect: (channel: ChatChannel) => void;
+  onToggleFavorite: (channelId: string, isFavorite: boolean) => void;
 }) {
   if (channels.length === 0) return null;
   return (
@@ -94,31 +100,42 @@ function Section({
         const otherUser = isDm ? channel.members.find((m) => m.userId !== currentUserId)?.user : undefined;
         const isOnline = isDm && otherUser ? onlineUserIds.has(otherUser.id) : false;
         return (
-          <button
+          <div
             key={channel.id}
-            onClick={() => onSelect(channel)}
             className={cn(
-              "flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors",
+              "group flex w-full items-center gap-1 px-3 py-2 transition-colors",
               activeChannelId === channel.id ? "bg-brand-50" : "hover:bg-ink-100/60",
             )}
           >
-            <span className="relative shrink-0">
-              {isDm && otherUser ? (
-                <MemberAvatar id={otherUser.id} name={otherUser.name} size="sm" status={isOnline ? "online" : "offline"} className="ring-0" />
-              ) : (
-                <span className="flex h-7 w-7 items-center justify-center rounded-full bg-ink-100 text-ink-500">{channelIcon(channel)}</span>
+            <button onClick={() => onSelect(channel)} className="flex min-w-0 flex-1 items-center gap-2.5 text-left">
+              <span className="relative shrink-0">
+                {isDm && otherUser ? (
+                  <MemberAvatar id={otherUser.id} name={otherUser.name} size="sm" status={isOnline ? "online" : "offline"} className="ring-0" />
+                ) : (
+                  <span className="flex h-7 w-7 items-center justify-center rounded-full bg-ink-100 text-ink-500">{channelIcon(channel)}</span>
+                )}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className={cn("truncate text-sm", channel.unreadCount > 0 ? "font-semibold text-ink-900" : "text-ink-700")}>{label}</p>
+                {lastMessage && (
+                  <p className="truncate text-xs text-ink-400">
+                    {lastMessage.isDeleted ? "Message deleted" : lastMessage.body ? plainTextPreview(lastMessage.body) : "Attachment"}
+                  </p>
+                )}
+              </div>
+              {channel.unreadCount > 0 && <Badge tone="red" className="shrink-0">{channel.unreadCount}</Badge>}
+            </button>
+            <button
+              onClick={() => onToggleFavorite(channel.id, !channel.isFavorite)}
+              title={channel.isFavorite ? "Remove from favorites" : "Add to favorites"}
+              className={cn(
+                "shrink-0 rounded p-1 hover:bg-ink-100",
+                channel.isFavorite ? "text-warning-500 opacity-100" : "text-ink-300 opacity-0 group-hover:opacity-100",
               )}
-            </span>
-            <div className="min-w-0 flex-1">
-              <p className={cn("truncate text-sm", channel.unreadCount > 0 ? "font-semibold text-ink-900" : "text-ink-700")}>{label}</p>
-              {lastMessage && (
-                <p className="truncate text-xs text-ink-400">
-                  {lastMessage.isDeleted ? "Message deleted" : lastMessage.body ? plainTextPreview(lastMessage.body) : "Attachment"}
-                </p>
-              )}
-            </div>
-            {channel.unreadCount > 0 && <Badge tone="red" className="shrink-0">{channel.unreadCount}</Badge>}
-          </button>
+            >
+              <Star size={14} fill={channel.isFavorite ? "currentColor" : "none"} />
+            </button>
+          </div>
         );
       })}
     </div>

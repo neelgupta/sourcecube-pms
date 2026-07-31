@@ -127,6 +127,14 @@ export function MessageBubble({
     reactionGroups.set(reaction.emoji, entry);
   }
 
+  if (message.isSystem) {
+    return (
+      <div className="flex justify-center px-4 py-1.5">
+        <p className="rounded-full bg-surface-subtle px-3 py-1 text-xs text-ink-400">{message.body}</p>
+      </div>
+    );
+  }
+
   if (message.isDeleted) {
     return (
       <div className={cn("flex px-4 py-1", isMine ? "justify-end" : "justify-start")}>

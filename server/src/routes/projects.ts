@@ -21,6 +21,7 @@ const projectInclude = {
   manager: { select: userSelect },
   owner: { select: userSelect },
   department: { select: { id: true, name: true } },
+  _count: { select: { tasks: true } },
 } as const;
 const taskDetailInclude = {
   assignee: { select: userSelect },
@@ -117,11 +118,21 @@ projectsRouter.get("/", requirePermission("projects", "view"), async (req, res) 
     orderBy: { createdAt: "desc" },
   });
 
+  const completedCounts = await prisma.projectTask.groupBy({
+    by: ["projectId"],
+    where: { projectId: { in: projects.map((p) => p.id) }, status: "done" },
+    _count: { _all: true },
+  });
+  const completedByProject = new Map(completedCounts.map((row) => [row.projectId, row._count._all]));
+
   const rows = await Promise.all(projects.map(async (p) => ({
     ...p,
     favouritedBy: undefined,
+    _count: undefined,
     favourite: p.favouritedBy.length > 0,
     currentUserAccess: await projectAccessLevel(tid, uid, p),
+    taskCount: p._count.tasks,
+    completedTaskCount: completedByProject.get(p.id) ?? 0,
   })));
   res.json({ projects: rows });
 });
@@ -253,7 +264,18 @@ projectsRouter.get("/:id", requirePermission("projects", "view"), async (req, re
     res.status(404).json({ error: "Project not found" });
     return;
   }
-  res.json({ project: { ...project, favouritedBy: undefined, favourite: project.favouritedBy.length > 0, currentUserAccess: await projectAccessLevel(tid, uid, project) } });
+  const completedTaskCount = await prisma.projectTask.count({ where: { projectId: id, status: "done" } });
+  res.json({
+    project: {
+      ...project,
+      favouritedBy: undefined,
+      _count: undefined,
+      favourite: project.favouritedBy.length > 0,
+      currentUserAccess: await projectAccessLevel(tid, uid, project),
+      taskCount: project._count.tasks,
+      completedTaskCount,
+    },
+  });
 });
 
 const projectSchema = z.object({
@@ -392,7 +414,7 @@ projectsRouter.post("/", requirePermission("projects", "create"), async (req, re
     },
   });
 
-  res.status(201).json({ project: { ...project, favourite: false } });
+  res.status(201).json({ project: { ...project, _count: undefined, favourite: false, taskCount: 0, completedTaskCount: 0 } });
 });
 
 const updateSchema = projectSchema.partial();
@@ -452,7 +474,8 @@ projectsRouter.patch("/:id", requirePermission("projects", "edit"), async (req, 
     metadata: { changes: data },
   });
 
-  res.json({ project: updated });
+  const updatedCompletedTaskCount = await prisma.projectTask.count({ where: { projectId: id, status: "done" } });
+  res.json({ project: { ...updated, _count: undefined, taskCount: updated._count.tasks, completedTaskCount: updatedCompletedTaskCount } });
 });
 
 const archiveSchema = z.object({ isArchived: z.boolean() });
@@ -490,7 +513,8 @@ projectsRouter.post("/:id/archive", requirePermission("projects", "deactivate"),
     targetId: id,
   });
 
-  res.json({ project: updated });
+  const archivedCompletedTaskCount = await prisma.projectTask.count({ where: { projectId: id, status: "done" } });
+  res.json({ project: { ...updated, _count: undefined, taskCount: updated._count.tasks, completedTaskCount: archivedCompletedTaskCount } });
 });
 
 projectsRouter.delete("/:id", requirePermission("projects", "deactivate"), async (req, res) => {
@@ -1065,6 +1089,24 @@ projectsRouter.patch("/:id/tasks/:taskId", requirePermission("tasks", "edit"), a
     });
   }
   res.json({ task: updated });
+});
+
+projectsRouter.delete("/:id/tasks/:taskId", requirePermission("tasks", "manage"), async (req, res) => {
+  const tid = tenantId(req);
+  const projectId = req.params.id as string;
+  const taskId = req.params.taskId as string;
+  const task = await prisma.projectTask.findFirst({ where: { id: taskId, projectId, tenantId: tid } });
+  if (!task) {
+    res.status(404).json({ error: "Task not found" });
+    return;
+  }
+  await prisma.projectTask.delete({ where: { id: taskId } });
+  await refreshProjectMetrics(projectId);
+  await recordAudit({
+    actor: req.auth!, action: "project.task.deleted", tenantId: tid, targetType: "ProjectTask", targetId: taskId,
+    metadata: { projectId, name: task.name },
+  });
+  res.status(204).end();
 });
 
 const commentSchema = z.object({ body: z.string().trim().min(1).max(24000) });

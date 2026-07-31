@@ -5,6 +5,7 @@ import {
   Folder,
   LayoutGrid,
   List,
+  MoreHorizontal,
   Plus,
   SlidersHorizontal,
   Star,
@@ -202,14 +203,44 @@ export function ProjectsPage() {
         ),
     },
     {
+      key: "tasks",
+      header: "Tasks",
+      render: (p) => <span className="text-xs text-ink-600">{p.completedTaskCount}/{p.taskCount}</span>,
+    },
+    {
       key: "actions",
       header: "",
-      width: "48px",
-      render: (p) => (
-        <button onClick={() => toggleFavourite(p.id)} className="rounded p-1 text-ink-400 transition-colors hover:bg-ink-100">
-          <Star size={15} className={p.favourite ? "fill-warning-500 text-warning-500" : ""} />
-        </button>
-      ),
+      width: "80px",
+      render: (p) => {
+        const rowCanEdit = canEdit && (p.currentUserAccess === "edit" || p.currentUserAccess === "manage");
+        const rowCanArchiveOrDelete = canArchiveOrDelete && p.currentUserAccess === "manage";
+        return (
+          <div className="flex items-center justify-end gap-0.5">
+            <button onClick={() => toggleFavourite(p.id)} className="rounded p-1 text-ink-400 transition-colors hover:bg-ink-100">
+              <Star size={15} className={p.favourite ? "fill-warning-500 text-warning-500" : ""} />
+            </button>
+            <DropdownMenu
+              trigger={
+                <button className="rounded p-1 text-ink-400 transition-colors hover:bg-ink-100">
+                  <MoreHorizontal size={15} />
+                </button>
+              }
+              items={[
+                { id: "open", label: "Open Project", onSelect: () => navigate(`/projects/${p.id}`) },
+                { id: "details", label: "Project Details", onSelect: () => setDetailsProject(p) },
+                ...(rowCanEdit ? [{ id: "edit", label: "Edit Project", onSelect: () => openEdit(p) }] : []),
+                { id: "clone", label: "Clone as Project", disabled: true },
+                ...(rowCanArchiveOrDelete
+                  ? [
+                      { id: "archive", label: p.isArchived ? "Unarchive Project" : "Archive Project", onSelect: () => handleArchiveToggle(p) },
+                      { id: "delete", label: "Delete Project", danger: true, onSelect: () => setDeletingProject(p) },
+                    ]
+                  : []),
+              ]}
+            />
+          </div>
+        );
+      },
     },
   ];
 

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { Check, ChevronDown } from "lucide-react";
 import { cn } from "@/lib/cn";
 
@@ -23,6 +24,9 @@ function useOutsideClose(onClose: () => void) {
   return ref;
 }
 
+/** Positions the menu via a body portal instead of a card-local `absolute` wrapper,
+ *  so it always renders above sibling cards instead of being clipped/covered by
+ *  whatever sits after it in normal document flow (e.g. the next grid row). */
 export function DropdownMenu({
   trigger,
   items,
@@ -33,17 +37,52 @@ export function DropdownMenu({
   align?: "left" | "right";
 }) {
   const [open, setOpen] = useState(false);
-  const ref = useOutsideClose(() => setOpen(false));
+  const [coords, setCoords] = useState<{ top: number; left: number } | null>(null);
+  const triggerRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function updatePosition() {
+      const rect = triggerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      setCoords({
+        top: rect.bottom + window.scrollY + 6,
+        left: align === "right" ? rect.right + window.scrollX : rect.left + window.scrollX,
+      });
+    }
+    updatePosition();
+    function handleOutside(e: MouseEvent) {
+      if (
+        triggerRef.current && !triggerRef.current.contains(e.target as Node) &&
+        menuRef.current && !menuRef.current.contains(e.target as Node)
+      ) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleOutside);
+    window.addEventListener("scroll", updatePosition, true);
+    window.addEventListener("resize", updatePosition);
+    return () => {
+      document.removeEventListener("mousedown", handleOutside);
+      window.removeEventListener("scroll", updatePosition, true);
+      window.removeEventListener("resize", updatePosition);
+    };
+  }, [open, align]);
 
   return (
-    <div className="relative" ref={ref}>
-      <div onClick={() => setOpen((v) => !v)}>{trigger}</div>
-      {open && (
+    <>
+      <div ref={triggerRef} onClick={() => setOpen((v) => !v)}>{trigger}</div>
+      {open && coords && createPortal(
         <div
-          className={cn(
-            "absolute z-30 mt-1.5 min-w-52 overflow-hidden rounded-lg border border-ink-200 bg-white py-1 shadow-popover",
-            align === "right" ? "right-0" : "left-0",
-          )}
+          ref={menuRef}
+          style={{
+            position: "absolute",
+            top: coords.top,
+            left: align === "right" ? undefined : coords.left,
+            right: align === "right" ? window.innerWidth - coords.left : undefined,
+          }}
+          className="z-50 min-w-52 overflow-hidden rounded-lg border border-ink-200 bg-white py-1 shadow-popover"
         >
           {items.map((item) => (
             <button
@@ -63,9 +102,10 @@ export function DropdownMenu({
               {item.label}
             </button>
           ))}
-        </div>
+        </div>,
+        document.body,
       )}
-    </div>
+    </>
   );
 }
 

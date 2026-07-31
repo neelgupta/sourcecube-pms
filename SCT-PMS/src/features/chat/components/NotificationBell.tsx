@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { AtSign, Bell, BellRing, Megaphone, MessageCircle, UserPlus } from "lucide-react";
 import { api } from "@/lib/api";
@@ -43,7 +44,9 @@ export function NotificationBell() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [open, setOpen] = useState(false);
   const [desktopPermission, setDesktopPermission] = useState(getDesktopNotificationPermission());
+  const [coords, setCoords] = useState<{ top: number; right: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!canUseChat) return;
@@ -67,11 +70,30 @@ export function NotificationBell() {
 
   useEffect(() => {
     function handler(event: MouseEvent) {
-      if (ref.current && !ref.current.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      if (ref.current?.contains(target)) return;
+      if (panelRef.current?.contains(target)) return;
+      setOpen(false);
     }
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    function updatePosition() {
+      const rect = ref.current?.getBoundingClientRect();
+      if (!rect) return;
+      setCoords({ top: rect.bottom + 8, right: window.innerWidth - rect.right });
+    }
+    updatePosition();
+    window.addEventListener("scroll", updatePosition, true);
+    window.addEventListener("resize", updatePosition);
+    return () => {
+      window.removeEventListener("scroll", updatePosition, true);
+      window.removeEventListener("resize", updatePosition);
+    };
+  }, [open]);
 
   if (!canUseChat) return null;
 
@@ -108,14 +130,17 @@ export function NotificationBell() {
           {unreadCount > 0 && <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-danger-500 ring-2 ring-white" />}
         </span>
       </button>
-      {open && (
-        <div className="absolute right-0 z-40 mt-2 w-80 overflow-hidden rounded-xl border border-ink-200 bg-white shadow-popover">
-          <div className="flex items-center justify-between border-b border-ink-200 px-3.5 py-2.5">
+      {open && coords && createPortal(
+        <div
+          ref={panelRef}
+          style={{ position: "fixed", top: coords.top, right: coords.right }}
+          className="z-50 flex max-h-[min(32rem,calc(100vh-5rem))] w-80 flex-col overflow-hidden rounded-xl border border-ink-200 bg-white shadow-popover">
+          <div className="flex shrink-0 items-center justify-between border-b border-ink-200 px-3.5 py-2.5">
             <p className="text-sm font-semibold text-ink-900">Notifications</p>
             {unreadCount > 0 && <button onClick={markAllRead} className="text-xs font-medium text-brand-600 hover:underline">Mark all read</button>}
           </div>
           {isDesktopNotificationSupported() && desktopPermission === "default" && (
-            <div className="flex items-start gap-2.5 border-b border-ink-100 bg-brand-50/50 px-3.5 py-2.5">
+            <div className="flex shrink-0 items-start gap-2.5 border-b border-ink-100 bg-brand-50/50 px-3.5 py-2.5">
               <BellRing size={15} className="mt-0.5 shrink-0 text-brand-600" />
               <div className="min-w-0 flex-1">
                 <p className="text-xs font-medium text-ink-900">Get notified even when this tab isn't focused</p>
@@ -126,11 +151,11 @@ export function NotificationBell() {
             </div>
           )}
           {isDesktopNotificationSupported() && desktopPermission === "denied" && (
-            <div className="border-b border-ink-100 bg-warning-50/50 px-3.5 py-2 text-xs text-warning-700">
+            <div className="shrink-0 border-b border-ink-100 bg-warning-50/50 px-3.5 py-2 text-xs text-warning-700">
               Desktop notifications are blocked. Enable them from your browser's site settings.
             </div>
           )}
-          <div className="max-h-96 overflow-y-auto">
+          <div className="min-h-0 flex-1 overflow-y-auto">
             {notifications.length === 0 ? (
               <p className="px-4 py-8 text-center text-sm text-ink-400">No notifications yet</p>
             ) : (
@@ -151,7 +176,8 @@ export function NotificationBell() {
               ))
             )}
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

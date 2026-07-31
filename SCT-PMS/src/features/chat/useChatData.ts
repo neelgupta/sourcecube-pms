@@ -103,6 +103,11 @@ export function useChatData() {
     setChannels((current) => current.map((item) => (item.id === channel.id ? { ...channel, unreadCount: item.unreadCount, messages: item.messages } : item)));
   }
 
+  async function setChannelFavorite(channelId: string, isFavorite: boolean) {
+    setChannels((current) => current.map((channel) => (channel.id === channelId ? { ...channel, isFavorite } : channel)));
+    await api.setChatChannelFavorite(channelId, isFavorite);
+  }
+
   const unreadNotificationCount = notifications.filter((n) => !n.readAt).length;
 
   return {
@@ -118,5 +123,6 @@ export function useChatData() {
     markChannelRead,
     createChannel,
     updateChannel,
+    setChannelFavorite,
   };
 }

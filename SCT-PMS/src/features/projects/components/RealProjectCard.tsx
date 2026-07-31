@@ -1,5 +1,5 @@
-import { CalendarDays, MoreHorizontal, Star } from "lucide-react";
-import { Avatar, DropdownMenu, ProgressBar } from "@/components/common";
+import { CalendarDays, CheckSquare, MoreHorizontal, Star } from "lucide-react";
+import { Avatar, DropdownMenu, ProgressBar, memberColor } from "@/components/common";
 import { cn } from "@/lib/cn";
 import type { RealProject, RealProjectStatus } from "@/types/tenant";
 
@@ -55,7 +55,7 @@ export function RealProjectCard({
       <span className="absolute inset-y-4 left-0 w-[3px] rounded-r-full bg-brand-500" />
 
       <div className="flex items-start gap-3">
-        <Avatar initials={initialsOf(project.name)} color="bg-brand-600" size="lg" className="ring-0" />
+        <Avatar initials={initialsOf(project.name)} color={memberColor(project.id)} size="lg" className="ring-0" />
         <div className="min-w-0 flex-1">
           <button
             onClick={() => onOpen(project)}
@@ -100,6 +100,10 @@ export function RealProjectCard({
 
       <div className="mt-4 flex items-center justify-between text-xs">
         <span className="font-semibold text-success-600">{progress.toFixed(2)}%</span>
+        <span className="flex items-center gap-1 font-medium text-ink-500">
+          <CheckSquare size={12} />
+          {project.completedTaskCount}/{project.taskCount}
+        </span>
         <span className="font-medium capitalize text-ink-500">{project.healthStatus.replace("_", " ")}</span>
       </div>
       <div className="mt-2 flex items-center gap-3">

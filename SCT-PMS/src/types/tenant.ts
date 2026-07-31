@@ -404,6 +404,8 @@ export interface RealProject {
   currentUserAccess?: "view" | "edit" | "manage" | null;
   isArchived: boolean;
   createdAt: string;
+  taskCount: number;
+  completedTaskCount: number;
 }
 
 export interface ProjectMember {
@@ -591,6 +593,7 @@ export interface ChatChannelMember {
   userId: ID;
   user: TeamMemberSummary;
   isMuted: boolean;
+  isFavorite?: boolean;
   lastReadAt?: string | null;
   joinedAt: string;
 }
@@ -617,6 +620,7 @@ export interface ChatMessage {
   attachmentName?: string | null;
   durationSeconds?: number | null;
   isAnnouncement: boolean;
+  isSystem: boolean;
   isPinned: boolean;
   isDeleted: boolean;
   editedAt?: string | null;
@@ -642,6 +646,7 @@ export interface ChatChannel {
   members: ChatChannelMember[];
   messages?: ChatMessage[];
   lastReadAt?: string | null;
+  isFavorite?: boolean;
   unreadCount: number;
 }
 

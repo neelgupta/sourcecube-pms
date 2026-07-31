@@ -39,7 +39,7 @@ export function LoginPage() {
   const { loginPlatform, loginCompany } = useSession();
   const [portal, setPortal] = useState<"company" | "platform">("company");
   const [showPassword, setShowPassword] = useState(false);
-  const [email, setEmail] = useState("vinayak@sourcecube.com");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -114,7 +114,7 @@ export function LoginPage() {
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="you@sourcecube.com"
+                  placeholder="Enter your email"
                   leftIcon={<Mail size={16} />}
                   className="h-11"
                   required

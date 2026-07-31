@@ -105,9 +105,11 @@ chatRouter.get("/channels", requirePermission("chat", "view"), async (req, res) 
     orderBy: { updatedAt: "desc" },
   });
   const memberships = await prisma.chatChannelMember.findMany({ where: { tenantId: tid, userId: uid } });
-  const lastReadByChannel = new Map(memberships.map((m) => [m.channelId, m.lastReadAt]));
+  const membershipByChannel = new Map(memberships.map((m) => [m.channelId, m]));
   const rows = await Promise.all(channels.map(async (channel) => {
-    const lastReadAt = lastReadByChannel.get(channel.id) ?? null;
+    const membership = membershipByChannel.get(channel.id);
+    const lastReadAt = membership?.lastReadAt ?? null;
+    const isFavorite = membership?.isFavorite ?? false;
     const unreadCount = await prisma.chatMessage.count({
       where: {
         channelId: channel.id,
@@ -117,7 +119,7 @@ chatRouter.get("/channels", requirePermission("chat", "view"), async (req, res) 
         ...(lastReadAt ? { createdAt: { gt: lastReadAt } } : {}),
       },
     });
-    return withAnnouncementMembers({ ...channel, lastReadAt, unreadCount });
+    return withAnnouncementMembers({ ...channel, lastReadAt, isFavorite, unreadCount });
   }));
   res.json({ channels: rows });
 });
@@ -260,6 +262,82 @@ chatRouter.post("/channels/:id/members", requirePermission("chat", "invite"), as
   const updated = await channelSummary(tid, channelId);
   getChatIO()?.to(`channel:${channelId}`).emit("channel:updated", updated);
   res.status(201).json({ channel: updated });
+});
+
+chatRouter.delete("/channels/:id/members/:userId", requirePermission("chat", "invite"), async (req, res) => {
+  const tid = tenantId(req);
+  const uid = userId(req);
+  const channelId = req.params.id as string;
+  const removedUserId = req.params.userId as string;
+  const channel = await prisma.chatChannel.findFirst({ where: { id: channelId, tenantId: tid } });
+  if (!channel) {
+    res.status(404).json({ error: "Channel not found" });
+    return;
+  }
+  if (channel.type !== "group") {
+    res.status(400).json({ error: "Members can only be removed from group channels" });
+    return;
+  }
+  if (channel.createdBy !== uid) {
+    res.status(403).json({ error: "Only the group owner can remove members" });
+    return;
+  }
+  const membership = await prisma.chatChannelMember.findUnique({ where: { channelId_userId: { channelId, userId: removedUserId } } });
+  if (!membership) {
+    res.status(404).json({ error: "This person is not a member of the group" });
+    return;
+  }
+  const [remover, removed] = await Promise.all([
+    prisma.companyUser.findFirst({ where: { id: uid, tenantId: tid }, select: { name: true } }),
+    prisma.companyUser.findFirst({ where: { id: removedUserId, tenantId: tid }, select: { name: true } }),
+  ]);
+  await prisma.chatChannelMember.delete({ where: { channelId_userId: { channelId, userId: removedUserId } } });
+
+  const systemMessage = await prisma.chatMessage.create({
+    data: {
+      tenantId: tid,
+      channelId,
+      authorId: uid,
+      isSystem: true,
+      body: `${remover?.name ?? "Someone"} removed ${removed?.name ?? "a member"} from the group`,
+    },
+    include: messageInclude,
+  });
+  await prisma.chatChannel.update({ where: { id: channelId }, data: { updatedAt: new Date() } });
+
+  await recordAudit({ actor: req.auth!, action: "chat.channel.member_removed", tenantId: tid, targetType: "ChatChannel", targetId: channelId, metadata: { removedUserId } });
+
+  const io = getChatIO();
+  io?.to(`channel:${channelId}`).emit("message:new", systemMessage);
+  io?.to(`user:${removedUserId}`).emit("channel:removed", { channelId });
+
+  const updated = await channelSummary(tid, channelId);
+  io?.to(`channel:${channelId}`).emit("channel:updated", updated);
+  res.json({ channel: updated });
+});
+
+const favoriteSchema = z.object({ isFavorite: z.boolean() });
+
+chatRouter.patch("/channels/:id/favorite", requirePermission("chat", "view"), async (req, res) => {
+  const parsed = favoriteSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "isFavorite must be a boolean" });
+    return;
+  }
+  const tid = tenantId(req);
+  const uid = userId(req);
+  const channelId = req.params.id as string;
+  const channel = await prisma.chatChannel.findFirst({ where: { id: channelId, tenantId: tid } });
+  if (!channel) {
+    res.status(404).json({ error: "Channel not found" });
+    return;
+  }
+  await prisma.chatChannelMember.upsert({
+    where: { channelId_userId: { channelId, userId: uid } },
+    create: { tenantId: tid, channelId, userId: uid, isFavorite: parsed.data.isFavorite },
+    update: { isFavorite: parsed.data.isFavorite },
+  });
+  res.json({ ok: true });
 });
 
 // ---- Messages ----

@@ -342,6 +342,8 @@ export const api = {
       billingType: "billable" | "non_billable"; milestoneId: string | null; tags: string[]; dependencyIds: string[];
     }>,
   ) => request<{ task: WorkspaceTask }>(`/projects/${projectId}/tasks/${taskId}`, { method: "PATCH", body: JSON.stringify(input) }),
+  deleteProjectTask: (projectId: string, taskId: string) =>
+    request<void>(`/projects/${projectId}/tasks/${taskId}`, { method: "DELETE" }),
   addTaskComment: (projectId: string, taskId: string, body: string) =>
     request<{ comment: TaskComment }>(`/projects/${projectId}/tasks/${taskId}/comments`, { method: "POST", body: JSON.stringify({ body }) }),
   deleteTaskComment: (projectId: string, taskId: string, commentId: string) =>
@@ -437,6 +439,10 @@ export const api = {
   deleteChatMessage: (messageId: string) => request<void>(`/chat/messages/${messageId}`, { method: "DELETE" }),
   addChatChannelMembers: (channelId: string, memberIds: string[]) =>
     request<{ channel: ChatChannel }>(`/chat/channels/${channelId}/members`, { method: "POST", body: JSON.stringify({ memberIds }) }),
+  removeChatChannelMember: (channelId: string, userId: string) =>
+    request<{ channel: ChatChannel }>(`/chat/channels/${channelId}/members/${userId}`, { method: "DELETE" }),
+  setChatChannelFavorite: (channelId: string, isFavorite: boolean) =>
+    request<{ ok: true }>(`/chat/channels/${channelId}/favorite`, { method: "PATCH", body: JSON.stringify({ isFavorite }) }),
   pinChatMessage: (messageId: string, isPinned: boolean) =>
     request<{ message: ChatMessage }>(`/chat/messages/${messageId}/pin`, { method: "PATCH", body: JSON.stringify({ isPinned }) }),
   addChatReaction: (messageId: string, emoji: string) =>

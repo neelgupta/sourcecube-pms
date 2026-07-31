@@ -1,5 +1,6 @@
 import { useNavigate } from "react-router-dom";
-import { LogOut, Menu, Plus, Search, Settings, Star, Timer, User as UserIcon } from "lucide-react";
+// import { Plus, Search, Star, Timer } from "lucide-react";
+import { LogOut, Menu, Settings, User as UserIcon } from "lucide-react";
 import { Avatar, DropdownMenu } from "@/components/common";
 import { useSession } from "@/lib/session";
 import { NotificationBell } from "@/features/chat/components/NotificationBell";
@@ -20,18 +21,18 @@ export function Topbar({ title, onMenuClick }: { title: string; onMenuClick: () 
 
       <h1 className="shrink-0 text-lg font-semibold tracking-tight text-ink-900">{title}</h1>
 
-      <div className="relative mx-auto hidden w-full max-w-xl md:block">
+      {/* <div className="relative mx-auto hidden w-full max-w-xl md:block">
         <Search size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-ink-400" />
         <input
           placeholder="Search for Tasks, Menu, Client Name & Project Name..."
           className="h-10 w-full rounded-full border border-ink-200 bg-surface-subtle pl-10 pr-4 text-sm text-ink-900 placeholder:text-ink-400 transition-colors focus:border-brand-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/20"
         />
-      </div>
+      </div> */}
 
       <div className="ml-auto flex items-center gap-1">
-        <IconButton label="Timer"><Timer size={18} className="text-danger-500" /></IconButton>
+        {/* <IconButton label="Timer"><Timer size={18} className="text-danger-500" /></IconButton>
         <IconButton label="Create"><Plus size={19} /></IconButton>
-        <IconButton label="Favourites"><Star size={18} className="fill-warning-500 text-warning-500" /></IconButton>
+        <IconButton label="Favourites"><Star size={18} className="fill-warning-500 text-warning-500" /></IconButton> */}
         <NotificationBell />
 
         <div className="ml-2">
@@ -62,13 +63,13 @@ export function Topbar({ title, onMenuClick }: { title: string; onMenuClick: () 
   );
 }
 
-function IconButton({ children, label }: { children: React.ReactNode; label: string }) {
-  return (
-    <button
-      title={label}
-      className="rounded-lg p-2 text-ink-500 transition-colors hover:bg-ink-100 hover:text-ink-900"
-    >
-      {children}
-    </button>
-  );
-}
+// function IconButton({ children, label }: { children: React.ReactNode; label: string }) {
+//   return (
+//     <button
+//       title={label}
+//       className="rounded-lg p-2 text-ink-500 transition-colors hover:bg-ink-100 hover:text-ink-900"
+//     >
+//       {children}
+//     </button>
+//   );
+// }

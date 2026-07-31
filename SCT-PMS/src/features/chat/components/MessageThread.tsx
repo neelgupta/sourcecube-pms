@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { UserPlus, X } from "lucide-react";
-import { EmptyState, MemberAvatar } from "@/components/common";
+import { UserMinus, UserPlus, X } from "lucide-react";
+import { Button, EmptyState, MemberAvatar, Modal } from "@/components/common";
 import { api, ApiError } from "@/lib/api";
 import { getChatSocket } from "@/lib/chatSocket";
 import { cn } from "@/lib/cn";
@@ -34,12 +34,18 @@ export function MessageThread({
   const [activeThread, setActiveThread] = useState<ChatMessage | null>(null);
   const [readReceipts, setReadReceipts] = useState<Record<string, string>>({});
   const [showAddMembers, setShowAddMembers] = useState(false);
+  const [removeTarget, setRemoveTarget] = useState<{ userId: string; name: string } | null>(null);
+  const [removing, setRemoving] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setLoading(true);
     setActiveThread(null);
-    setReadReceipts({});
+    setReadReceipts(Object.fromEntries(
+      channel.members
+        .filter((member) => member.userId !== currentUserId && member.lastReadAt)
+        .map((member) => [member.userId, member.lastReadAt as string]),
+    ));
     api.listChatMessages(channel.id)
       .then(({ messages: rows }) => { setMessages(rows); setError(null); })
       .catch((err) => setError(err instanceof ApiError ? err.message : "Messages could not be loaded"))
@@ -65,10 +71,13 @@ export function MessageThread({
     function onNew(message: ChatMessage) {
       if (message.channelId !== channel.id) return;
       if (message.parentMessageId) {
+        if (message.authorId === currentUserId) return;
         setActiveThread((current) => (current && current.id === message.parentMessageId ? { ...current, _count: { replies: current._count.replies + 1 } } : current));
+        setMessages((current) => current.map((item) => (item.id === message.parentMessageId ? { ...item, _count: { replies: item._count.replies + 1 } } : item)));
         return;
       }
-      setMessages((current) => [...current, message]);
+      if (message.authorId === currentUserId && !message.isSystem) return;
+      setMessages((current) => (current.some((item) => item.id === message.id) ? current : [...current, message]));
     }
     function onUpdated(message: ChatMessage) {
       if (message.channelId !== channel.id) return;
@@ -101,9 +110,11 @@ export function MessageThread({
     const { message } = await api.sendChatMessage(channel.id, { ...input, parentMessageId });
     if (parentMessageId) {
       setActiveThread((current) => (current && current.id === parentMessageId ? { ...current, _count: { replies: current._count.replies + 1 } } : current));
+      setMessages((current) => current.map((item) => (item.id === parentMessageId ? { ...item, _count: { replies: item._count.replies + 1 } } : item)));
     } else {
       setMessages((current) => [...current, message]);
     }
+    return message;
   }
 
   async function reactTo(messageId: string, emoji: string) {
@@ -130,6 +141,17 @@ export function MessageThread({
     const { channel: updated } = await api.addChatChannelMembers(channel.id, memberIds);
     onChannelUpdated?.(updated);
   }
+  async function confirmRemoveMember() {
+    if (!removeTarget) return;
+    setRemoving(true);
+    try {
+      const { channel: updated } = await api.removeChatChannelMember(channel.id, removeTarget.userId);
+      onChannelUpdated?.(updated);
+      setRemoveTarget(null);
+    } finally {
+      setRemoving(false);
+    }
+  }
 
   const pinned = messages.filter((message) => message.isPinned && !message.isDeleted);
   const otherMember = channel.type === "dm" ? channel.members.find((m) => m.userId !== currentUserId) : undefined;
@@ -144,8 +166,8 @@ export function MessageThread({
   const latestOtherRead = otherMembersLastRead.length > 0 ? Math.max(...otherMembersLastRead) : 0;
 
   return (
-    <div className="flex h-full min-w-0 flex-1">
-      <div className="flex h-full min-w-0 flex-1 flex-col">
+    <div className="flex h-full min-h-0 min-w-0 flex-1">
+      <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
         <header className="flex items-center gap-2 border-b border-ink-200 px-4 py-3">
           <div className="min-w-0">
             <p className="truncate font-semibold text-ink-900">{channelTitle(channel, currentUserId)}</p>
@@ -176,9 +198,12 @@ export function MessageThread({
             <EmptyState title="No messages yet" description="Say hello to get the conversation started." className="py-16" />
           ) : (
             <div className="py-3">
-              {messages.map((message) => (
-                <MessageBubble
-                  key={message.id}
+              {messages.map((message, index) => (
+                <div key={message.id}>
+                  {(index === 0 || dayKey(message.createdAt) !== dayKey(messages[index - 1].createdAt)) && (
+                    <DateSeparator date={message.createdAt} />
+                  )}
+                  <MessageBubble
                   message={message}
                   users={users}
                   currentUserId={currentUserId}
@@ -190,7 +215,8 @@ export function MessageThread({
                   onEdit={(body) => editMessage(message.id, body)}
                   onPin={() => togglePin(message)}
                   onOpenThread={() => setActiveThread(message)}
-                />
+                  />
+                </div>
               ))}
               <div ref={bottomRef} />
             </div>
@@ -198,7 +224,7 @@ export function MessageThread({
         </div>
 
         {canPost ? (
-          <MessageComposer users={users} onSend={(input) => sendMessage(input)} />
+          <MessageComposer users={users} onSend={async (input) => { await sendMessage(input); }} />
         ) : (
           <div className="border-t border-ink-200 bg-surface-subtle px-4 py-3 text-center text-xs text-ink-500">
             {channel.type === "announcement" ? "Only a company super admin can post announcements." : "You do not have permission to post here."}
@@ -207,7 +233,7 @@ export function MessageThread({
       </div>
 
       {!activeThread && (
-        <ChatMemberPanel channel={channel} currentUserId={currentUserId} onlineUserIds={onlineUserIds} />
+        <ChatMemberPanel channel={channel} currentUserId={currentUserId} onlineUserIds={onlineUserIds} onRemoveMember={(userId, name) => setRemoveTarget({ userId, name })} />
       )}
 
       {activeThread && (
@@ -232,6 +258,46 @@ export function MessageThread({
           onAdd={addMembers}
         />
       )}
+
+      <Modal
+        open={!!removeTarget}
+        onClose={() => setRemoveTarget(null)}
+        title="Remove member?"
+        size="sm"
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setRemoveTarget(null)} disabled={removing}>Cancel</Button>
+            <Button variant="danger" onClick={confirmRemoveMember} disabled={removing}>{removing ? "Removing…" : "Remove"}</Button>
+          </>
+        }
+      >
+        <p className="text-sm text-ink-600">
+          Are you sure you want to remove <strong>{removeTarget?.name}</strong> from this group?
+        </p>
+      </Modal>
+    </div>
+  );
+}
+
+function dayKey(iso: string) {
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
+
+function dateLabel(iso: string) {
+  const date = new Date(iso);
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+  if (dayKey(iso) === dayKey(today.toISOString())) return "Today";
+  if (dayKey(iso) === dayKey(yesterday.toISOString())) return "Yesterday";
+  return date.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric", year: date.getFullYear() !== today.getFullYear() ? "numeric" : undefined });
+}
+
+function DateSeparator({ date }: { date: string }) {
+  return (
+    <div className="my-2 flex items-center justify-center">
+      <span className="rounded-full bg-white px-3 py-1 text-[11px] font-medium text-ink-400 shadow-sm">{dateLabel(date)}</span>
     </div>
   );
 }
@@ -251,10 +317,12 @@ function ChatMemberPanel({
   channel,
   currentUserId,
   onlineUserIds,
+  onRemoveMember,
 }: {
   channel: ChatChannel;
   currentUserId: string;
   onlineUserIds: Set<string>;
+  onRemoveMember: (userId: string, name: string) => void;
 }) {
   const otherMember = channel.type === "dm" ? channel.members.find((member) => member.userId !== currentUserId) : undefined;
   const members = channel.type === "dm" && otherMember ? [otherMember] : channel.members;
@@ -286,13 +354,24 @@ function ChatMemberPanel({
         <div className="max-h-[calc(100vh-18rem)] space-y-2 overflow-y-auto pr-1">
           {members.map((member) => {
             const isOnline = onlineUserIds.has(member.userId);
+            const isOwner = channel.createdBy === currentUserId;
+            const canRemove = isOwner && channel.type === "group" && member.userId !== currentUserId;
             return (
               <div key={member.id} className="flex min-w-0 items-center gap-3 rounded-lg px-1 py-1.5 hover:bg-surface-subtle">
                 <MemberAvatar id={member.userId} name={member.user.name} size="md" status={isOnline ? "online" : "offline"} className="ring-0" />
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-semibold text-ink-900">{member.user.name}</p>
                   <p className="truncate text-xs text-ink-400">{member.userId === currentUserId ? "You" : isOnline ? "Online" : "Offline"}</p>
                 </div>
+                {canRemove && (
+                  <button
+                    onClick={() => onRemoveMember(member.userId, member.user.name)}
+                    title="Remove from group"
+                    className="shrink-0 rounded p-1 text-ink-400 hover:bg-danger-50 hover:text-danger-600"
+                  >
+                    <UserMinus size={14} />
+                  </button>
+                )}
               </div>
             );
           })}
@@ -318,7 +397,7 @@ function ThreadPanel({
   canManage: boolean;
   canPost: boolean;
   onClose: () => void;
-  onSend: (input: Parameters<typeof api.sendChatMessage>[1]) => Promise<void>;
+  onSend: (input: Parameters<typeof api.sendChatMessage>[1]) => Promise<ChatMessage>;
 }) {
   const [replies, setReplies] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(true);
@@ -333,14 +412,17 @@ function ThreadPanel({
   useEffect(() => {
     const socket = getChatSocket();
     function onNew(message: ChatMessage) {
-      if (message.parentMessageId === root.id) setReplies((current) => [...current, message]);
+      if (message.parentMessageId === root.id && message.authorId !== currentUserId) {
+        setReplies((current) => [...current, message]);
+      }
     }
     socket.on("message:new", onNew);
     return () => { socket.off("message:new", onNew); };
   }, [root.id]);
 
   async function send(input: Parameters<typeof api.sendChatMessage>[1]) {
-    await onSend(input);
+    const message = await onSend(input);
+    setReplies((current) => [...current, message]);
   }
 
   async function editReply(messageId: string, body: string) {

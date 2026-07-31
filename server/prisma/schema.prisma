@@ -692,6 +692,7 @@ model ChatChannelMember {
   userId     String
   user       CompanyUser @relation(fields: [userId], references: [id], onDelete: Cascade)
   isMuted    Boolean     @default(false)
+  isFavorite Boolean     @default(false)
   lastReadAt DateTime?
   joinedAt   DateTime    @default(now())
 
@@ -715,6 +716,7 @@ model ChatMessage {
   attachmentName  String?
   durationSeconds Int?
   isAnnouncement  Boolean             @default(false)
+  isSystem        Boolean             @default(false)
   isPinned        Boolean             @default(false)
   isDeleted       Boolean             @default(false)
   editedAt        DateTime?
