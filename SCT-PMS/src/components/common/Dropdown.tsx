@@ -12,18 +12,6 @@ export interface MenuItem {
   onSelect?: () => void;
 }
 
-function useOutsideClose(onClose: () => void) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [onClose]);
-  return ref;
-}
-
 /** Positions the menu via a body portal instead of a card-local `absolute` wrapper,
  *  so it always renders above sibling cards instead of being clipped/covered by
  *  whatever sits after it in normal document flow (e.g. the next grid row). */
@@ -114,6 +102,9 @@ export interface SelectOption {
   label: string;
 }
 
+/** Portaled + viewport-positioned like DropdownMenu above — a plain `absolute` panel here
+ *  would clip inside any scrollable/overflow-hidden ancestor (e.g. the horizontally
+ *  scrolling filter chip row on the task list toolbar). */
 export function FilterSelect({
   value,
   options,
@@ -131,12 +122,39 @@ export function FilterSelect({
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
-  const ref = useOutsideClose(() => setOpen(false));
+  const [coords, setCoords] = useState<{ top: number; left: number; width: number } | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const selected = options.find((o) => o.value === value);
 
+  useEffect(() => {
+    if (!open) return;
+    function updatePosition() {
+      const rect = triggerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      setCoords({ top: rect.bottom + 6, left: rect.left, width: rect.width });
+    }
+    updatePosition();
+    function handleOutside(event: MouseEvent) {
+      const target = event.target as Node;
+      if (triggerRef.current?.contains(target)) return;
+      if (panelRef.current?.contains(target)) return;
+      setOpen(false);
+    }
+    document.addEventListener("mousedown", handleOutside);
+    window.addEventListener("scroll", updatePosition, true);
+    window.addEventListener("resize", updatePosition);
+    return () => {
+      document.removeEventListener("mousedown", handleOutside);
+      window.removeEventListener("scroll", updatePosition, true);
+      window.removeEventListener("resize", updatePosition);
+    };
+  }, [open]);
+
   return (
-    <div className={cn("relative", className)} ref={ref}>
+    <div className={cn("relative", className)}>
       <button
+        ref={triggerRef}
         onClick={() => setOpen((v) => !v)}
         className={cn(
           "flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-ink-200 bg-white px-3 text-sm font-medium text-ink-700 transition-colors hover:bg-ink-100",
@@ -154,8 +172,12 @@ export function FilterSelect({
           />
         )}
       </button>
-      {open && (
-        <div className="absolute z-30 mt-1.5 w-full min-w-max overflow-hidden rounded-lg border border-ink-200 bg-white py-1 shadow-popover">
+      {open && coords && createPortal(
+        <div
+          ref={panelRef}
+          style={{ position: "fixed", top: coords.top, left: coords.left, minWidth: coords.width }}
+          className="z-50 w-max max-w-xs overflow-hidden rounded-lg border border-ink-200 bg-white py-1 shadow-popover"
+        >
           {options.map((opt) => (
             <button
               key={opt.value}
@@ -169,7 +191,8 @@ export function FilterSelect({
               {opt.value === value && <Check size={15} className="text-brand-600" />}
             </button>
           ))}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

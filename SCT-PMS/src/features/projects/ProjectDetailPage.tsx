@@ -1,5 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { Fragment, useEffect, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   Activity,
@@ -9,7 +8,6 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  CircleDot,
   Clock3,
   MessageCircle,
   GitBranch,
@@ -34,7 +32,6 @@ import {
   Search,
   Send,
   Settings,
-  SlidersHorizontal,
   Star,
   Tag,
   Trash2,
@@ -56,6 +53,7 @@ import {
   DatePicker,
   Drawer,
   DropdownMenu,
+  EmployeePicker,
   Field,
   FilterSelect,
   Input,
@@ -520,7 +518,6 @@ function WorkspaceToolbar({
   canCreateTask: boolean;
   onAddTask: () => void;
 }) {
-  const [showFilters, setShowFilters] = useState(false);
   const activeCount = Object.values(filters).filter((value) => value !== undefined && value !== "" && value !== false).length;
   const update = <K extends keyof ProjectTaskFilters>(key: K, value: ProjectTaskFilters[K] | undefined) => {
     onFiltersChange({ ...filters, [key]: value || undefined });
@@ -542,8 +539,6 @@ function WorkspaceToolbar({
               <Button size="sm" className="rounded-l-none border-l border-brand-500 px-2"><ChevronDown size={14} /></Button>
             </div>
           )}
-          <button title="Project timer" className="rounded-lg p-2 text-ink-500 hover:bg-ink-100"><AlarmClock size={16} /></button>
-          <button title="Task information" className="rounded-lg p-2 text-ink-500 hover:bg-ink-100"><CircleDot size={16} /></button>
         </div>
         <div className="flex items-center gap-2">
           <span className="hidden text-[11px] text-ink-400 lg:inline">{filterLoading ? "Filtering..." : `${resultCount} tasks`}</span>
@@ -552,9 +547,6 @@ function WorkspaceToolbar({
             <input value={search} onChange={(e) => onSearch(e.target.value)} placeholder="Search tasks" className="h-8 w-44 rounded-md border border-ink-200 pl-8 pr-8 text-xs outline-none focus:border-brand-500" />
             {search && <button onClick={() => onSearch("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-ink-400 hover:text-ink-700"><X size={13} /></button>}
           </div>
-          <Button variant={activeCount ? "secondary" : "outline"} size="sm" leftIcon={<SlidersHorizontal size={14} />} onClick={() => setShowFilters((value) => !value)}>
-            Filter{activeCount ? ` (${activeCount})` : ""}
-          </Button>
           {canExport && <Button variant="outline" size="icon" onClick={onExport} title="Export filtered tasks"><Download size={15} /></Button>}
         </div>
       </div>
@@ -562,29 +554,21 @@ function WorkspaceToolbar({
         <button className="shrink-0 rounded-md border border-brand-200 bg-brand-50 px-3 py-1.5 text-xs text-brand-700">Group By: Section (default)</button>
         <button onClick={onCollapseSubtasks} className={cn("shrink-0 rounded-md border px-3 py-1.5 text-xs", collapseSubtasks ? "border-brand-200 bg-brand-50 text-brand-700" : "border-ink-200 bg-white text-ink-600")}>Subtasks: {collapseSubtasks ? "Collapse all" : "Expanded"}</button>
         <button onClick={() => update("incomplete", filters.incomplete ? undefined : true)} className={cn("shrink-0 rounded-md border px-3 py-1.5 text-xs", filters.incomplete ? "border-brand-300 bg-brand-50 text-brand-700" : "border-ink-200 bg-white text-ink-600")}>Incomplete Tasks</button>
+        <FilterSelect value={filters.status ?? ""} onChange={(value) => update("status", value as ProjectTaskFilters["status"])} options={[{ value: "", label: "All Statuses" }, ...TASK_STATUS_OPTIONS]} className="w-36 shrink-0 [&_button]:h-8 [&_button]:rounded-md [&_button]:text-xs" />
+        <FilterSelect value={filters.priority ?? ""} onChange={(value) => update("priority", value as ProjectTaskFilters["priority"])} options={[{ value: "", label: "All Priorities" }, ...["critical", "high", "medium", "low"].map((value) => ({ value, label: value[0].toUpperCase() + value.slice(1) }))]} className="w-36 shrink-0 [&_button]:h-8 [&_button]:rounded-md [&_button]:text-xs" />
         <FilterSelect value={filters.due ?? ""} onChange={(value) => update("due", value as ProjectTaskFilters["due"])} options={dueOptions} className="w-36 shrink-0 [&_button]:h-8 [&_button]:rounded-md [&_button]:text-xs" />
+        <FilterSelect value={filters.taskType ?? ""} onChange={(value) => update("taskType", value)} options={[{ value: "", label: "All Task Types" }, ...filterOptions.taskTypes.map((value) => ({ value, label: value.replaceAll("_", " ") }))]} className="w-40 shrink-0 [&_button]:h-8 [&_button]:rounded-md [&_button]:text-xs" />
+        <FilterSelect value={filters.milestoneId ?? ""} onChange={(value) => update("milestoneId", value)} options={[{ value: "", label: "All Milestones" }, { value: "none", label: "No milestone" }, ...milestones.map((milestone) => ({ value: milestone.id, label: milestone.name }))]} className="w-40 shrink-0 [&_button]:h-8 [&_button]:rounded-md [&_button]:text-xs" />
         <FilterSelect value={filters.tag ?? ""} onChange={(value) => update("tag", value)} options={[{ value: "", label: "All Tags" }, ...filterOptions.tags.map((tag) => ({ value: tag, label: tag }))]} className="w-32 shrink-0 [&_button]:h-8 [&_button]:rounded-md [&_button]:text-xs" />
-        <FilterSelect value={filters.assigneeId ?? ""} onChange={(value) => update("assigneeId", value)} options={[{ value: "", label: "All Users" }, { value: "unassigned", label: "Unassigned" }, ...employees.map((user) => ({ value: user.id, label: user.name }))]} className="w-40 shrink-0 [&_button]:h-8 [&_button]:rounded-md [&_button]:text-xs" />
-        {activeCount > 0 && <button onClick={() => onFiltersChange({})} className="shrink-0 px-2 py-1.5 text-xs font-medium text-danger-600 hover:underline">Clear filters</button>}
+        <EmployeePicker
+          employees={employees}
+          value={filters.assigneeId ?? ""}
+          onChange={(value) => update("assigneeId", value ?? "")}
+          extraOptions={[{ value: "", label: "All Users" }, { value: "unassigned", label: "Unassigned" }]}
+          className="w-40 shrink-0 [&_button]:h-8 [&_button]:rounded-md [&_button]:text-xs"
+        />
+        {activeCount > 0 && <button onClick={() => onFiltersChange({})} className="shrink-0 px-2 py-1.5 text-xs font-medium text-danger-600 hover:underline">Clear filters ({activeCount})</button>}
       </div>
-      {showFilters && (
-        <div className="absolute right-4 top-[52px] z-40 w-[620px] max-w-[calc(100vw-2rem)] rounded-xl border border-ink-200 bg-white p-4 shadow-popover">
-          <div className="mb-3 flex items-center justify-between"><div><p className="font-semibold text-ink-900">Task filters</p><p className="text-xs text-ink-500">Results are queried from the server for this project.</p></div><button onClick={() => setShowFilters(false)} className="rounded p-1 text-ink-400 hover:bg-ink-100"><X size={16} /></button></div>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            <Field label="Status"><FilterSelect value={filters.status ?? ""} onChange={(value) => update("status", value as ProjectTaskFilters["status"])} options={[{ value: "", label: "All statuses" }, ...TASK_STATUS_OPTIONS]} /></Field>
-            <Field label="Priority"><FilterSelect value={filters.priority ?? ""} onChange={(value) => update("priority", value as ProjectTaskFilters["priority"])} options={[{ value: "", label: "All priorities" }, ...["critical", "high", "medium", "low"].map((value) => ({ value, label: value[0].toUpperCase() + value.slice(1) }))]} /></Field>
-            <Field label="Assignee"><FilterSelect value={filters.assigneeId ?? ""} onChange={(value) => update("assigneeId", value)} options={[{ value: "", label: "All users" }, { value: "unassigned", label: "Unassigned" }, ...employees.map((user) => ({ value: user.id, label: user.name }))]} /></Field>
-            <Field label="Due date"><FilterSelect value={filters.due ?? ""} onChange={(value) => update("due", value as ProjectTaskFilters["due"])} options={dueOptions} /></Field>
-            <Field label="Task type"><FilterSelect value={filters.taskType ?? ""} onChange={(value) => update("taskType", value)} options={[{ value: "", label: "All task types" }, ...filterOptions.taskTypes.map((value) => ({ value, label: value.replaceAll("_", " ") }))]} /></Field>
-            <Field label="Milestone"><FilterSelect value={filters.milestoneId ?? ""} onChange={(value) => update("milestoneId", value)} options={[{ value: "", label: "All milestones" }, { value: "none", label: "No milestone" }, ...milestones.map((milestone) => ({ value: milestone.id, label: milestone.name }))]} /></Field>
-            <Field label="Tag"><FilterSelect value={filters.tag ?? ""} onChange={(value) => update("tag", value)} options={[{ value: "", label: "All tags" }, ...filterOptions.tags.map((tag) => ({ value: tag, label: tag }))]} /></Field>
-          </div>
-          <div className="mt-4 flex items-center justify-between border-t border-ink-100 pt-3">
-            <label className="flex items-center gap-2 text-sm text-ink-700"><input type="checkbox" checked={Boolean(filters.incomplete)} onChange={(event) => update("incomplete", event.target.checked || undefined)} /> Incomplete tasks only</label>
-            <div className="flex gap-2"><Button variant="outline" size="sm" onClick={() => onFiltersChange({})}>Clear all</Button><Button size="sm" onClick={() => setShowFilters(false)}>Apply filters</Button></div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -2369,92 +2353,6 @@ export function TaskWorkspaceDrawer({
 function TaskRow({ icon, label, children }: { icon: React.ReactNode; label: string; children: React.ReactNode }) {
   return <div className="grid grid-cols-[155px_minmax(0,1fr)] items-start gap-4 px-4 py-3 text-sm"><dt className="flex items-center gap-2 pt-2 text-ink-500">{icon}{label}</dt><dd className="min-w-0">{children}</dd></div>;
 }
-function EmployeePicker({
-  employees,
-  value,
-  onChange,
-  disabled,
-  excludeIds = [],
-  placeholder = "Select employee",
-  allowClear = false,
-}: {
-  employees: CompanyUser[];
-  value?: string | null;
-  onChange: (employeeId: string | null) => void;
-  disabled?: boolean;
-  excludeIds?: string[];
-  placeholder?: string;
-  allowClear?: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const [coords, setCoords] = useState<{ top: number; left: number; width: number } | null>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const panelRef = useRef<HTMLDivElement>(null);
-  const selected = employees.find((employee) => employee.id === value);
-  const available = employees.filter((employee) => !excludeIds.includes(employee.id) && `${employee.name} ${employee.email}`.toLowerCase().includes(query.toLowerCase()));
-  const choose = (employeeId: string | null) => {
-    onChange(employeeId);
-    setOpen(false);
-    setQuery("");
-  };
-
-  useEffect(() => {
-    if (!open) return;
-    function updatePosition() {
-      const rect = triggerRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      setCoords({ top: rect.bottom + 6, left: rect.left, width: Math.max(rect.width, 280) });
-    }
-    updatePosition();
-    function handleOutside(event: MouseEvent) {
-      const target = event.target as Node;
-      if (triggerRef.current?.contains(target)) return;
-      if (panelRef.current?.contains(target)) return;
-      setOpen(false);
-    }
-    document.addEventListener("mousedown", handleOutside);
-    window.addEventListener("scroll", updatePosition, true);
-    window.addEventListener("resize", updatePosition);
-    return () => {
-      document.removeEventListener("mousedown", handleOutside);
-      window.removeEventListener("scroll", updatePosition, true);
-      window.removeEventListener("resize", updatePosition);
-    };
-  }, [open]);
-
-  return (
-    <div className="relative">
-      <button ref={triggerRef} type="button" disabled={disabled} onClick={() => setOpen((current) => !current)} className="flex h-10 w-full items-center gap-2 rounded-lg border border-ink-200 bg-white px-3 text-left text-sm transition hover:border-brand-300 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 disabled:bg-ink-100">
-        {selected ? <MemberAvatar id={selected.id} name={selected.name} size="xs" status={selected.accountStatus === "active" ? "active" : "inactive"} /> : <span className="flex h-6 w-6 items-center justify-center rounded-full bg-ink-100 text-[10px] font-semibold text-ink-500"><Users size={13} /></span>}
-        <span className={cn("min-w-0 flex-1 truncate", selected ? "font-medium text-ink-800" : "text-ink-400")}>{selected?.name ?? placeholder}</span>
-        <ChevronDown size={15} className={cn("shrink-0 text-ink-400 transition", open && "rotate-180")} />
-      </button>
-      {open && !disabled && coords && createPortal(
-        <div
-          ref={panelRef}
-          style={{ position: "fixed", top: coords.top, left: coords.left, width: coords.width }}
-          className="z-[80] overflow-hidden rounded-xl border border-ink-200 bg-white shadow-popover"
-        >
-          <div className="border-b border-ink-100 p-2"><Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search employee..." leftIcon={<Search size={14} />} autoFocus /></div>
-          <div className="max-h-64 overflow-y-auto p-1.5">
-            {allowClear && <button type="button" onClick={() => choose(null)} className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left text-sm text-ink-500 hover:bg-ink-50"><span className="flex h-7 w-7 items-center justify-center rounded-full bg-ink-100"><X size={13} /></span>Unassigned</button>}
-            {available.map((employee) => (
-              <button key={employee.id} type="button" onClick={() => choose(employee.id)} className={cn("flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left transition hover:bg-brand-50", employee.id === value && "bg-brand-50")}>
-                <MemberAvatar id={employee.id} name={employee.name} size="sm" status={employee.accountStatus === "active" ? "active" : "inactive"} />
-                <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink-800">{employee.name}</span>
-                {employee.id === value && <CheckCircle2 size={16} className="text-brand-600" />}
-              </button>
-            ))}
-            {available.length === 0 && <p className="px-3 py-5 text-center text-xs text-ink-400">No employees found</p>}
-          </div>
-        </div>,
-        document.body,
-      )}
-    </div>
-  );
-}
-
 function Summary({ label, value }: { label: string; value: string }) {
   return <div><p className="text-xs text-ink-500">{label}</p><p className="mt-1 font-semibold capitalize text-ink-900">{value}</p></div>;
 }
