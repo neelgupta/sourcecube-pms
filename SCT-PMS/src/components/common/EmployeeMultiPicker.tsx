@@ -17,6 +17,7 @@ export function EmployeeMultiPicker({
   disabled,
   placeholder = "All employees",
   className,
+  closeSignal,
 }: {
   employees: EmployeePickerOption[];
   value: string[];
@@ -24,6 +25,7 @@ export function EmployeeMultiPicker({
   disabled?: boolean;
   placeholder?: string;
   className?: string;
+  closeSignal?: unknown;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -32,6 +34,8 @@ export function EmployeeMultiPicker({
   const panelRef = useRef<HTMLDivElement>(null);
   const selected = employees.filter((employee) => value.includes(employee.id));
   const available = employees.filter((employee) => `${employee.name} ${employee.email ?? ""}`.toLowerCase().includes(query.toLowerCase()));
+
+  useEffect(() => setOpen(false), [closeSignal]);
 
   function toggle(employeeId: string) {
     onChange(value.includes(employeeId) ? value.filter((id) => id !== employeeId) : [...value, employeeId]);

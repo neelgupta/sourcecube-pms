@@ -1540,6 +1540,7 @@ const stopTimerSchema = z.object({
   activityType: z.string().trim().min(1, "Activity is required").max(100),
   billable: z.boolean(),
   note: z.string().trim().min(1, "Description is required").max(500),
+  durationSeconds: z.number().int().positive("Duration must be greater than 0").max(7 * 24 * 60 * 60, "Duration cannot exceed 7 days").optional(),
 });
 
 projectsRouter.get("/:id/timer/active", requirePermission("tasks", "view"), async (req, res) => {
@@ -1656,8 +1657,14 @@ projectsRouter.post("/:id/tasks/:taskId/timer/stop", requirePermission("tasks", 
     res.status(404).json({ error: "No active timer found for this task" });
     return;
   }
-  const endedAt = new Date();
-  const durationSeconds = Math.max(1, Math.floor((endedAt.getTime() - entry.startedAt.getTime()) / 1000));
+  const liveEndedAt = new Date();
+  const liveDurationSeconds = Math.max(1, Math.floor((liveEndedAt.getTime() - entry.startedAt.getTime()) / 1000));
+  const durationSeconds = parsed.data.durationSeconds ?? liveDurationSeconds;
+  if (durationSeconds > liveDurationSeconds + 60) {
+    res.status(400).json({ error: "Corrected duration cannot be greater than the running timer duration" });
+    return;
+  }
+  const endedAt = new Date(entry.startedAt.getTime() + durationSeconds * 1000);
   const [updatedEntry, task, project] = await prisma.$transaction([
     prisma.taskTimeEntry.update({
       where: { id: entry.id },

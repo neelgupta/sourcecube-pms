@@ -479,7 +479,7 @@ export const api = {
   stopTaskTimer: (
     projectId: string,
     taskId: string,
-    input: { activityType: string; billable: boolean; note: string },
+    input: { activityType: string; billable: boolean; note: string; durationSeconds?: number },
   ) =>
     request<{ entry: TaskTimeEntry; taskTrackedSeconds: number; projectTrackedSeconds: number }>(
       `/projects/${projectId}/tasks/${taskId}/timer/stop`,

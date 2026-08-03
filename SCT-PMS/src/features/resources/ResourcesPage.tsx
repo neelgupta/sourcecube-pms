@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Briefcase,
@@ -89,6 +89,11 @@ export function ResourcesPage() {
   const [teamId, setTeamId] = useState("");
   const [showFilters, setShowFilters] = useState(false);
   const [showSchedule, setShowSchedule] = useState(false);
+  const [dropdownCloseSignal, setDropdownCloseSignal] = useState(0);
+  const filterButtonRef = useRef<HTMLSpanElement>(null);
+  const scheduleButtonRef = useRef<HTMLSpanElement>(null);
+  const filterPopoverRef = useRef<HTMLDivElement>(null);
+  const schedulePopoverRef = useRef<HTMLDivElement>(null);
   const [revision, setRevision] = useState(0);
   const [planner, setPlanner] = useState<ResourcePlannerResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -101,11 +106,48 @@ export function ResourcesPage() {
     [preset, customRange],
   );
 
+  function closeTopDropdowns() {
+    setDropdownCloseSignal((value) => value + 1);
+  }
+
+  function closeResourcePopovers() {
+    setShowFilters(false);
+    setShowSchedule(false);
+  }
+
+  function openFilterPopover() {
+    closeTopDropdowns();
+    setShowSchedule(false);
+    setShowFilters((value) => !value);
+  }
+
+  function openSchedulePopover() {
+    closeTopDropdowns();
+    setShowFilters(false);
+    setShowSchedule((value) => !value);
+  }
+
+  function clearResourceFilters() {
+    setTeamId("");
+    setShowFilters(false);
+    setRevision((value) => value + 1);
+  }
   function choosePreset(value: RangePreset) {
     setPreset(value);
     if (value !== "custom") setCustomRange(presetRange(value));
   }
 
+  useEffect(() => {
+    if (!showFilters && !showSchedule) return;
+    function handleOutside(event: MouseEvent) {
+      const target = event.target as Node;
+      if (filterButtonRef.current?.contains(target) || scheduleButtonRef.current?.contains(target)) return;
+      if (filterPopoverRef.current?.contains(target) || schedulePopoverRef.current?.contains(target)) return;
+      closeResourcePopovers();
+    }
+    document.addEventListener("mousedown", handleOutside);
+    return () => document.removeEventListener("mousedown", handleOutside);
+  }, [showFilters, showSchedule]);
   useEffect(() => {
     if (!selectedPeriod.start || !selectedPeriod.end || selectedPeriod.start > selectedPeriod.end) return;
     let cancelled = false;
@@ -182,25 +224,40 @@ export function ResourcesPage() {
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <EmployeeMultiPicker
-            employees={planner?.filterOptions.employees ?? []}
-            value={employeeIds}
-            onChange={setEmployeeIds}
-            placeholder="All employees"
-            className="w-56"
-          />
-          <FilterSelect value={occupancy} options={occupancyOptions} onChange={(value) => setOccupancy(value as typeof occupancy)} className="w-52" />
-          <Button variant={teamId ? "secondary" : "outline"} size="sm" leftIcon={<SlidersHorizontal size={14} />} onClick={() => setShowFilters((value) => !value)}>Filter{teamId ? " (1)" : ""}</Button>
-          <Button variant="outline" size="icon" title="Company working hours" onClick={() => setShowSchedule((value) => !value)}><Settings size={16} /></Button>
+          <div onMouseDown={closeResourcePopovers}>
+            <EmployeeMultiPicker
+              employees={planner?.filterOptions.employees ?? []}
+              value={employeeIds}
+              onChange={(next) => { setEmployeeIds(next); closeResourcePopovers(); }}
+              placeholder="All employees"
+              className="w-56"
+              closeSignal={dropdownCloseSignal}
+            />
+          </div>
+          <div onMouseDown={closeResourcePopovers}>
+            <FilterSelect
+              value={occupancy}
+              options={occupancyOptions}
+              onChange={(value) => { setOccupancy(value as typeof occupancy); closeResourcePopovers(); }}
+              className="w-52"
+              closeSignal={dropdownCloseSignal}
+            />
+          </div>
+          <span ref={filterButtonRef}>
+            <Button variant={teamId ? "secondary" : "outline"} size="sm" leftIcon={<SlidersHorizontal size={14} />} onClick={openFilterPopover}>Filter{teamId ? " (1)" : ""}</Button>
+          </span>
+          <span ref={scheduleButtonRef}>
+            <Button variant="outline" size="icon" title="Company working hours" onClick={openSchedulePopover}><Settings size={16} /></Button>
+          </span>
           <Button size="icon" title="Assign work from Projects" onClick={() => navigate("/projects")}><Plus size={18} /></Button>
         </div>
-        {showFilters && <div className="absolute right-20 top-full z-40 mt-2 w-72 rounded-xl border border-ink-200 bg-white p-4 shadow-popover">
+        {showFilters && <div ref={filterPopoverRef} className="absolute right-20 top-full z-40 mt-2 w-72 rounded-xl border border-ink-200 bg-white p-4 shadow-popover">
           <div className="flex items-center justify-between"><p className="font-semibold text-ink-900">Resource filters</p><button onClick={() => setShowFilters(false)}><X size={15} className="text-ink-400" /></button></div>
           <label className="mb-1 mt-3 block text-xs font-medium text-ink-600">Team</label>
           <FilterSelect value={teamId} onChange={setTeamId} options={[{ value: "", label: "All teams" }, ...(planner?.filterOptions.teams ?? []).map((team) => ({ value: team.id, label: team.name }))]} />
-          <div className="mt-3 flex justify-end gap-2"><Button variant="outline" size="sm" onClick={() => setTeamId("")}>Clear</Button><Button size="sm" onClick={() => setShowFilters(false)}>Apply</Button></div>
+          <div className="mt-3 flex justify-end gap-2"><Button variant="outline" size="sm" onClick={clearResourceFilters}>Clear</Button><Button size="sm" onClick={() => setShowFilters(false)}>Apply</Button></div>
         </div>}
-        {showSchedule && planner && <div className="absolute right-12 top-full z-40 mt-2 w-80 rounded-xl border border-ink-200 bg-white p-4 shadow-popover">
+        {showSchedule && planner && <div ref={schedulePopoverRef} className="absolute right-12 top-full z-40 mt-2 w-80 rounded-xl border border-ink-200 bg-white p-4 shadow-popover">
           <div className="flex items-center justify-between"><p className="font-semibold text-ink-900">Company working hours</p><button onClick={() => setShowSchedule(false)}><X size={15} className="text-ink-400" /></button></div>
           <div className="mt-3 grid grid-cols-2 gap-3 text-sm"><Summary label="Schedule" value={planner.schedule.name} /><Summary label="Hours" value={`${planner.schedule.startTime} – ${planner.schedule.endTime}`} /><Summary label="Break" value={`${planner.schedule.breakMinutes} minutes`} /><Summary label="Daily capacity" value={`${hoursFromMinutes(planner.schedule.dailyMinutes)} hours`} /></div>
           <p className="mt-3 text-xs text-ink-500">Capacity is applied only on configured working days. Non-optional holidays have zero capacity.</p>

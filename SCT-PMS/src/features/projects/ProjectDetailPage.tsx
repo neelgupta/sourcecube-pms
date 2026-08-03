@@ -97,7 +97,7 @@ export type ActiveTaskTimer = TaskTimeEntry & {
   project?: { id: string; name: string };
 };
 
-export type StopTimerInput = { activityType: string; billable: boolean; note: string };
+export type StopTimerInput = { activityType: string; billable: boolean; note: string; durationSeconds?: number };
 export type StopTimerTarget = {
   entry: ActiveTaskTimer;
   task?: WorkspaceTask;
@@ -2489,35 +2489,63 @@ export function TimerStopDialog({
   const [activityType, setActivityType] = useState("");
   const [note, setNote] = useState("");
   const [billable, setBillable] = useState(false);
+  const [durationHours, setDurationHours] = useState("");
+  const [durationMinutes, setDurationMinutes] = useState("");
+  const [durationTouched, setDurationTouched] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!target) return;
+    const liveSeconds = Math.max(60, Math.floor((Date.now() - new Date(target.entry.startedAt).getTime()) / 1000));
+    const liveMinutes = Math.max(1, Math.ceil(liveSeconds / 60));
     setActivityType("");
     setNote("");
     setBillable(target.entry.billable);
+    setDurationHours(liveMinutes >= 60 ? String(Math.floor(liveMinutes / 60)) : "");
+    setDurationMinutes(String(liveMinutes % 60).padStart(2, "0"));
+    setDurationTouched(false);
     setError(null);
     setNow(Date.now());
   }, [target?.entry.id]);
 
   useEffect(() => {
     if (!target) return;
-    const interval = window.setInterval(() => setNow(Date.now()), 1000);
+    const interval = window.setInterval(() => {
+      const nextNow = Date.now();
+      setNow(nextNow);
+      if (!durationTouched) {
+        const liveMinutes = Math.max(1, Math.ceil(Math.max(0, Math.floor((nextNow - new Date(target.entry.startedAt).getTime()) / 1000)) / 60));
+        setDurationHours(liveMinutes >= 60 ? String(Math.floor(liveMinutes / 60)) : "");
+        setDurationMinutes(String(liveMinutes % 60).padStart(2, "0"));
+      }
+    }, 1000);
     return () => window.clearInterval(interval);
-  }, [target?.entry.id]);
+  }, [target?.entry.id, durationTouched]);
 
   if (!target) return null;
   const seconds = Math.max(0, Math.floor((now - new Date(target.entry.startedAt).getTime()) / 1000));
   const taskName = target.task?.name ?? target.entry.task?.name ?? "Task";
   const projectName = target.entry.project?.name ?? "Project";
+  const correctedHours = Math.max(0, Math.floor(Number(durationHours || 0)));
+  const correctedMinutes = Math.max(0, Math.floor(Number(durationMinutes || 0)));
+  const correctedSeconds = correctedHours * 3600 + correctedMinutes * 60;
+
+  function useLiveDuration() {
+    const liveMinutes = Math.max(1, Math.ceil(seconds / 60));
+    setDurationHours(liveMinutes >= 60 ? String(Math.floor(liveMinutes / 60)) : "");
+    setDurationMinutes(String(liveMinutes % 60).padStart(2, "0"));
+    setDurationTouched(false);
+  }
 
   async function save() {
     if (!activityType) { setError("Select an activity before saving the work log."); return; }
     if (!note.trim()) { setError("Description is required before the timer can stop."); return; }
+    if (correctedSeconds <= 0) { setError("Correct duration must be greater than 0 minutes."); return; }
+    if (correctedSeconds > seconds + 60) { setError("Correct duration cannot be greater than the running timer duration."); return; }
     setError(null);
     try {
-      await onSave({ activityType, billable, note: note.trim() });
+      await onSave({ activityType, billable, note: note.trim(), durationSeconds: correctedSeconds });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "The work log could not be saved");
     }
@@ -2544,6 +2572,20 @@ export function TimerStopDialog({
       <div className="space-y-3 p-4">
         <div className="grid grid-cols-2 gap-3"><Summary label="Project Name" value={projectName} /><Summary label="Task Name" value={taskName} /></div>
         <Field label="Select activity" required><Select value={activityType} onChange={(event) => setActivityType(event.target.value)} disabled={busy}><option value="">Select activity</option>{timerActivityOptions.map((activity) => <option key={activity} value={activity}>{activity}</option>)}</Select></Field>
+        <Field label="Correct work duration" required>
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="flex h-10 min-w-[96px] flex-1 items-center rounded-lg border border-ink-200 bg-white px-3 focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-100">
+              <input type="number" min="0" inputMode="numeric" value={durationHours} onChange={(event) => { setDurationTouched(true); setDurationHours(event.target.value); }} placeholder="00" disabled={busy} className="min-w-0 flex-1 border-0 bg-transparent text-sm text-ink-900 outline-none placeholder:text-ink-400" />
+              <span className="ml-2 shrink-0 text-xs font-semibold text-ink-500">H</span>
+            </label>
+            <label className="flex h-10 min-w-[96px] flex-1 items-center rounded-lg border border-ink-200 bg-white px-3 focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-100">
+              <input type="number" min="0" max="59" inputMode="numeric" value={durationMinutes} onChange={(event) => { setDurationTouched(true); setDurationMinutes(event.target.value); }} placeholder="00" disabled={busy} className="min-w-0 flex-1 border-0 bg-transparent text-sm text-ink-900 outline-none placeholder:text-ink-400" />
+              <span className="ml-2 shrink-0 text-xs font-semibold text-ink-500">M</span>
+            </label>
+            <button type="button" onClick={useLiveDuration} disabled={busy} className="h-10 rounded-lg border border-ink-200 px-3 text-xs font-semibold text-brand-600 hover:bg-brand-50 disabled:opacity-50">Use live</button>
+          </div>
+          <p className="mt-1 text-[11px] text-ink-400">Live timer: {formatSeconds(seconds)}. Adjust this if the timer was left running after actual work ended.</p>
+        </Field>
         <Field label="Description" required><textarea value={note} onChange={(event) => setNote(event.target.value.slice(0, 500))} disabled={busy} placeholder="What did you work on?" className="min-h-28 w-full resize-none rounded-lg border border-ink-200 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/15" /><p className="mt-1 text-right text-[11px] text-ink-400">{note.length}/500</p></Field>
         <label className="flex cursor-pointer items-center gap-2 text-sm text-ink-600"><input type="checkbox" checked={billable} onChange={(event) => setBillable(event.target.checked)} disabled={busy} className="h-4 w-4 rounded border-ink-300 text-brand-600" />Billable</label>
         {error && <p className="rounded-lg border border-danger-200 bg-danger-50 px-3 py-2 text-sm text-danger-700">{error}</p>}

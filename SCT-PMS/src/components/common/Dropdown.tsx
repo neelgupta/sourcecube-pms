@@ -112,6 +112,7 @@ export function FilterSelect({
   icon,
   trailingIcon,
   className,
+  closeSignal,
 }: {
   value: string;
   options: SelectOption[];
@@ -120,12 +121,15 @@ export function FilterSelect({
   /** Replaces the default chevron — e.g. a calendar glyph for month pickers. */
   trailingIcon?: ReactNode;
   className?: string;
+  closeSignal?: unknown;
 }) {
   const [open, setOpen] = useState(false);
   const [coords, setCoords] = useState<{ top: number; left: number; width: number } | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const selected = options.find((o) => o.value === value);
+
+  useEffect(() => setOpen(false), [closeSignal]);
 
   useEffect(() => {
     if (!open) return;
