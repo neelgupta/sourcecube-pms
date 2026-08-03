@@ -151,16 +151,8 @@ reportsRouter.get("/team-productivity", requirePermission("resources", "view"), 
     return { id: team.id, name: team.name, lead: team.leadUser, memberCount: team.members.length, members, ...metrics, tasks: undefined };
   });
   const unassigned = buildMetrics(null);
-  if (!input.teamId && unassigned.allocatedTasks) {
-    // For a non-elevated caller with no team, accessibleTaskScope only ever returns their own
-    // tasks — so this "no team" bucket is really just their personal workload, not the
-    // company's pool of unassigned work. Labeling it "Unassigned" reads as if it belongs to
-    // someone else / the whole org, so it's labeled with their own name instead.
-    const isOwnWorkOnly = !elevated && unassigned.tasks?.every((task) => task.assigneeId === uid);
-    const label = isOwnWorkOnly
-      ? (await prisma.companyUser.findFirst({ where: { id: uid, tenantId: tid }, select: { name: true } }))?.name ?? "Unassigned"
-      : "Unassigned";
-    teamRows.push({ id: "unassigned", name: label, lead: null, memberCount: 0, members: [], ...unassigned, tasks: undefined });
+  if (!input.teamId && unassigned.allocatedTasks && (elevated || allowedTeams.length === 0)) {
+    teamRows.push({ id: "unassigned", name: "Unassigned", lead: null, memberCount: 0, members: [], ...unassigned, tasks: undefined });
   }
   teamRows = teamRows.filter((team) => elevated || team.allocatedTasks > 0 || team.id !== "unassigned");
 
