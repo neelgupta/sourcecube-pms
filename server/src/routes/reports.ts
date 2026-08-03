@@ -151,7 +151,17 @@ reportsRouter.get("/team-productivity", requirePermission("resources", "view"), 
     return { id: team.id, name: team.name, lead: team.leadUser, memberCount: team.members.length, members, ...metrics, tasks: undefined };
   });
   const unassigned = buildMetrics(null);
-  if (!input.teamId && unassigned.allocatedTasks) teamRows.push({ id: "unassigned", name: "Unassigned", lead: null, memberCount: 0, members: [], ...unassigned, tasks: undefined });
+  if (!input.teamId && unassigned.allocatedTasks) {
+    // For a non-elevated caller with no team, accessibleTaskScope only ever returns their own
+    // tasks — so this "no team" bucket is really just their personal workload, not the
+    // company's pool of unassigned work. Labeling it "Unassigned" reads as if it belongs to
+    // someone else / the whole org, so it's labeled with their own name instead.
+    const isOwnWorkOnly = !elevated && unassigned.tasks?.every((task) => task.assigneeId === uid);
+    const label = isOwnWorkOnly
+      ? (await prisma.companyUser.findFirst({ where: { id: uid, tenantId: tid }, select: { name: true } }))?.name ?? "Unassigned"
+      : "Unassigned";
+    teamRows.push({ id: "unassigned", name: label, lead: null, memberCount: 0, members: [], ...unassigned, tasks: undefined });
+  }
   teamRows = teamRows.filter((team) => elevated || team.allocatedTasks > 0 || team.id !== "unassigned");
 
   const overallCompleted = visibleTasks.filter((task) => task.completedAt && localDateKey(task.completedAt, company.timezone) >= input.start && localDateKey(task.completedAt, company.timezone) <= input.end).length;
@@ -443,7 +453,10 @@ reportsRouter.get("/time-utilisation", requirePermission("resources", "view"), a
     prisma.company.findUniqueOrThrow({ where: { id: tid }, select: { timezone: true } }),
     prisma.workingSchedule.findFirst({ where: { tenantId: tid }, orderBy: { createdAt: "asc" } }),
     prisma.holiday.findMany({ where: { tenantId: tid, date: { gte: new Date(`${input.start}T00:00:00.000Z`), lt: new Date(`${addDays(input.end, 1)}T00:00:00.000Z`) } }, select: { date: true, optional: true } }),
-    prisma.team.findMany({ where: { tenantId: tid, status: "active" }, select: { id: true, name: true } }),
+    // Not scoped by role yet — filtered below into visibleTeams for non-elevated callers, since
+    // an employee shouldn't see every team in the company in this report's "Team" filter, only
+    // ones relevant to them (their own team, or a team whose member's tracked time they can see).
+    prisma.team.findMany({ where: { tenantId: tid, status: "active" }, select: { id: true, name: true, leadUserId: true, members: { select: { userId: true } } } }),
   ]);
 
   const employeeWhere: Prisma.CompanyUserWhereInput = elevated
@@ -457,6 +470,9 @@ reportsRouter.get("/time-utilisation", requirePermission("resources", "view"), a
   const search = input.search?.toLowerCase();
   const visibleEmployees = search ? employees.filter((employee) => employee.name.toLowerCase().includes(search)) : employees;
   const employeeIds = visibleEmployees.map((employee) => employee.id);
+  const visibleTeams = elevated
+    ? teams
+    : teams.filter((team) => team.leadUserId === uid || team.members.some((member) => member.userId === uid || employeeIds.includes(member.userId)));
 
   const entries = await prisma.taskTimeEntry.findMany({
     where: {
@@ -532,7 +548,7 @@ reportsRouter.get("/time-utilisation", requirePermission("resources", "view"), a
     },
     daily,
     members,
-    filterOptions: { teams },
+    filterOptions: { teams: visibleTeams.map((team) => ({ id: team.id, name: team.name })) },
     methodology: "Capacity follows the company working schedule (working days, shift hours, break policy) minus non-optional holidays, multiplied by the number of employees in view. Tracked and billable time comes from saved work logs on tasks the viewer can access.",
   });
 });

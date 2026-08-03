@@ -285,6 +285,15 @@ export function ProjectDetailPage() {
   function canEditTask(task: WorkspaceTask): boolean {
     return canEditTaskPermission && (projectHasEditAccess || task.assigneeId === currentUserId);
   }
+  /** The self-assignee carve-out in canEditTask lets someone with no real project access edit
+   *  their own task's status/progress/etc, but reassigning it to somebody else (or unassigning
+   *  themselves) is a project-management action, not self-editing — mirrors the backend's
+   *  PATCH /:id/tasks/:taskId check in server/src/routes/projects.ts, which independently
+   *  requires real project edit access for any assigneeId change. Without this, an employee
+   *  could open their own assigned task and hand it off to anyone else in the company. */
+  function canReassignTask(_task: WorkspaceTask): boolean {
+    return canEditTaskPermission && projectHasEditAccess;
+  }
   const tasks = sections.flatMap((section) => section.tasks);
   const visibleSections = sections.map((section) => ({
     ...section,
@@ -415,6 +424,7 @@ export function ProjectDetailPage() {
             sections={visibleSections}
             canCreate={canCreateTask}
             canEditTask={canEditTask}
+            canReassignTask={canReassignTask}
             employees={companyUsers}
             milestones={milestones}
             onChanged={load}
@@ -430,6 +440,7 @@ export function ProjectDetailPage() {
             sections={visibleSections}
             canCreate={canCreateTask}
             canEditTask={canEditTask}
+            canReassignTask={canReassignTask}
             canManageSections={canManageSections}
             employees={companyUsers}
             onChanged={load}
@@ -475,6 +486,7 @@ export function ProjectDetailPage() {
         taskActivities={workspace.activities.filter((activity) => activity.targetId === selectedTask?.id)}
         currentUserId={currentUserId}
         canEdit={selectedTask ? canEditTask(selectedTask) : false}
+        canReassign={selectedTask ? canReassignTask(selectedTask) : false}
         canDelete={canDeleteTaskPermission}
         onTaskChanged={syncWorkspaceTask}
         onTaskDeleted={removeWorkspaceTask}
@@ -584,6 +596,7 @@ function TaskListWorkspace({
   sections,
   canCreate,
   canEditTask,
+  canReassignTask,
   employees,
   milestones,
   onChanged,
@@ -596,6 +609,7 @@ function TaskListWorkspace({
   sections: ProjectSection[];
   canCreate: boolean;
   canEditTask: (task: WorkspaceTask) => boolean;
+  canReassignTask: (task: WorkspaceTask) => boolean;
   employees: CompanyUser[];
   milestones: ProjectMilestone[];
   onChanged: () => void;
@@ -766,7 +780,7 @@ function TaskListWorkspace({
                     <AssigneeCell
                       task={task}
                       employees={employees}
-                      canEdit={canEditTask(task)}
+                      canEdit={canReassignTask(task)}
                       saving={savingField === `${task.id}-assignee`}
                       onChange={(assigneeId) => patchTask(task.id, "assignee", { assigneeId })}
                     />
@@ -1175,6 +1189,7 @@ function KanbanWorkspace({
   sections,
   canCreate,
   canEditTask,
+  canReassignTask,
   canManageSections,
   employees,
   onChanged,
@@ -1187,6 +1202,7 @@ function KanbanWorkspace({
   sections: ProjectSection[];
   canCreate: boolean;
   canEditTask: (task: WorkspaceTask) => boolean;
+  canReassignTask: (task: WorkspaceTask) => boolean;
   canManageSections: boolean;
   employees: CompanyUser[];
   onChanged: () => void;
@@ -1412,7 +1428,7 @@ function KanbanWorkspace({
                       {task.tags.length ? task.tags.map((tag) => <Badge key={tag} tone="purple">{tag}</Badge>) : <span className="inline-flex items-center gap-1 rounded border border-ink-200 px-2 py-1 text-[11px] text-ink-500"><Tag size={11} /> No Tags</span>}
                     </div>
                     <div className="flex min-h-12 items-center gap-2 border-t border-ink-100 px-3" onClick={(event) => event.stopPropagation()}>
-                      {canEditTask(task) ? <DropdownMenu align="left" trigger={task.assignee ? <MemberAvatar id={task.assignee.id} name={task.assignee.name} size="xs" status={task.assignee.accountStatus === "active" ? "active" : "inactive"} /> : <span className="flex h-7 w-7 items-center justify-center rounded-full border border-ink-200 text-ink-400"><Users size={13} /></span>} items={[
+                      {canReassignTask(task) ? <DropdownMenu align="left" trigger={task.assignee ? <MemberAvatar id={task.assignee.id} name={task.assignee.name} size="xs" status={task.assignee.accountStatus === "active" ? "active" : "inactive"} /> : <span className="flex h-7 w-7 items-center justify-center rounded-full border border-ink-200 text-ink-400"><Users size={13} /></span>} items={[
                         { id: "unassigned", label: "Unassigned", icon: <Users size={14} />, onSelect: () => reassign(task, null) },
                         ...employees.map((user) => ({ id: user.id, label: user.name, icon: <MemberAvatar id={user.id} name={user.name} size="xs" status={user.accountStatus === "active" ? "active" : "inactive"} />, onSelect: () => reassign(task, user.id) })),
                       ]} /> : task.assignee ? <MemberAvatar id={task.assignee.id} name={task.assignee.name} size="xs" status={task.assignee.accountStatus === "active" ? "active" : "inactive"} /> : <Users size={15} className="text-ink-400" />}
@@ -1853,6 +1869,7 @@ export function TaskWorkspaceDrawer({
   taskActivities,
   currentUserId,
   canEdit,
+  canReassign,
   canDelete,
   onTaskChanged,
   onTaskDeleted,
@@ -1868,6 +1885,7 @@ export function TaskWorkspaceDrawer({
   taskActivities: AuditLogEntry[];
   currentUserId: string;
   canEdit: boolean;
+  canReassign: boolean;
   canDelete: boolean;
   onTaskChanged: (task: WorkspaceTask) => void;
   onTaskDeleted: (taskId: string) => void;
@@ -2230,7 +2248,7 @@ export function TaskWorkspaceDrawer({
             <dl className="divide-y divide-ink-100 rounded-lg border border-ink-200">
               <TaskRow icon={<Folder size={15} />} label="Project Name"><span className="font-medium text-ink-800">{projectName}</span></TaskRow>
               <TaskRow icon={<Users size={15} />} label="Assignee">
-                <EmployeePicker employees={activeEmployees} value={localTask.assigneeId} onChange={(employeeId) => updateTask({ assigneeId: employeeId })} disabled={!canEdit || saving} placeholder="Unassigned" allowClear />
+                <EmployeePicker employees={activeEmployees} value={localTask.assigneeId} onChange={(employeeId) => updateTask({ assigneeId: employeeId })} disabled={!canReassign || saving} placeholder="Unassigned" allowClear />
               </TaskRow>
               <TaskRow icon={<CalendarDays size={15} />} label="Start Date"><DatePicker value={dateValue(localTask.startDate)} onChange={(value) => updateTask({ startDate: value })} disabled={!canEdit} max={dateValue(localTask.dueDate) || null} /></TaskRow>
               <TaskRow icon={<CalendarDays size={15} />} label="Due Date"><DatePicker value={dateValue(localTask.dueDate)} onChange={(value) => updateTask({ dueDate: value })} disabled={!canEdit} min={dateValue(localTask.startDate) || null} /></TaskRow>

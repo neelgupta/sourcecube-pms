@@ -622,7 +622,7 @@ projectsRouter.get("/:id/eligible-users", requirePermission("tasks", "view"), as
   const project = await prisma.project.findFirst({ where: { AND: [{ id }, scope] }, select: { id: true } });
   if (!project) { res.status(404).json({ error: "Project not found" }); return; }
   const roles = await getCompanyUserRoles(tid, uid);
-  const userScope: Prisma.CompanyUserWhereInput = roles.includes("company_super_admin")
+  const userScope: Prisma.CompanyUserWhereInput = roles.includes("company_super_admin") || roles.includes("project_manager")
     ? { tenantId: tid, accountStatus: "active" }
     : {
         tenantId: tid,
@@ -992,6 +992,17 @@ projectsRouter.patch("/:id/tasks/:taskId", requirePermission("tasks", "edit"), a
     return;
   }
   const data = parsed.data;
+  // The self-assignee carve-out in canEditTaskForProject lets someone with no real project
+  // access edit their own task's status/progress/etc — but reassigning it to somebody else
+  // (or unassigning themselves) is a project-management action, not self-editing, so it must
+  // require real project edit access even when the actor happens to be the current assignee.
+  if (data.assigneeId !== undefined && data.assigneeId !== task.assigneeId) {
+    const hasProjectAccess = await requireProjectAccess(tid, uid, projectId, "edit");
+    if (!hasProjectAccess) {
+      res.status(403).json({ error: "You do not have permission to reassign this task" });
+      return;
+    }
+  }
   if (!taskDatesAreValid(data.startDate === undefined ? task.startDate?.toISOString() : data.startDate, data.dueDate === undefined ? task.dueDate?.toISOString() : data.dueDate)) {
     res.status(400).json({ error: "Due date cannot be before start date" });
     return;

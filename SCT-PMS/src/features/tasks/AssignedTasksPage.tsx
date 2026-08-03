@@ -235,6 +235,11 @@ export function AssignedTasksPage() {
         taskActivities={[]}
         currentUserId={currentUserId}
         canEdit={canEditTaskPermission}
+        // "My Tasks" is a personal cross-project list — this page has no per-project access
+        // level to check (unlike ProjectDetailPage, which knows currentUserAccess for the one
+        // project it's showing), so reassignment is disabled here entirely rather than risk
+        // over-granting it; the backend independently rejects unauthorized reassignment either way.
+        canReassign={false}
         canDelete={canDeleteTaskPermission}
         onTaskChanged={syncOpenTask}
         onTaskDeleted={() => { setOpenTask(null); setDrawerContext(null); load(); }}
