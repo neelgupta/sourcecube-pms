@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { UserMinus, UserPlus, X } from "lucide-react";
+import { ChevronDown, UserMinus, UserPlus, X } from "lucide-react";
 import { Button, EmptyState, MemberAvatar, Modal } from "@/components/common";
 import { api, ApiError } from "@/lib/api";
 import { getChatSocket } from "@/lib/chatSocket";
@@ -36,13 +36,32 @@ export function MessageThread({
   const [activeThread, setActiveThread] = useState<ChatMessage | null>(null);
   const [readReceipts, setReadReceipts] = useState<Record<string, string>>({});
   const [showAddMembers, setShowAddMembers] = useState(false);
+  const [showMemberList, setShowMemberList] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<{ userId: string; name: string } | null>(null);
   const [removing, setRemoving] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const memberMenuRef = useRef<HTMLDivElement>(null);
 
+  useEffect(() => {
+    if (!showMemberList) return;
+    function handlePointerDown(event: PointerEvent) {
+      if (memberMenuRef.current?.contains(event.target as Node)) return;
+      setShowMemberList(false);
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setShowMemberList(false);
+    }
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [showMemberList]);
   useEffect(() => {
     setLoading(true);
     setActiveThread(null);
+    setShowMemberList(false);
     setReadReceipts(Object.fromEntries(
       channel.members
         .filter((member) => member.userId !== currentUserId && member.lastReadAt)
@@ -184,8 +203,6 @@ export function MessageThread({
   }
 
   const pinned = messages.filter((message) => message.isPinned && !message.isDeleted);
-  const otherMember = channel.type === "dm" ? channel.members.find((m) => m.userId !== currentUserId) : undefined;
-  const isOtherOnline = otherMember ? onlineUserIds.has(otherMember.userId) : false;
   const otherMembersLastRead = channel.members
     .filter((m) => m.userId !== currentUserId)
     .map((m) => {
@@ -198,23 +215,20 @@ export function MessageThread({
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1">
       <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
-        <header className="flex items-center gap-2 border-b border-ink-200 px-4 py-3">
-          <div className="min-w-0">
+        <header className="relative flex items-start gap-3 border-b border-ink-200 px-4 py-3">
+          <div ref={memberMenuRef} className="min-w-0 flex-1">
             <p className="truncate font-semibold text-ink-900">{channelTitle(channel, currentUserId)}</p>
-            {channel.type === "dm" && otherMember ? (
-              <p className={cn("truncate text-xs", isOtherOnline ? "text-success-600" : "text-ink-400")}>{isOtherOnline ? "Online" : "Offline"}</p>
-            ) : channel.type === "dm" ? (
-              <p className="truncate text-xs text-ink-400">Only visible to you</p>
-            ) : channel.description ? (
-              <p className="truncate text-xs text-ink-500">{channel.description}</p>
-            ) : null}
+            <HeaderMembers channel={channel} currentUserId={currentUserId} onlineUserIds={onlineUserIds} onToggle={() => setShowMemberList((value) => !value)} />
+            {showMemberList && (
+              <HeaderMemberDropdown channel={channel} currentUserId={currentUserId} onlineUserIds={onlineUserIds} onRemoveMember={(userId, name) => setRemoveTarget({ userId, name })} />
+            )}
           </div>
-          {pinned.length > 0 && <span className={cn("rounded-full bg-warning-50 px-2 py-0.5 text-xs font-medium text-warning-700", channel.type === "group" && canInvite ? "" : "ml-auto")}>{pinned.length} pinned</span>}
+          {pinned.length > 0 && <span className="shrink-0 rounded-full bg-warning-50 px-2 py-0.5 text-xs font-medium text-warning-700">{pinned.length} pinned</span>}
           {channel.type === "group" && canInvite && (
             <button
               onClick={() => setShowAddMembers(true)}
               title="Add members"
-              className="ml-auto flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-ink-500 hover:bg-ink-100 hover:text-ink-900"
+              className="shrink-0 flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-ink-500 hover:bg-ink-100 hover:text-ink-900"
             >
               <UserPlus size={14} /> Add member
             </button>
@@ -264,9 +278,7 @@ export function MessageThread({
         )}
       </div>
 
-      {!activeThread && (
-        <ChatMemberPanel channel={channel} currentUserId={currentUserId} onlineUserIds={onlineUserIds} onRemoveMember={(userId, name) => setRemoveTarget({ userId, name })} />
-      )}
+
 
       {activeThread && (
         <ThreadPanel
@@ -349,7 +361,47 @@ function channelTitle(channel: ChatChannel, currentUserId: string) {
 }
 
 
-function ChatMemberPanel({
+function channelMembers(channel: ChatChannel, currentUserId: string) {
+  const otherMember = channel.type === "dm" ? channel.members.find((member) => member.userId !== currentUserId) : undefined;
+  return channel.type === "dm" && otherMember ? [otherMember] : channel.members;
+}
+
+function HeaderMembers({
+  channel,
+  currentUserId,
+  onlineUserIds,
+  onToggle,
+}: {
+  channel: ChatChannel;
+  currentUserId: string;
+  onlineUserIds: Set<string>;
+  onToggle: () => void;
+}) {
+  const members = channelMembers(channel, currentUserId);
+  const otherMember = channel.type === "dm" ? channel.members.find((member) => member.userId !== currentUserId) : undefined;
+  if (channel.type === "dm" && otherMember) {
+    const online = onlineUserIds.has(otherMember.userId);
+    return <p className={cn("mt-0.5 truncate text-xs", online ? "text-success-600" : "text-ink-400")}>{online ? "Online" : "Offline"}</p>;
+  }
+  if (channel.type === "dm") return <p className="mt-0.5 truncate text-xs text-ink-400">Only visible to you</p>;
+  const visible = members.slice(0, 5);
+  return (
+    <button type="button" onClick={onToggle} className="mt-1 flex max-w-full items-center gap-2 rounded-lg py-1 pr-2 text-left hover:bg-ink-50">
+      <div className="flex shrink-0 -space-x-1">
+        {visible.map((member) => (
+          <MemberAvatar key={member.userId} id={member.userId} name={member.user.name} size="xs" status={onlineUserIds.has(member.userId) ? "online" : "offline"} className="ring-2 ring-white" />
+        ))}
+      </div>
+      <span className="min-w-0 truncate text-xs text-ink-500">
+        {members.length} {members.length === 1 ? "person" : "people"} in this chat
+        {channel.description ? ` - ${channel.description}` : ""}
+      </span>
+      <ChevronDown size={13} className="shrink-0 text-ink-400" />
+    </button>
+  );
+}
+
+function HeaderMemberDropdown({
   channel,
   currentUserId,
   onlineUserIds,
@@ -360,60 +412,36 @@ function ChatMemberPanel({
   onlineUserIds: Set<string>;
   onRemoveMember: (userId: string, name: string) => void;
 }) {
-  const otherMember = channel.type === "dm" ? channel.members.find((member) => member.userId !== currentUserId) : undefined;
-  const members = channel.type === "dm" && otherMember ? [otherMember] : channel.members;
-  const title = channel.type === "dm" ? "Members" : channel.type === "announcement" ? "Announcement members" : "Members";
-
+  const members = channelMembers(channel, currentUserId);
+  const isOwner = channel.createdBy === currentUserId;
+  const title = channel.type === "announcement" ? "Announcement members" : "Members";
   return (
-    <aside className="hidden h-full w-64 shrink-0 border-l border-ink-200 bg-surface-subtle px-3 py-4 xl:block">
-      {otherMember && (
-        <div className="mb-4 rounded-2xl border border-ink-100 bg-white p-5 text-center shadow-sm">
-          <div className="flex justify-center">
-            <MemberAvatar
-              id={otherMember.userId}
-              name={otherMember.user.name}
-              size="lg"
-              status={onlineUserIds.has(otherMember.userId) ? "online" : "offline"}
-              className="h-16 w-16 text-xl ring-0"
-            />
-          </div>
-          <p className="mt-3 truncate text-sm font-bold text-ink-900">{otherMember.user.name}</p>
-          <p className="mt-1 text-xs text-ink-400">direct</p>
-        </div>
-      )}
-
-      <div className="rounded-2xl border border-ink-100 bg-white p-4 shadow-sm">
-        <div className="mb-3">
-          <p className="text-sm font-bold text-ink-900">{title}</p>
-          <p className="mt-0.5 text-xs text-ink-400">{members.length} {members.length === 1 ? "person" : "people"} in this chat</p>
-        </div>
-        <div className="max-h-[calc(100vh-18rem)] space-y-2 overflow-y-auto pr-1">
-          {members.map((member) => {
-            const isOnline = onlineUserIds.has(member.userId);
-            const isOwner = channel.createdBy === currentUserId;
-            const canRemove = isOwner && channel.type === "group" && member.userId !== currentUserId;
-            return (
-              <div key={member.id} className="flex min-w-0 items-center gap-3 rounded-lg px-1 py-1.5 hover:bg-surface-subtle">
-                <MemberAvatar id={member.userId} name={member.user.name} size="md" status={isOnline ? "online" : "offline"} className="ring-0" />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-semibold text-ink-900">{member.user.name}</p>
-                  <p className="truncate text-xs text-ink-400">{member.userId === currentUserId ? "You" : isOnline ? "Online" : "Offline"}</p>
-                </div>
-                {canRemove && (
-                  <button
-                    onClick={() => onRemoveMember(member.userId, member.user.name)}
-                    title="Remove from group"
-                    className="shrink-0 rounded p-1 text-ink-400 hover:bg-danger-50 hover:text-danger-600"
-                  >
-                    <UserMinus size={14} />
-                  </button>
-                )}
-              </div>
-            );
-          })}
-        </div>
+    <div className="absolute left-4 top-full z-20 mt-2 w-72 rounded-2xl border border-ink-100 bg-white p-4 shadow-xl">
+      <div className="mb-3">
+        <p className="text-sm font-bold text-ink-900">{title}</p>
+        <p className="mt-0.5 text-xs text-ink-400">{members.length} {members.length === 1 ? "person" : "people"} in this chat</p>
       </div>
-    </aside>
+      <div className="max-h-80 space-y-2 overflow-y-auto pr-1">
+        {members.map((member) => {
+          const isOnline = onlineUserIds.has(member.userId);
+          const canRemove = isOwner && channel.type === "group" && member.userId !== currentUserId;
+          return (
+            <div key={member.id} className="flex min-w-0 items-center gap-3 rounded-lg px-1 py-1.5 hover:bg-surface-subtle">
+              <MemberAvatar id={member.userId} name={member.user.name} size="md" status={isOnline ? "online" : "offline"} className="ring-0" />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-semibold text-ink-900">{member.user.name}</p>
+                <p className="truncate text-xs text-ink-400">{member.userId === currentUserId ? "You" : isOnline ? "Online" : "Offline"}</p>
+              </div>
+              {canRemove && (
+                <button onClick={() => onRemoveMember(member.userId, member.user.name)} title="Remove from group" className="shrink-0 rounded p-1 text-ink-400 hover:bg-danger-50 hover:text-danger-600">
+                  <UserMinus size={14} />
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 function ThreadPanel({

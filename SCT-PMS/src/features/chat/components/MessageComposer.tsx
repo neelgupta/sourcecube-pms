@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Send } from "lucide-react";
 import { Button } from "@/components/common";
 import { ApiError } from "@/lib/api";
@@ -54,6 +54,14 @@ export function MessageComposer({
   const [mentionQuery, setMentionQuery] = useState<{ query: string; start: number } | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${textarea.scrollHeight}px`;
+    textarea.style.overflowY = "hidden";
+  }, [text]);
+
   const mentionCandidates: MentionCandidate[] = mentionQuery
     ? users.filter((user) => user.name.toLowerCase().includes(mentionQuery.query.toLowerCase())).slice(0, 6)
     : [];
@@ -99,6 +107,11 @@ export function MessageComposer({
       await onSend({ body });
       setText("");
       setMentions([]);
+      requestAnimationFrame(() => {
+        if (!textareaRef.current) return;
+        textareaRef.current.style.height = "auto";
+        textareaRef.current.style.overflowY = "hidden";
+      });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Message could not be sent");
     } finally {
@@ -128,7 +141,7 @@ export function MessageComposer({
           disabled={disabled || sending}
           placeholder={placeholder}
           rows={1}
-          className="min-h-10 flex-1 resize-none rounded-lg border border-ink-200 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/15"
+          className="min-h-10 flex-1 resize-none overflow-hidden rounded-lg border border-ink-200 px-3 py-2 text-sm leading-5 outline-none transition-[height] duration-100 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/15 disabled:bg-ink-50"
         />
         <Button onClick={submit} disabled={disabled || sending || !text.trim()} leftIcon={<Send size={15} />}>Send</Button>
       </div>

@@ -284,7 +284,31 @@ export const api = {
 
   listProjects: () => request<{ projects: RealProject[] }>("/projects"),
   getProject: (id: string) => request<{ project: RealProject }>(`/projects/${id}`),
-  listAssignedTasks: () => request<{ tasks: AssignedTask[] }>("/projects/tasks/assigned"),
+  listAssignedTasks: (filters?: {
+    search?: string;
+    status?: ProjectTaskStatus | "";
+    priority?: ProjectPriority | "";
+    assigneeId?: string;
+    projectId?: string;
+    dueFrom?: string;
+    dueTo?: string;
+    worklogUserId?: string;
+    worklog?: "" | "with_logs" | "without_logs" | "billable" | "non_billable";
+  }) => {
+    const params = new URLSearchParams();
+    Object.entries(filters ?? {}).forEach(([key, value]) => {
+      if (value !== undefined && value !== "") params.set(key, String(value));
+    });
+    const query = params.toString();
+    return request<{
+      tasks: AssignedTask[];
+      options?: {
+        projects: Array<{ id: string; name: string; key: string }>;
+        assignees: Array<Pick<CompanyUser, "id" | "name" | "email" | "accountStatus">>;
+        worklogUsers: Array<Pick<CompanyUser, "id" | "name" | "email" | "accountStatus">>;
+      };
+    }>(`/projects/tasks/assigned${query ? `?${query}` : ""}`);
+  },
   getTaskBreakdown: () => request<{ employees: TaskBreakdownRow[] }>("/projects/tasks/breakdown"),
   createProject: (input: {
     name: string;
