@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { Building2, Save } from "lucide-react";
+import { Link } from "react-router-dom";
+import { Building2, Save, Settings2 } from "lucide-react";
 import { Badge, Button, Card, CompanyStatusBadge, Field, Input, Select, Tabs } from "@/components/common";
 import { api, ApiError } from "@/lib/api";
 import { usePermission } from "@/lib/session";
@@ -83,14 +84,23 @@ export function SettingsPage() {
 
   return (
     <div className="mx-auto max-w-4xl p-4 lg:p-6">
-      <div className="mb-5 flex items-center gap-3">
-        <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-brand-50 text-brand-600">
-          <Building2 size={20} />
+      <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-brand-50 text-brand-600">
+            <Building2 size={20} />
+          </div>
+          <div>
+            <h1 className="text-lg font-semibold text-ink-900">Company setup & settings</h1>
+            <p className="text-xs text-ink-500">{company.name} · {company.code}</p>
+          </div>
         </div>
-        <div>
-          <h1 className="text-lg font-semibold text-ink-900">Company settings</h1>
-          <p className="text-xs text-ink-500">{company.name} · {company.code}</p>
-        </div>
+        <Link
+          to="/onboarding"
+          className="inline-flex h-9 items-center justify-center rounded-lg border border-ink-200 bg-white px-3 text-sm font-medium text-ink-700 shadow-sm transition hover:bg-ink-50"
+        >
+          <Settings2 size={15} className="mr-1.5" />
+          Setup checklist
+        </Link>
       </div>
 
       <Card>

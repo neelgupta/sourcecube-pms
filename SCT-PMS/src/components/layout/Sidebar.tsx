@@ -13,7 +13,6 @@ import {
   // PiggyBank,
   Settings2,
   ShieldCheck,
-  Sliders,
   Users,
   Users2,
   // Workflow,
@@ -50,8 +49,7 @@ const companyNavItems: NavItem[] = [
   { to: "/resources", label: "Resources", icon: Users, requires: { module: "resources", action: "view" } },
   // { to: "/timesheet", label: "Timesheet", icon: CheckSquare, requires: { module: "tasks", action: "view" } },
   { to: "/reports", label: "Reports", icon: BarChart3, requires: { module: "resources", action: "view" } },
-  { to: "/onboarding", label: "Company setup", icon: Settings2, requires: { module: "company_settings", action: "manage" } },
-  { to: "/settings", label: "Settings", icon: Sliders, requires: { module: "company_settings", action: "manage" } },
+  { to: "/settings", label: "Company setup", icon: Settings2, requires: { module: "company_settings", action: "manage" } },
 ];
 
 const platformNavItems: NavItem[] = [
