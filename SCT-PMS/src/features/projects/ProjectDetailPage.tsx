@@ -64,6 +64,7 @@ import {
 } from "@/components/common";
 import { api, ApiError } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { projectSlug } from "./projectRoutes";
 import { usePermission, useSession } from "@/lib/session";
 import type {
   CompanyUser,
@@ -179,9 +180,11 @@ function flattenTasks(tasks: WorkspaceTask[], collapsed: Record<string, boolean>
 }
 
 export function ProjectDetailPage() {
-  const { projectId = "" } = useParams();
+  const params = useParams();
+  const projectRouteParam = params.projectSlug ?? params.projectId ?? "";
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const [projectId, setProjectId] = useState("");
   const [workspace, setWorkspace] = useState<ProjectWorkspace | null>(null);
   const [companyUsers, setCompanyUsers] = useState<CompanyUser[]>([]);
   const requestedView = searchParams.get("view");
@@ -208,6 +211,7 @@ export function ProjectDetailPage() {
   const canDeleteTaskPermission = usePermission("tasks", "manage");
 
   function load(silent = true) {
+    if (!projectId) return;
     if (!silent) setLoading(true);
     Promise.all([api.getProjectWorkspace(projectId), api.listProjectEligibleUsers(projectId)])
       .then(([workspaceResult, usersResult]) => {
@@ -251,7 +255,47 @@ export function ProjectDetailPage() {
   function syncProjectTrackedSeconds(trackedSeconds: number) {
     setWorkspace((current) => current ? { ...current, project: { ...current.project, trackedSeconds } } : current);
   }
-  useEffect(() => { load(false); }, [projectId]);
+  useEffect(() => {
+    let cancelled = false;
+    setWorkspace(null);
+    setServerTasks(null);
+    setProjectId("");
+    setLoading(true);
+
+    async function resolveProjectRoute() {
+      const routeValue = projectRouteParam.trim();
+      if (!routeValue) {
+        setError("Project route is missing");
+        setLoading(false);
+        return;
+      }
+
+      const storedProjectId = window.sessionStorage.getItem(`project-route:${routeValue}`);
+      if (storedProjectId) {
+        if (!cancelled) setProjectId(storedProjectId);
+        return;
+      }
+
+      try {
+        const result = await api.listProjects();
+        const matchedProject = result.projects.find((item) => projectSlug(item.name) === routeValue);
+        if (matchedProject) {
+          window.sessionStorage.setItem(`project-route:${routeValue}`, matchedProject.id);
+          if (!cancelled) setProjectId(matchedProject.id);
+          return;
+        }
+      } catch {
+        // Keep legacy /projects/:projectId links usable even if the list lookup fails.
+      }
+
+      if (!cancelled) setProjectId(routeValue);
+    }
+
+    void resolveProjectRoute();
+    return () => { cancelled = true; };
+  }, [projectRouteParam]);
+
+  useEffect(() => { if (projectId) load(false); }, [projectId]);
   useEffect(() => {
     if (!workspace || (activeView !== "list" && activeView !== "kanban")) return;
     let cancelled = false;

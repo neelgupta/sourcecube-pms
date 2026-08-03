@@ -17,6 +17,7 @@ import { Badge, Button, Card, DateRangePicker, EmployeeMultiPicker, FilterSelect
 import { api, ApiError } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { usePermission } from "@/lib/session";
+import { projectWorkspacePath } from "@/features/projects/projectRoutes";
 import type { ProjectPriority, ProjectSection, RealProject, ResourcePlannerDay, ResourcePlannerDayDetail, ResourcePlannerEmployee, ResourcePlannerResponse, WorkspaceTask } from "@/types/tenant";
 
 const occupancyOptions = [
@@ -135,6 +136,15 @@ export function ResourcesPage() {
     setRevision((value) => value + 1);
   }
 
+  async function openResourceTask(projectId: string, taskId: string) {
+    try {
+      const result = await api.getProject(projectId);
+      navigate(`${projectWorkspacePath(result.project)}?task=${taskId}`);
+    } catch {
+      navigate(`/projects/${projectId}?task=${taskId}`);
+    }
+  }
+
   const employees = planner?.employees ?? [];
   const days = planner?.days ?? [];
   return (
@@ -233,7 +243,7 @@ export function ResourcesPage() {
           employeeId={selectedDay.employeeId}
           date={selectedDay.date}
           onClose={() => setSelectedDay(null)}
-          onOpenTask={(projectId, taskId) => navigate(`/projects/${projectId}?task=${taskId}`)}
+          onOpenTask={(projectId, taskId) => openResourceTask(projectId, taskId)}
           onTaskAssigned={handleTaskAssigned}
         />
       )}

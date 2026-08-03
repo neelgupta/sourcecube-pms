@@ -27,6 +27,7 @@ import { api, ApiError } from "@/lib/api";
 import { usePermission } from "@/lib/session";
 import type { CompanyUser, Department, RealProject, RealProjectStatus } from "@/types/tenant";
 import { RealProjectCard } from "./components/RealProjectCard";
+import { projectWorkspacePath } from "./projectRoutes";
 import { AddProjectDrawer } from "./components/AddProjectDrawer";
 
 const statusOptions: { value: string; label: string }[] = [
@@ -165,7 +166,7 @@ export function ProjectsPage() {
           <Avatar initials={initialsOf(p.name)} color={memberColor(p.id)} size="sm" className="ring-0" />
           <div className="min-w-0">
             <button
-              onClick={() => navigate(`/projects/${p.id}`)}
+              onClick={() => navigate(projectWorkspacePath(p))}
               className="block truncate text-left font-medium text-ink-900 hover:text-brand-600"
             >
               {p.name}
@@ -227,7 +228,7 @@ export function ProjectsPage() {
                 </button>
               }
               items={[
-                { id: "open", label: "Open Project", onSelect: () => navigate(`/projects/${p.id}`) },
+                { id: "open", label: "Open Project", onSelect: () => navigate(projectWorkspacePath(p)) },
                 { id: "details", label: "Project Details", onSelect: () => setDetailsProject(p) },
                 ...(rowCanEdit ? [{ id: "edit", label: "Edit Project", onSelect: () => openEdit(p) }] : []),
                 { id: "clone", label: "Clone as Project", disabled: true },
@@ -320,7 +321,7 @@ export function ProjectsPage() {
                   projects={favourites}
                   onToggleFavourite={toggleFavourite}
                   onDetails={setDetailsProject}
-                  onOpen={(project) => navigate(`/projects/${project.id}`)}
+                  onOpen={(project) => navigate(projectWorkspacePath(project))}
                   onEdit={openEdit}
                   onArchiveToggle={handleArchiveToggle}
                   onDelete={setDeletingProject}
@@ -336,7 +337,7 @@ export function ProjectsPage() {
                 projects={others}
                 onToggleFavourite={toggleFavourite}
                 onDetails={setDetailsProject}
-                onOpen={(project) => navigate(`/projects/${project.id}`)}
+                onOpen={(project) => navigate(projectWorkspacePath(project))}
                 onEdit={openEdit}
                 onArchiveToggle={handleArchiveToggle}
                 onDelete={setDeletingProject}

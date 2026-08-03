@@ -3,6 +3,7 @@ import { CalendarDays, MoreHorizontal, Star } from "lucide-react";
 import { Avatar, DropdownMenu, ProgressBar, ProjectStatusBadge } from "@/components/common";
 import { cn } from "@/lib/cn";
 import type { Project } from "@/types";
+import { projectWorkspacePath } from "../projectRoutes";
 
 export function ProjectCard({
   project,
@@ -19,7 +20,7 @@ export function ProjectCard({
         <Avatar initials={project.initials} color={project.color} size="lg" className="ring-0" />
         <div className="min-w-0 flex-1">
           <Link
-            to={`/projects/${project.id}`}
+            to={projectWorkspacePath(project)}
             className="block truncate text-sm font-semibold text-ink-900 hover:text-brand-600"
           >
             {project.name}

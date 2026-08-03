@@ -52,6 +52,7 @@ export const router = createBrowserRouter([
     element: <ProtectedRoute requireKind="company" requiredPermission={{ module: "projects", action: "view" }} />,
     children: [{ element: <AppLayout />, children: [
       { path: "/projects", element: <ProjectsPage /> },
+      { path: "/projects/:projectSlug/workspace", element: <ProjectDetailPage /> },
       { path: "/projects/:projectId", element: <ProjectDetailPage /> },
       { path: "/milestones", element: <MilestonesPage /> },
     ] }],

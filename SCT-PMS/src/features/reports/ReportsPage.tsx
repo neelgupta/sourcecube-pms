@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { Badge, Button, Card, DateRangePicker, FilterSelect, MemberAvatar, ProgressBar, SearchBar } from "@/components/common";
 import { api, ApiError } from "@/lib/api";
+import { projectWorkspacePath } from "@/features/projects/projectRoutes";
 import { cn } from "@/lib/cn";
 import type { ProjectHealthStatus, ProjectPerformanceReport, RealProjectStatus, TeamProductivityReport, TimeUtilisationReport } from "@/types/tenant";
 
@@ -253,7 +254,7 @@ export function ReportsPage() {
             <div className="overflow-x-auto"><table className="w-full min-w-[1400px] border-collapse text-sm"><thead><tr className="border-b border-ink-200 bg-surface-subtle text-left text-xs uppercase tracking-wide text-ink-500"><th className="px-4 py-3">Project</th><th className="px-3 py-3">Status</th><th className="px-3 py-3">Priority</th><th className="px-3 py-3">Manager</th><th className="min-w-40 px-3 py-3">Completion</th><th className="px-3 py-3">Health</th><th className="px-3 py-3">Milestones</th><th className="px-3 py-3">Tasks</th><th className="px-3 py-3">Budget</th><th className="px-3 py-3">Tracked</th><th className="px-3 py-3">Due date</th></tr></thead><tbody>
               {performanceReport.projects.map((project) => (
                 <tr key={project.id} className="border-b border-ink-100 hover:bg-brand-50/20">
-                  <td className="px-4 py-3"><Link to={`/projects/${project.id}`} className="font-semibold text-brand-700 hover:text-brand-800 hover:underline">{project.name}</Link><div className="text-[11px] text-ink-400">{project.key}{project.clientName ? ` · ${project.clientName}` : ""}</div></td>
+                  <td className="px-4 py-3"><Link to={projectWorkspacePath(project)} className="font-semibold text-brand-700 hover:text-brand-800 hover:underline">{project.name}</Link><div className="text-[11px] text-ink-400">{project.key}{project.clientName ? ` · ${project.clientName}` : ""}</div></td>
                   <td className="px-3 py-3"><Badge tone={statusTone[project.status]}>{statusLabel[project.status]}</Badge></td>
                   <td className="px-3 py-3 capitalize">{project.priority}</td>
                   <td className="px-3 py-3">{project.manager?.name ?? <span className="text-ink-400">Unassigned</span>}</td>
