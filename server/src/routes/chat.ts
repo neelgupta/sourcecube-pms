@@ -4,7 +4,7 @@ import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireCompany, requirePermission } from "../middleware/auth.js";
 import { recordAudit } from "../lib/audit.js";
 import { chatUpload } from "../lib/uploads.js";
-import { chatUserSelect, createNotification, extractMentionIds, isChannelMember, plainTextBody } from "../lib/chat.js";
+import { chatUserSelect, createNotification, extractMentionIds, isChannelMember, markNotificationsMessageDeleted, plainTextBody } from "../lib/chat.js";
 import { getChatIO } from "../lib/chatSocket.js";
 import { getCompanyUserRoles } from "./projects.js";
 
@@ -100,7 +100,7 @@ chatRouter.get("/channels", requirePermission("chat", "view"), async (req, res) 
     include: {
       members: { include: { user: { select: chatUserSelect } } },
       project: { select: { id: true, name: true, key: true } },
-      messages: { orderBy: { createdAt: "desc" }, take: 1, include: messageInclude },
+      messages: { where: { isDeleted: false, parentMessageId: null }, orderBy: { createdAt: "desc" }, take: 1, include: messageInclude },
     },
     orderBy: { updatedAt: "desc" },
   });
@@ -535,6 +535,7 @@ chatRouter.delete("/messages/:id", requirePermission("chat", "create"), async (r
   }
   await prisma.chatMessage.update({ where: { id: messageId }, data: { isDeleted: true, body: null, attachmentUrl: null } });
   getChatIO()?.to(`channel:${message.channelId}`).emit("message:deleted", { messageId, channelId: message.channelId });
+  await markNotificationsMessageDeleted(tid, messageId);
   res.status(204).end();
 });
 

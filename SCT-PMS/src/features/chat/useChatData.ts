@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import { getChatSocket } from "@/lib/chatSocket";
 import { useSession } from "@/lib/session";
@@ -6,8 +6,10 @@ import type { ChatChannel, ChatMessage, Notification } from "@/types/tenant";
 
 /** Loads channels + notifications once, then keeps them live via the shared Socket.IO
  *  connection — channel previews/unread counts update on `message:new`, and notifications
- *  stream in on `notification:new` without polling. */
-export function useChatData() {
+ *  stream in on `notification:new` without polling.
+ *  `activeChannelId` is the channel currently open on screen — a new message there is already
+ *  visible to the user, so it must never bump that channel's own unread badge. */
+export function useChatData(activeChannelId?: string | null) {
   const { session } = useSession();
   const [channels, setChannels] = useState<ChatChannel[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -15,6 +17,8 @@ export function useChatData() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const currentUserId = session?.user.kind === "company" ? session.user.id : "";
+  const activeChannelIdRef = useRef(activeChannelId);
+  activeChannelIdRef.current = activeChannelId;
 
   function loadChannels() {
     return api.listChatChannels()
@@ -35,6 +39,11 @@ export function useChatData() {
     const socket = getChatSocket();
 
     function bumpChannel(message: ChatMessage) {
+      // Thread replies (parentMessageId set) never appear in the main scrolling thread —
+      // only inside that message's own side panel — so they must never become the sidebar
+      // preview or count toward the channel's unread badge the way a top-level message does.
+      if (message.parentMessageId) return;
+      const isViewingChannel = message.channelId === activeChannelIdRef.current;
       setChannels((current) => current.map((channel) => {
         if (channel.id !== message.channelId) return channel;
         const isMine = message.authorId === currentUserId;
@@ -42,13 +51,41 @@ export function useChatData() {
           ...channel,
           messages: [message],
           updatedAt: message.createdAt,
-          unreadCount: isMine ? channel.unreadCount : channel.unreadCount + 1,
+          unreadCount: isMine || isViewingChannel ? channel.unreadCount : channel.unreadCount + 1,
+        };
+      }));
+      // The channel is already open, so the message is immediately visible — tell the
+      // server it's read too, otherwise the badge would reappear on next reload/reconnect.
+      if (isViewingChannel && message.authorId !== currentUserId) {
+        api.markChannelRead(message.channelId).catch(() => undefined);
+      }
+    }
+
+    // Keeps the sidebar's sent/read tick live — without this, the other member's
+    // lastReadAt in the channel list only updates on the next full reload/reconnect.
+    function onChannelRead({ channelId, userId, readAt }: { channelId: string; userId: string; readAt: string }) {
+      setChannels((current) => current.map((channel) => {
+        if (channel.id !== channelId) return channel;
+        return {
+          ...channel,
+          members: channel.members.map((member) => (member.userId === userId ? { ...member, lastReadAt: readAt } : member)),
         };
       }));
     }
 
     function onNewChannel() {
       loadChannels();
+    }
+    // The sidebar preview (channel.messages[0]) is only ever pushed by message:new — if the
+    // message currently shown as the preview gets deleted, nothing here would otherwise know
+    // to drop it, so the preview kept showing stale/removed text until a manual reload.
+    function onMessageDeleted({ messageId, channelId }: { messageId: string; channelId: string }) {
+      setChannels((current) => {
+        const channel = current.find((item) => item.id === channelId);
+        if (!channel?.messages?.some((message) => message.id === messageId)) return current;
+        loadChannels();
+        return current;
+      });
     }
     function onChannelUpdated(channel: ChatChannel) {
       setChannels((current) => current.map((item) => (item.id === channel.id ? { ...channel, unreadCount: item.unreadCount, messages: item.messages } : item)));
@@ -84,6 +121,8 @@ export function useChatData() {
 
     socket.on("connect", onConnect);
     socket.on("message:new", bumpChannel);
+    socket.on("message:deleted", onMessageDeleted);
+    socket.on("channel:read", onChannelRead);
     socket.on("channel:new", onNewChannel);
     socket.on("channel:updated", onChannelUpdated);
     socket.on("notification:new", onNewNotification);
@@ -93,6 +132,8 @@ export function useChatData() {
     return () => {
       socket.off("connect", onConnect);
       socket.off("message:new", bumpChannel);
+      socket.off("message:deleted", onMessageDeleted);
+      socket.off("channel:read", onChannelRead);
       socket.off("channel:new", onNewChannel);
       socket.off("channel:updated", onChannelUpdated);
       socket.off("notification:new", onNewNotification);

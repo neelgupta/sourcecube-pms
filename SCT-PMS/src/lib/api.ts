@@ -206,6 +206,9 @@ export const api = {
     request<{ token: string; expiresAt: string }>(`/company-users/${id}/invite`, { method: "POST" }),
   updateCompanyUserRoles: (id: string, roles: SystemRole[]) =>
     request<{ user: CompanyUser }>(`/company-users/${id}/roles`, { method: "PATCH", body: JSON.stringify({ roles }) }),
+  updateCompanyUserStatus: (id: string, accountStatus: "active" | "suspended" | "deactivated") =>
+    request<{ user: CompanyUser }>(`/company-users/${id}/status`, { method: "PATCH", body: JSON.stringify({ accountStatus }) }),
+  deleteCompanyUser: (id: string) => request<void>(`/company-users/${id}`, { method: "DELETE" }),
 
   getSettings: () => request<{ company: Company }>("/settings"),
   updateSettings: (

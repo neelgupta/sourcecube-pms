@@ -66,3 +66,16 @@ export async function createNotification(params: {
   getChatIO()?.to(`user:${params.userId}`).emit("notification:new", notification);
   return notification;
 }
+
+/** When a message is deleted, any notification that previewed its text would otherwise keep
+ *  showing content that no longer exists in the thread — update those in place (same
+ *  notification, not a new one) so the bell reflects the deletion without a page reload. */
+export async function markNotificationsMessageDeleted(tenantId: string, messageId: string) {
+  const notifications = await prisma.notification.findMany({ where: { tenantId, messageId } });
+  if (notifications.length === 0) return;
+  await prisma.notification.updateMany({ where: { tenantId, messageId }, data: { body: "This message has been deleted" } });
+  const io = getChatIO();
+  for (const notification of notifications) {
+    io?.to(`user:${notification.userId}`).emit("notification:updated", { ...notification, body: "This message has been deleted" });
+  }
+}

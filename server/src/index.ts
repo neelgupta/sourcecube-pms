@@ -55,6 +55,17 @@ app.use("/api/chat", chatRouter);
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
+// Without this, any error thrown/rejected inside an async route handler falls through to
+// Express's default HTML error page instead of JSON — the frontend's `res.json()` parse then
+// fails silently and every such failure surfaces to the user as an opaque "Request failed"
+// with no indication of what actually went wrong server-side.
+app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error(err);
+  if (res.headersSent) return;
+  const message = err instanceof Error ? err.message : "Internal server error";
+  res.status(500).json({ error: message });
+});
+
 const port = Number(process.env.PORT ?? 4000);
 const httpServer = http.createServer(app);
 initChatSocket(httpServer, allowedOrigins);

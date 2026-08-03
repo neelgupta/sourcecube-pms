@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { Copy, Mail, Plus, ShieldCheck } from "lucide-react";
+import { Copy, Mail, Plus, ShieldCheck, UserCheck, UserX } from "lucide-react";
 import { Badge, Button, Card, DataTable, Modal, SearchBar, type Column } from "@/components/common";
 import { api, ApiError } from "@/lib/api";
-import { usePermission } from "@/lib/session";
+import { usePermission, useSession } from "@/lib/session";
 import type { CompanyUser, SystemRole, Team } from "@/types/tenant";
 import { RoleEditor } from "./components/RoleEditor";
 import { AddEmployeeDrawer } from "./components/AddEmployeeDrawer";
@@ -18,6 +18,8 @@ const ROLE_LABELS: Record<SystemRole, string> = {
 };
 
 export function TeamRolesPage() {
+  const { session } = useSession();
+  const currentUserId = session?.user.kind === "company" ? session.user.id : "";
   const [users, setUsers] = useState<CompanyUser[]>([]);
   const [teams, setTeams] = useState<Team[]>([]);
   const [loading, setLoading] = useState(true);
@@ -25,6 +27,7 @@ export function TeamRolesPage() {
   const [search, setSearch] = useState("");
   const [addOpen, setAddOpen] = useState(false);
   const [inviteLink, setInviteLink] = useState<string | null>(null);
+  const [statusBusyId, setStatusBusyId] = useState<string | null>(null);
   const canEdit = usePermission("company_users", "edit");
   const canCreate = usePermission("company_users", "create");
   const canInvite = usePermission("company_users", "invite");
@@ -60,6 +63,20 @@ export function TeamRolesPage() {
       load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to create invitation");
+    }
+  }
+
+  async function toggleStatus(user: CompanyUser) {
+    setError(null);
+    setStatusBusyId(user.id);
+    const next = user.accountStatus === "deactivated" || user.accountStatus === "suspended" ? "active" : "deactivated";
+    try {
+      const result = await api.updateCompanyUserStatus(user.id, next);
+      setUsers((prev) => prev.map((u) => (u.id === result.user.id ? result.user : u)));
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to update account status");
+    } finally {
+      setStatusBusyId(null);
     }
   }
 
@@ -106,9 +123,10 @@ export function TeamRolesPage() {
     {
       key: "actions",
       header: "",
-      width: "140px",
-      render: (u) =>
-        canEdit || (canInvite && u.accountStatus !== "active") ? (
+      width: "220px",
+      render: (u) => {
+        const isSelf = u.id === currentUserId;
+        return canEdit || (canInvite && u.accountStatus !== "active") ? (
           <div className="flex justify-end gap-2">
             {canInvite && u.accountStatus !== "active" && (
               <Button variant="outline" size="sm" onClick={() => inviteEmployee(u)}>
@@ -122,8 +140,24 @@ export function TeamRolesPage() {
                 onChanged={(updated) => setUsers((prev) => prev.map((x) => (x.id === updated.id ? updated : x)))}
               />
             )}
+            {canEdit && !isSelf && (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={statusBusyId === u.id}
+                onClick={() => toggleStatus(u)}
+                title={u.accountStatus === "deactivated" || u.accountStatus === "suspended" ? "Activate employee" : "Deactivate employee"}
+              >
+                {u.accountStatus === "deactivated" || u.accountStatus === "suspended" ? (
+                  <UserCheck size={13} />
+                ) : (
+                  <UserX size={13} />
+                )}
+              </Button>
+            )}
           </div>
-        ) : null,
+        ) : null;
+      },
     },
   ];
 

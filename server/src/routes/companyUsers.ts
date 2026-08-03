@@ -1,6 +1,7 @@
 import { Router } from "express";
 import crypto from "node:crypto";
 import { z } from "zod";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireCompany, requirePermission } from "../middleware/auth.js";
 import { recordAudit } from "../lib/audit.js";
@@ -252,4 +253,144 @@ companyUsersRouter.patch("/:id/roles", requirePermission("company_users", "edit"
   });
 
   res.json({ user: updated });
+});
+
+const updateStatusSchema = z.object({
+  accountStatus: z.enum(["active", "suspended", "deactivated"]),
+});
+
+function isLastSuperAdmin(target: { id: string; roles: SystemRole[] }, tenantUsers: { id: string; roles: SystemRole[]; accountStatus: string }[]) {
+  if (!target.roles.includes("company_super_admin")) return false;
+  return tenantUsers.filter((u) => u.id !== target.id && u.roles.includes("company_super_admin") && u.accountStatus === "active").length === 0;
+}
+
+companyUsersRouter.patch("/:id/status", requirePermission("company_users", "edit"), async (req, res) => {
+  const parsed = updateStatusSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "A valid account status is required" });
+    return;
+  }
+
+  const tid = tenantId(req);
+  const userId = req.params.id as string;
+  const target = await prisma.companyUser.findFirst({ where: { id: userId, tenantId: tid } });
+  if (!target) {
+    res.status(404).json({ error: "Employee not found" });
+    return;
+  }
+  if (userId === req.auth!.userId) {
+    res.status(400).json({ error: "You cannot change your own account status" });
+    return;
+  }
+
+  if (parsed.data.accountStatus !== "active") {
+    const tenantUsers = await prisma.companyUser.findMany({ where: { tenantId: tid }, select: { id: true, roles: true, accountStatus: true } });
+    if (isLastSuperAdmin(target, tenantUsers)) {
+      res.status(400).json({ error: "Cannot deactivate the last active Company Super Admin" });
+      return;
+    }
+  }
+
+  const updated = await prisma.companyUser.update({
+    where: { id: target.id },
+    data: { accountStatus: parsed.data.accountStatus, updatedBy: req.auth!.userId },
+    select: {
+      id: true,
+      tenantId: true,
+      name: true,
+      email: true,
+      roles: true,
+      accountStatus: true,
+      teamMemberships: {
+        select: { team: { select: { id: true, name: true, status: true } } },
+        orderBy: { joinedAt: "asc" },
+      },
+    },
+  });
+
+  await recordAudit({
+    actor: req.auth!,
+    action: parsed.data.accountStatus === "active" ? "company_user.reactivated" : "company_user.status_changed",
+    tenantId: tid,
+    targetType: "CompanyUser",
+    targetId: target.id,
+    metadata: { from: target.accountStatus, to: parsed.data.accountStatus },
+  });
+
+  res.json({ user: updated });
+});
+
+companyUsersRouter.delete("/:id", requirePermission("company_users", "edit"), async (req, res) => {
+  const tid = tenantId(req);
+  const userId = req.params.id as string;
+  const target = await prisma.companyUser.findFirst({ where: { id: userId, tenantId: tid }, select: { id: true, email: true, roles: true } });
+  if (!target) {
+    res.status(404).json({ error: "Employee not found" });
+    return;
+  }
+  if (userId === req.auth!.userId) {
+    res.status(400).json({ error: "You cannot delete your own account" });
+    return;
+  }
+
+  const tenantUsers = await prisma.companyUser.findMany({ where: { tenantId: tid }, select: { id: true, roles: true, accountStatus: true } });
+  if (isLastSuperAdmin({ id: target.id, roles: target.roles }, tenantUsers)) {
+    res.status(400).json({ error: "Cannot delete the last active Company Super Admin" });
+    return;
+  }
+
+  // Hard delete only if the account has left no footprint elsewhere — otherwise cascading
+  // deletes would silently erase chat messages/comments other users can still see, or orphan
+  // tasks/projects. In that case the caller should deactivate instead of deleting.
+  const [
+    taskCount,
+    assignedTaskCount,
+    messageCount,
+    commentCount,
+    projectOwnerCount,
+    projectManagerCount,
+    teamLeadCount,
+    teamMemberCount,
+    taskFollowerCount,
+    departmentHeadCount,
+  ] = await Promise.all([
+    prisma.projectTask.count({ where: { createdBy: userId } }),
+    prisma.projectTask.count({ where: { assigneeId: userId } }),
+    prisma.chatMessage.count({ where: { authorId: userId } }),
+    prisma.taskComment.count({ where: { authorId: userId } }),
+    prisma.project.count({ where: { ownerId: userId } }),
+    prisma.project.count({ where: { managerId: userId } }),
+    prisma.team.count({ where: { leadUserId: userId } }),
+    prisma.teamMember.count({ where: { userId } }),
+    prisma.taskFollower.count({ where: { userId } }),
+    prisma.department.count({ where: { headUserId: userId } }),
+  ]);
+
+  const footprint = taskCount + assignedTaskCount + messageCount + commentCount + projectOwnerCount
+    + projectManagerCount + teamLeadCount + teamMemberCount + taskFollowerCount + departmentHeadCount;
+  if (footprint > 0) {
+    res.status(409).json({ error: "This employee has activity on record (tasks, messages, team membership, or ownership) and cannot be permanently deleted — deactivate them instead." });
+    return;
+  }
+
+  try {
+    await prisma.companyUser.delete({ where: { id: target.id } });
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2003") {
+      res.status(409).json({ error: "This employee has activity on record and cannot be permanently deleted — deactivate them instead." });
+      return;
+    }
+    throw err;
+  }
+
+  await recordAudit({
+    actor: req.auth!,
+    action: "company_user.deleted",
+    tenantId: tid,
+    targetType: "CompanyUser",
+    targetId: target.id,
+    metadata: { email: target.email },
+  });
+
+  res.status(204).end();
 });

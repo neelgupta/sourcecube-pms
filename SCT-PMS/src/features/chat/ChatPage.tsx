@@ -14,10 +14,9 @@ export function ChatPage() {
   const canPost = usePermission("chat", "create");
   const canManage = usePermission("chat", "manage");
   const canInvite = usePermission("chat", "invite") || canManage;
-  const { channels, loading, error, currentUserId, onlineUserIds, reloadChannels, markChannelRead, createChannel, updateChannel, setChannelFavorite } = useChatData();
-
   const [users, setUsers] = useState<ChatUser[]>([]);
   const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
+  const { channels, loading, error, currentUserId, onlineUserIds, reloadChannels, markChannelRead, createChannel, updateChannel, setChannelFavorite } = useChatData(activeChannelId);
   const [showDirectory, setShowDirectory] = useState(false);
   const [showNewChannel, setShowNewChannel] = useState(false);
 

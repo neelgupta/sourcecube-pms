@@ -35,14 +35,12 @@ interface NavItem {
 }
 
 const companyNavItems: NavItem[] = [
-  { to: "/onboarding", label: "Company setup", icon: Settings2, requires: { module: "company_settings", action: "manage" } },
-  { to: "/settings", label: "Settings", icon: Sliders, requires: { module: "company_settings", action: "manage" } },
+  { to: "/dashboard", label: "Dashboard", icon: LayoutGrid },
+  { to: "/projects", label: "Projects", icon: Briefcase, requires: { module: "projects", action: "view" } },
   { to: "/team", label: "Team & roles", icon: ShieldCheck, requires: { module: "company_users", action: "invite" } },
   { to: "/departments", label: "Departments", icon: Building2, requires: { module: "company_settings", action: "manage" } },
-  { to: "/teams", label: "Teams", icon: Users2, requires: { module: "company_settings", action: "manage" } },
-  { to: "/dashboard", label: "Dashboard", icon: LayoutGrid },
   { to: "/chat", label: "Chat", icon: MessageCircle, requires: { module: "chat", action: "view" } },
-  { to: "/projects", label: "Projects", icon: Briefcase, requires: { module: "projects", action: "view" } },
+  { to: "/teams", label: "Teams", icon: Users2, requires: { module: "company_settings", action: "manage" } },
   { to: "/tasks", label: "Tasks", icon: ListTodo, requires: { module: "tasks", action: "view" } },
   // { to: "/check-ins", label: "Check-ins", icon: ClipboardCheck, badge: true, requires: { module: "tasks", action: "view" } },
   // { to: "/calendar", label: "Calendar", icon: CalendarDays, requires: { module: "tasks", action: "view" } },
@@ -52,6 +50,8 @@ const companyNavItems: NavItem[] = [
   { to: "/resources", label: "Resources", icon: Users, requires: { module: "resources", action: "view" } },
   // { to: "/timesheet", label: "Timesheet", icon: CheckSquare, requires: { module: "tasks", action: "view" } },
   { to: "/reports", label: "Reports", icon: BarChart3, requires: { module: "resources", action: "view" } },
+  { to: "/onboarding", label: "Company setup", icon: Settings2, requires: { module: "company_settings", action: "manage" } },
+  { to: "/settings", label: "Settings", icon: Sliders, requires: { module: "company_settings", action: "manage" } },
 ];
 
 const platformNavItems: NavItem[] = [

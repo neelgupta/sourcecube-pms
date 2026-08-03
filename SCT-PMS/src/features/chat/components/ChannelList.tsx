@@ -1,12 +1,23 @@
-import { Hash, Megaphone, Plus, Star, Users } from "lucide-react";
+import { Check, CheckCheck, Hash, Megaphone, Plus, Star, Users } from "lucide-react";
 import { Badge, MemberAvatar } from "@/components/common";
 import { cn } from "@/lib/cn";
-import type { ChatChannel } from "@/types/tenant";
+import type { ChatChannel, ChatMessage } from "@/types/tenant";
 
 
 /** Strips the "@[userId:Name]" wire format down to "@Name" for plain-text previews. */
 function plainTextPreview(body: string) {
   return body.replace(/@\[[a-zA-Z0-9_-]+:([^\]]*)\]/g, "@$1");
+}
+
+/** System messages ("Neel removed Jatin from the group") are stored with the actor's real
+ *  name baked in, since the DB can't render per-viewer text. Mirrors the same substitution
+ *  MessageBubble does in the open thread, so the sidebar preview reads "You removed…" for
+ *  whoever actually performed the action instead of showing their own name back at them. */
+function systemPreview(message: ChatMessage, currentUserId: string) {
+  if (message.authorId === currentUserId && message.author?.name && message.body?.startsWith(message.author.name)) {
+    return `You${message.body.slice(message.author.name.length)}`;
+  }
+  return message.body ?? "";
 }
 
 function channelLabel(channel: ChatChannel, currentUserId: string) {
@@ -104,6 +115,13 @@ function Section({
         const otherUser = isDm ? channel.members.find((m) => m.userId !== currentUserId)?.user : undefined;
         const selfUser = isDm && !otherUser ? channel.members.find((m) => m.userId === currentUserId)?.user : undefined;
         const isOnline = isDm && otherUser ? onlineUserIds.has(otherUser.id) : false;
+        const otherMember = isDm ? channel.members.find((m) => m.userId !== currentUserId) : undefined;
+        // Read-tick only makes sense for a 1:1 DM — a group/announcement has many readers,
+        // so a single "seen" indicator has no well-defined meaning there.
+        const isMyLastMessage = isDm && Boolean(lastMessage && !lastMessage.isDeleted && lastMessage.authorId === currentUserId);
+        const isLastMessageRead = isMyLastMessage && lastMessage && otherMember?.lastReadAt
+          ? new Date(otherMember.lastReadAt).getTime() >= new Date(lastMessage.createdAt).getTime()
+          : false;
         return (
           <div
             key={channel.id}
@@ -125,8 +143,21 @@ function Section({
               <div className="min-w-0 flex-1">
                 <p className={cn("truncate text-sm", channel.unreadCount > 0 ? "font-semibold text-ink-900" : "text-ink-700")}>{label}</p>
                 {lastMessage && (
-                  <p className="truncate text-xs text-ink-400">
-                    {lastMessage.isDeleted ? "Message deleted" : lastMessage.body ? plainTextPreview(lastMessage.body) : "Attachment"}
+                  <p className="flex items-center gap-1 truncate text-xs text-ink-400">
+                    {isMyLastMessage && (
+                      isLastMessageRead
+                        ? <CheckCheck size={12} className="shrink-0 text-sky-500" aria-label="Read" />
+                        : <Check size={12} className="shrink-0 text-ink-400" aria-label="Sent" />
+                    )}
+                    <span className="truncate">
+                      {lastMessage.isDeleted
+                        ? "Message deleted"
+                        : lastMessage.isSystem
+                        ? systemPreview(lastMessage, currentUserId)
+                        : lastMessage.body
+                        ? plainTextPreview(lastMessage.body)
+                        : "Attachment"}
+                    </span>
                   </p>
                 )}
               </div>

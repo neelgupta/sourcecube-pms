@@ -64,8 +64,15 @@ export function NotificationBell() {
         });
       }
     }
+    function onUpdated(notification: Notification) {
+      setNotifications((current) => current.map((item) => (item.id === notification.id ? notification : item)));
+    }
     socket.on("notification:new", onNew);
-    return () => { socket.off("notification:new", onNew); };
+    socket.on("notification:updated", onUpdated);
+    return () => {
+      socket.off("notification:new", onNew);
+      socket.off("notification:updated", onUpdated);
+    };
   }, [canUseChat, navigate]);
 
   useEffect(() => {

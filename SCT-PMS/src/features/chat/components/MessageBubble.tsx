@@ -128,9 +128,17 @@ export function MessageBubble({
   }
 
   if (message.isSystem) {
+    // System message bodies are generated server-side with the actor's real name baked
+    // in ("Neel removed Jatin from the group") since the DB can't render per-viewer text.
+    // From the actor's own client, replace their name with "You" so it doesn't read as if
+    // someone else did it — only the leading occurrence, so a removed member who happens
+    // to share a name substring elsewhere in the sentence isn't mangled.
+    const systemBody = message.authorId === currentUserId && message.author.name && message.body?.startsWith(message.author.name)
+      ? `You${message.body.slice(message.author.name.length)}`
+      : message.body;
     return (
       <div className="flex justify-center px-4 py-1.5">
-        <p className="rounded-full bg-surface-subtle px-3 py-1 text-xs text-ink-400">{message.body}</p>
+        <p className="rounded-full bg-surface-subtle px-3 py-1 text-xs text-ink-400">{systemBody}</p>
       </div>
     );
   }
