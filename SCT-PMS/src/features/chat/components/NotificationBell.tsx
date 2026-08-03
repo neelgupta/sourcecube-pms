@@ -21,12 +21,6 @@ const typeIcons: Record<NotificationType, React.ReactNode> = {
   message: <MessageCircle size={14} className="text-info-600" />,
 };
 
-const desktopNotificationTitles: Record<NotificationType, string> = {
-  mention: "You were mentioned",
-  announcement: "New announcement",
-  channel_invite: "Added to a conversation",
-  message: "New message",
-};
 
 function timeAgo(value: string) {
   const seconds = Math.floor((Date.now() - new Date(value).getTime()) / 1000);
@@ -57,8 +51,8 @@ export function NotificationBell() {
       // Desktop notifications are for when the user isn't already looking at the tab —
       // if it's visible and focused, the in-app bell badge is enough.
       if (document.visibilityState === "hidden" || !document.hasFocus()) {
-        showDesktopNotification(desktopNotificationTitles[notification.type], {
-          body: notification.body || notification.title,
+        showDesktopNotification(notification.title, {
+          body: notification.body ?? undefined,
           tag: notification.id,
           onClick: () => navigate("/chat"),
         });

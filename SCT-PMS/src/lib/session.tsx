@@ -1,8 +1,9 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { ID } from "@/types";
 import type { Company, PlatformUser, CompanyUser as CompanyUserDomain } from "@/types/tenant";
-import { api, ApiError } from "@/lib/api";
+import { AUTH_FAILURE_EVENT, AUTH_FAILURE_STORAGE_KEY, api, ApiError } from "@/lib/api";
 import { hasPermission, type Action, type Module } from "@/lib/permissions";
+import { disconnectChatSocket } from "@/lib/chatSocket";
 
 /** Shape returned by the API for the signed-in user (platform or company). */
 export type SessionUser =
@@ -30,11 +31,29 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    function clearInvalidSession() {
+      setSession(null);
+      setLoading(false);
+      disconnectChatSocket();
+    }
+
+    function onStorage(event: StorageEvent) {
+      if (event.key === AUTH_FAILURE_STORAGE_KEY) clearInvalidSession();
+    }
+
+    window.addEventListener(AUTH_FAILURE_EVENT, clearInvalidSession);
+    window.addEventListener("storage", onStorage);
+
     api
       .me()
       .then((res) => setSession(res as Session))
-      .catch(() => setSession(null))
+      .catch(() => clearInvalidSession())
       .finally(() => setLoading(false));
+
+    return () => {
+      window.removeEventListener(AUTH_FAILURE_EVENT, clearInvalidSession);
+      window.removeEventListener("storage", onStorage);
+    };
   }, []);
 
   const value = useMemo<SessionContextValue>(
@@ -50,7 +69,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         setSession(res as Session);
       },
       logout: async () => {
-        await api.logout();
+        await api.logout().catch(() => undefined);
+        disconnectChatSocket();
         setSession(null);
       },
     }),
