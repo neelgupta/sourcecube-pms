@@ -59,7 +59,8 @@ function dayKeysBetween(start: Date, end: Date) {
 }
 
 export function OverviewTab() {
-  const [preset, setPreset] = useState<RangePreset>("this_week");
+  const [leaderboardPreset, setLeaderboardPreset] = useState<RangePreset>("this_week");
+  const [activityPreset, setActivityPreset] = useState<RangePreset>("this_week");
   const { session } = useSession();
   const { projects, myTasks, loading, error } = useDashboardData();
 
@@ -98,14 +99,15 @@ export function OverviewTab() {
       .sort((a, b) => b.seconds - a.seconds);
   }, [myTasks]);
 
-  const range = useMemo(() => presetRange(preset), [preset]);
+  const leaderboardRange = useMemo(() => presetRange(leaderboardPreset), [leaderboardPreset]);
+  const activityRange = useMemo(() => presetRange(activityPreset), [activityPreset]);
 
   const leaderboard = useMemo(() => {
     const counts = new Map<string, { name: string; count: number }>();
     for (const task of myTasks) {
       if (!task.completedAt || !task.assignee) continue;
       const completed = new Date(task.completedAt);
-      if (completed < range.start || completed > range.end) continue;
+      if (completed < leaderboardRange.start || completed > leaderboardRange.end) continue;
       const entry = counts.get(task.assignee.id) ?? { name: task.assignee.name, count: 0 };
       entry.count += 1;
       counts.set(task.assignee.id, entry);
@@ -114,28 +116,28 @@ export function OverviewTab() {
       .map(([id, value]) => ({ id, ...value }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 5);
-  }, [myTasks, range]);
+  }, [myTasks, leaderboardRange]);
 
   const activitySeries = useMemo(() => {
-    const days = dayKeysBetween(range.start, range.end);
+    const days = dayKeysBetween(activityRange.start, activityRange.end);
     const byDay = new Map(days.map((day) => [atMidnight(day).getTime(), 0]));
     for (const task of myTasks) {
       if (!task.completedAt) continue;
       const completed = atMidnight(new Date(task.completedAt));
-      if (completed.getTime() < atMidnight(range.start).getTime() || completed.getTime() > atMidnight(range.end).getTime()) continue;
+      if (completed.getTime() < atMidnight(activityRange.start).getTime() || completed.getTime() > atMidnight(activityRange.end).getTime()) continue;
       const key = completed.getTime();
       byDay.set(key, (byDay.get(key) ?? 0) + 1);
     }
-    const labelOptions: Intl.DateTimeFormatOptions = preset === "today"
+    const labelOptions: Intl.DateTimeFormatOptions = activityPreset === "today"
       ? { hour: "numeric" }
-      : preset === "this_month"
+      : activityPreset === "this_month"
       ? { day: "2-digit" }
       : { weekday: "short", day: "2-digit" };
     return days.map((day) => ({
-      day: preset === "today" ? "Today" : day.toLocaleDateString(undefined, labelOptions),
+      day: activityPreset === "today" ? "Today" : day.toLocaleDateString(undefined, labelOptions),
       value: byDay.get(day.getTime()) ?? 0,
     }));
-  }, [myTasks, range, preset]);
+  }, [myTasks, activityRange, activityPreset]);
 
   const activeProjects = projects.filter((p) => p.status === "in_progress" || p.status === "planning" || p.status === "new").slice(0, 5);
   const overdueProjects = projects.filter((p) => isOverdue(p.dueDate, p.status)).slice(0, 5);
@@ -165,8 +167,8 @@ export function OverviewTab() {
               title="Leaderboard"
               action={
                 <select
-                  value={preset}
-                  onChange={(event) => setPreset(event.target.value as RangePreset)}
+                  value={leaderboardPreset}
+                  onChange={(event) => setLeaderboardPreset(event.target.value as RangePreset)}
                   className="h-9 rounded-lg border border-ink-200 bg-white px-2.5 text-xs font-medium text-ink-700"
                 >
                   {rangePresetOptions.map((option) => (
@@ -198,7 +200,7 @@ export function OverviewTab() {
             </CardBody>
           </Card>
 
-          <TaskActivityChart data={activitySeries} preset={preset} onPresetChange={setPreset} />
+          <TaskActivityChart data={activitySeries} preset={activityPreset} onPresetChange={setActivityPreset} />
         </div>
 
         <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">

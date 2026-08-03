@@ -7,6 +7,7 @@ import { requireAuth, requireCompany, requirePermission } from "../middleware/au
 import { recordAudit } from "../lib/audit.js";
 import type { SystemRole } from "../lib/permissions.js";
 import { invitationsRouter } from "./invitations.js";
+import { sendCompanyInviteEmail } from "../lib/smtp.js";
 
 export const companyUsersRouter = Router();
 companyUsersRouter.use("/invitations", invitationsRouter);
@@ -64,7 +65,7 @@ companyUsersRouter.post("/", requirePermission("company_users", "create"), async
   const uniqueTeamIds = [...new Set(data.teamIds)];
 
   const [company, existing, teams] = await Promise.all([
-    prisma.company.findUnique({ where: { id: tid }, select: { employeeSeatLimit: true } }),
+    prisma.company.findUnique({ where: { id: tid }, select: { employeeSeatLimit: true, name: true } }),
     prisma.companyUser.findFirst({ where: { tenantId: tid, email } }),
     uniqueTeamIds.length
       ? prisma.team.findMany({ where: { tenantId: tid, id: { in: uniqueTeamIds } }, select: { id: true } })
@@ -149,13 +150,19 @@ companyUsersRouter.post("/", requirePermission("company_users", "create"), async
     metadata: { email: user.email, roles: user.roles, teamIds: uniqueTeamIds },
   });
 
-  res.status(201).json({ user, inviteToken, inviteExpiresAt: inviteToken ? expiresAt : null });
+  const inviteEmail = inviteToken
+    ? await sendCompanyInviteEmail({ tenantId: tid, to: user.email, name: user.name, companyName: company?.name ?? "your company", token: inviteToken, message: data.invitationMessage })
+    : { sent: false, skipped: true, error: null };
+  res.status(201).json({ user, inviteToken, inviteExpiresAt: inviteToken ? expiresAt : null, inviteEmail });
 });
 
 companyUsersRouter.post("/:id/invite", requirePermission("company_users", "invite"), async (req, res) => {
   const tid = tenantId(req);
   const userId = req.params.id as string;
-  const target = await prisma.companyUser.findFirst({ where: { id: userId, tenantId: tid } });
+  const [target, company] = await Promise.all([
+    prisma.companyUser.findFirst({ where: { id: userId, tenantId: tid } }),
+    prisma.company.findUnique({ where: { id: tid }, select: { name: true } }),
+  ]);
   if (!target) {
     res.status(404).json({ error: "Employee not found" });
     return;
@@ -190,7 +197,8 @@ companyUsersRouter.post("/:id/invite", requirePermission("company_users", "invit
     metadata: { email: target.email, expiresAt: expiresAt.toISOString() },
   });
 
-  res.json({ token, expiresAt });
+  const inviteEmail = await sendCompanyInviteEmail({ tenantId: tid, to: target.email, name: target.name, companyName: company?.name ?? "your company", token });
+  res.json({ token, expiresAt, inviteEmail });
 });
 
 const updateRolesSchema = z.object({

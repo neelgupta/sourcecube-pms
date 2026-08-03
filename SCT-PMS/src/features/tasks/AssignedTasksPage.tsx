@@ -3,7 +3,7 @@ import { CalendarDays, CheckCircle2, ChevronDown, ChevronRight, Clock3, FolderKa
 import { Badge, Card, MemberAvatar, Select, Tabs, type TabItem } from "@/components/common";
 import { api, ApiError } from "@/lib/api";
 import { useSession } from "@/lib/session";
-import { TaskWorkspaceDrawer, TimerStopDialog, type ActiveTaskTimer, type StopTimerTarget } from "@/features/projects/ProjectDetailPage";
+import { TaskWorkspaceDrawer, TimerStopDialog, type ActiveTaskTimer, type StopTimerInput, type StopTimerTarget } from "@/features/projects/ProjectDetailPage";
 import { usePermission } from "@/lib/session";
 import { cn } from "@/lib/cn";
 import type { AssignedTask, CompanyUser, ProjectMilestone, ProjectPriority, ProjectTaskStatus, TaskBreakdownRow, WorkspaceTask } from "@/types/tenant";
@@ -159,7 +159,7 @@ export function AssignedTasksPage() {
     await startTimer(task);
   }
 
-  async function saveTimerLog(input: { activityType: string; billable: boolean; note: string }) {
+  async function saveTimerLog(input: StopTimerInput) {
     if (!stopTarget) return;
     setTimerBusy(stopTarget.entry.taskId);
     try {
