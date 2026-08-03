@@ -53,7 +53,7 @@ export function NotificationBell() {
     api.listNotifications().then(({ notifications: rows }) => setNotifications(rows)).catch(() => undefined);
     const socket = getChatSocket();
     function onNew(notification: Notification) {
-      setNotifications((current) => [notification, ...current]);
+      setNotifications((current) => [notification, ...current].slice(0, 8));
       // Desktop notifications are for when the user isn't already looking at the tab —
       // if it's visible and focused, the in-app bell badge is enough.
       if (document.visibilityState === "hidden" || !document.hasFocus()) {

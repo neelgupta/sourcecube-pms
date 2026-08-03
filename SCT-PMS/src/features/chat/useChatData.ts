@@ -97,7 +97,7 @@ export function useChatData(activeChannelId?: string | null) {
       setChannels((current) => current.map((item) => (item.id === channel.id ? { ...channel, unreadCount: item.unreadCount, messages: item.messages } : item)));
     }
     function onNewNotification(notification: Notification) {
-      setNotifications((current) => [notification, ...current]);
+      setNotifications((current) => [notification, ...current].slice(0, 8));
     }
     function onPresenceSnapshot({ userIds }: { userIds: string[] }) {
       setOnlineUserIds(new Set(userIds));

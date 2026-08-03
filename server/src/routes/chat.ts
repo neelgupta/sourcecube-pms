@@ -604,7 +604,7 @@ chatRouter.get("/notifications", requirePermission("chat", "view"), async (req, 
   const notifications = await prisma.notification.findMany({
     where: { tenantId: tenantId(req), userId: userId(req) },
     orderBy: { createdAt: "desc" },
-    take: 100,
+    take: 8,
   });
   res.json({ notifications });
 });
