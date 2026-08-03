@@ -27,7 +27,7 @@ export function EmployeeMultiPicker({
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const [coords, setCoords] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [coords, setCoords] = useState<{ top: number; left: number; width: number; placement: "top" | "bottom"; maxHeight: number } | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const selected = employees.filter((employee) => value.includes(employee.id));
@@ -42,7 +42,15 @@ export function EmployeeMultiPicker({
     function updatePosition() {
       const rect = triggerRef.current?.getBoundingClientRect();
       if (!rect) return;
-      setCoords({ top: rect.bottom + 6, left: rect.left, width: Math.max(rect.width, 280) });
+      const width = Math.max(rect.width, 280);
+      const preferredHeight = 340;
+      const gap = 6;
+      const viewportPadding = 12;
+      const spaceBelow = window.innerHeight - rect.bottom - viewportPadding;
+      const spaceAbove = rect.top - viewportPadding;
+      const placement = spaceBelow < 220 && spaceAbove > spaceBelow ? "top" : "bottom";
+      const maxHeight = Math.max(180, Math.min(preferredHeight, placement === "top" ? spaceAbove - gap : spaceBelow - gap));
+      setCoords({ top: placement === "top" ? rect.top - gap : rect.bottom + gap, left: rect.left, width, placement, maxHeight });
     }
     updatePosition();
     function handleOutside(event: MouseEvent) {
@@ -81,11 +89,11 @@ export function EmployeeMultiPicker({
       {open && !disabled && coords && createPortal(
         <div
           ref={panelRef}
-          style={{ position: "fixed", top: coords.top, left: coords.left, width: coords.width }}
+          style={{ position: "fixed", top: coords.top, left: coords.left, width: coords.width, maxHeight: coords.maxHeight, transform: coords.placement === "top" ? "translateY(-100%)" : undefined }}
           className="z-[80] overflow-hidden rounded-xl border border-ink-200 bg-white shadow-popover"
         >
           <div className="border-b border-ink-100 p-2"><Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search employee..." leftIcon={<Search size={14} />} autoFocus /></div>
-          <div className="max-h-64 overflow-y-auto p-1.5">
+          <div className="overflow-y-auto p-1.5" style={{ maxHeight: Math.max(120, coords.maxHeight - (value.length > 0 ? 106 : 58)) }}>
             {available.map((employee) => {
               const isSelected = value.includes(employee.id);
               return (

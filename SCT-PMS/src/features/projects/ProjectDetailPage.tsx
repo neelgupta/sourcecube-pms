@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useState, type ReactNode } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   Activity,
@@ -64,6 +64,7 @@ import {
 } from "@/components/common";
 import { api, ApiError } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { projectSlug } from "./projectRoutes";
 import { usePermission, useSession } from "@/lib/session";
 import type {
   CompanyUser,
@@ -102,7 +103,7 @@ export type StopTimerTarget = {
   task?: WorkspaceTask;
   nextTask?: WorkspaceTask;
 };
-const views: { id: ViewId; label: string; icon: React.ReactNode }[] = [
+const views: { id: ViewId; label: string; icon: ReactNode }[] = [
   { id: "dashboard", label: "Dashboard", icon: <LayoutDashboard size={15} /> },
   { id: "list", label: "List", icon: <List size={15} /> },
   { id: "kanban", label: "Kanban", icon: <Kanban size={15} /> },
@@ -135,6 +136,31 @@ function formatSeconds(seconds: number) {
   const secs = seconds % 60;
   return `${String(hours).padStart(2, "0")}H:${String(minutes).padStart(2, "0")}M:${String(secs).padStart(2, "0")}S`;
 }
+const linkPattern = /(https?:\/\/[^\s<>"']+)/g;
+
+
+function renderLinkedDescription(text?: string | null) {
+  if (!text) return <span className="text-ink-400">No description added.</span>;
+  linkPattern.lastIndex = 0;
+  const nodes: ReactNode[] = [];
+  let lastIndex = 0;
+  for (const match of text.matchAll(linkPattern)) {
+    const rawUrl = match[0];
+    const start = match.index ?? 0;
+    if (start > lastIndex) nodes.push(text.slice(lastIndex, start));
+    const trailing = rawUrl.match(/[),.;!?]+$/)?.[0] ?? "";
+    const url = trailing ? rawUrl.slice(0, -trailing.length) : rawUrl;
+    nodes.push(
+      <a key={`${url}-${start}`} href={url} target="_blank" rel="noreferrer" className="font-medium text-brand-600 underline underline-offset-2 hover:text-brand-700" onClick={(event) => event.stopPropagation()}>
+        {url}
+      </a>,
+    );
+    if (trailing) nodes.push(trailing);
+    lastIndex = start + rawUrl.length;
+  }
+  if (lastIndex < text.length) nodes.push(text.slice(lastIndex));
+  return nodes.map((node, index) => <Fragment key={index}>{node}</Fragment>);
+}
 
 function flattenTasks(tasks: WorkspaceTask[], collapsed: Record<string, boolean>) {
   const children = new Map<string | null, WorkspaceTask[]>();
@@ -154,9 +180,11 @@ function flattenTasks(tasks: WorkspaceTask[], collapsed: Record<string, boolean>
 }
 
 export function ProjectDetailPage() {
-  const { projectId = "" } = useParams();
+  const params = useParams();
+  const projectRouteParam = params.projectSlug ?? params.projectId ?? "";
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const [projectId, setProjectId] = useState("");
   const [workspace, setWorkspace] = useState<ProjectWorkspace | null>(null);
   const [companyUsers, setCompanyUsers] = useState<CompanyUser[]>([]);
   const requestedView = searchParams.get("view");
@@ -183,6 +211,7 @@ export function ProjectDetailPage() {
   const canDeleteTaskPermission = usePermission("tasks", "manage");
 
   function load(silent = true) {
+    if (!projectId) return;
     if (!silent) setLoading(true);
     Promise.all([api.getProjectWorkspace(projectId), api.listProjectEligibleUsers(projectId)])
       .then(([workspaceResult, usersResult]) => {
@@ -226,7 +255,47 @@ export function ProjectDetailPage() {
   function syncProjectTrackedSeconds(trackedSeconds: number) {
     setWorkspace((current) => current ? { ...current, project: { ...current.project, trackedSeconds } } : current);
   }
-  useEffect(() => { load(false); }, [projectId]);
+  useEffect(() => {
+    let cancelled = false;
+    setWorkspace(null);
+    setServerTasks(null);
+    setProjectId("");
+    setLoading(true);
+
+    async function resolveProjectRoute() {
+      const routeValue = projectRouteParam.trim();
+      if (!routeValue) {
+        setError("Project route is missing");
+        setLoading(false);
+        return;
+      }
+
+      const storedProjectId = window.sessionStorage.getItem(`project-route:${routeValue}`);
+      if (storedProjectId) {
+        if (!cancelled) setProjectId(storedProjectId);
+        return;
+      }
+
+      try {
+        const result = await api.listProjects();
+        const matchedProject = result.projects.find((item) => projectSlug(item.name) === routeValue);
+        if (matchedProject) {
+          window.sessionStorage.setItem(`project-route:${routeValue}`, matchedProject.id);
+          if (!cancelled) setProjectId(matchedProject.id);
+          return;
+        }
+      } catch {
+        // Keep legacy /projects/:projectId links usable even if the list lookup fails.
+      }
+
+      if (!cancelled) setProjectId(routeValue);
+    }
+
+    void resolveProjectRoute();
+    return () => { cancelled = true; };
+  }, [projectRouteParam]);
+
+  useEffect(() => { if (projectId) load(false); }, [projectId]);
   useEffect(() => {
     if (!workspace || (activeView !== "list" && activeView !== "kanban")) return;
     let cancelled = false;
@@ -1904,6 +1973,7 @@ export function TaskWorkspaceDrawer({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [description, setDescription] = useState(task?.description ?? "");
+  const [descriptionEditing, setDescriptionEditing] = useState(canEdit && !task?.description);
   const [tagText, setTagText] = useState(task?.tags.join(", ") ?? "");
   const [estimateHours, setEstimateHours] = useState(task?.estimatedMinutes ? String(Math.floor(task.estimatedMinutes / 60)) : "");
   const [estimateMinutes, setEstimateMinutes] = useState(task?.estimatedMinutes ? String(task.estimatedMinutes % 60).padStart(2, "0") : "");
@@ -1929,6 +1999,7 @@ export function TaskWorkspaceDrawer({
     setEntries(task?.timeEntries ?? []);
     setTrackedSeconds(task?.trackedSeconds ?? 0);
     setDescription(task?.description ?? "");
+    setDescriptionEditing(canEdit && !task?.description);
     setTagText(task?.tags.join(", ") ?? "");
     setEstimateHours(task?.estimatedMinutes ? String(Math.floor(task.estimatedMinutes / 60)) : "");
     setEstimateMinutes(task?.estimatedMinutes ? String(task.estimatedMinutes % 60).padStart(2, "0") : "");
@@ -1969,7 +2040,7 @@ export function TaskWorkspaceDrawer({
   const dependencyOptions = allTasks.filter((candidate) => candidate.id !== taskId && !dependencyIds.includes(candidate.id));
 
   async function updateTask(input: Parameters<typeof api.updateProjectTask>[2]) {
-    if (!canEdit) return;
+    if (!canEdit) return null;
     setSaving(true);
     setError(null);
     try {
@@ -1978,8 +2049,10 @@ export function TaskWorkspaceDrawer({
       setEntries(result.task.timeEntries);
       setTrackedSeconds(result.task.trackedSeconds);
       onTaskChanged(result.task);
+      return result.task;
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Task could not be updated");
+      return null;
     } finally {
       setSaving(false);
     }
@@ -1999,6 +2072,13 @@ export function TaskWorkspaceDrawer({
     } finally {
       setDeleting(false);
     }
+  }
+
+  async function saveDescription() {
+    const saved = await updateTask({ description: description.trim() || null });
+    if (!saved) return;
+    setDescription(saved.description ?? "");
+    setDescriptionEditing(false);
   }
 
   async function saveEstimate(hoursValue = estimateHours, minutesValue = estimateMinutes) {
@@ -2278,8 +2358,19 @@ export function TaskWorkspaceDrawer({
             </dl>
 
             <div className="mt-4 rounded-lg border border-ink-200 p-4">
-              <div className="mb-2 flex items-center justify-between"><p className="text-sm font-medium text-ink-700">Description</p>{canEdit && <Button size="sm" variant="outline" onClick={() => updateTask({ description: description.trim() || null })}>Save</Button>}</div>
-              <textarea value={description} onChange={(event) => setDescription(event.target.value)} disabled={!canEdit} placeholder="Please enter task description..." className="min-h-28 w-full resize-y text-sm outline-none disabled:bg-white" />
+              <div className="mb-2 flex items-center justify-between">
+                <p className="text-sm font-medium text-ink-700">Description</p>
+                {canEdit && (descriptionEditing ? (
+                  <Button size="sm" variant="outline" onClick={saveDescription} disabled={saving}>Save</Button>
+                ) : (
+                  <Button size="sm" variant="outline" onClick={() => setDescriptionEditing(true)} disabled={saving}>Edit</Button>
+                ))}
+              </div>
+              {canEdit && descriptionEditing ? (
+                <textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Please enter task description..." className="min-h-28 w-full resize-y text-sm outline-none" />
+              ) : (
+                <div className="min-h-20 whitespace-pre-wrap break-words text-sm leading-6 text-ink-700">{renderLinkedDescription(description)}</div>
+              )}
             </div>
 
             <div className="mt-4 rounded-lg border border-ink-200 p-4">
@@ -2306,9 +2397,15 @@ export function TaskWorkspaceDrawer({
                       <div className="grid gap-2.5 sm:grid-cols-2">
                         <Field label="Date" className="mb-0"><DatePicker value={logDate} onChange={(value) => setLogDate(value ?? "")} max={dateValue(new Date().toISOString())} allowClear={false} /></Field>
                         <Field label="Duration" className="mb-0">
-                          <div className="flex items-center gap-2">
-                            <Input type="number" min="0" inputMode="numeric" value={logHours} onChange={(event) => setLogHours(event.target.value)} placeholder="Hours" className="w-full" />
-                            <Input type="number" min="0" max="59" inputMode="numeric" value={logMinutes} onChange={(event) => setLogMinutes(event.target.value)} placeholder="Minutes" className="w-full" />
+                          <div className="grid grid-cols-2 gap-2">
+                            <label className="flex h-10 min-w-0 items-center rounded-lg border border-ink-200 bg-white px-2 focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-100">
+                              <input type="number" min="0" inputMode="numeric" value={logHours} onChange={(event) => setLogHours(event.target.value)} placeholder="00" aria-label="Worklog hours" className="min-w-0 flex-1 border-0 bg-transparent text-sm text-ink-900 outline-none placeholder:text-ink-400" />
+                              <span className="ml-1 shrink-0 text-xs font-semibold text-ink-500">H</span>
+                            </label>
+                            <label className="flex h-10 min-w-0 items-center rounded-lg border border-ink-200 bg-white px-2 focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-100">
+                              <input type="number" min="0" max="59" inputMode="numeric" value={logMinutes} onChange={(event) => setLogMinutes(event.target.value)} placeholder="00" aria-label="Worklog minutes" className="min-w-0 flex-1 border-0 bg-transparent text-sm text-ink-900 outline-none placeholder:text-ink-400" />
+                              <span className="ml-1 shrink-0 text-xs font-semibold text-ink-500">M</span>
+                            </label>
                           </div>
                         </Field>
                         <Field label="Activity" className="mb-0">

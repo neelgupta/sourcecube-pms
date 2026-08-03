@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import { CalendarDays, CheckCircle2, ChevronDown, ChevronRight, Clock3, FolderKanban, Play, Search } from "lucide-react";
 import { Badge, Card, MemberAvatar, Select, Tabs, type TabItem } from "@/components/common";
 import { api, ApiError } from "@/lib/api";
@@ -31,7 +31,39 @@ const breakdownRoles = new Set(["company_super_admin", "hr_admin", "auditor", "t
  *  including unassigned ones) rather than just tasks personally assigned to them. For these
  *  roles the first tab shows everything the backend sent, labeled "All Tasks" instead of
  *  "My Tasks" so it isn't mistaken for a self-assignment filter. */
-const broadVisibilityRoles = new Set(["company_super_admin", "hr_admin", "auditor", "project_manager"]);
+const broadVisibilityRoles = new Set(["company_super_admin", "hr_admin", "auditor", "project_manager", "team_lead", "department_head"]);
+
+type AssignedTaskFilters = {
+  search: string;
+  status: "" | ProjectTaskStatus;
+  priority: "" | ProjectPriority;
+  assigneeId: string;
+  projectId: string;
+  dueFrom: string;
+  dueTo: string;
+  worklogUserId: string;
+  worklog: "" | "with_logs" | "without_logs" | "billable" | "non_billable";
+};
+
+type TaskFilterUser = Pick<CompanyUser, "id" | "name" | "email" | "accountStatus">;
+
+type AssignedTaskFilterOptions = {
+  projects: Array<{ id: string; name: string; key: string }>;
+  assignees: TaskFilterUser[];
+  worklogUsers: TaskFilterUser[];
+};
+
+const defaultTaskFilters: AssignedTaskFilters = {
+  search: "",
+  status: "",
+  priority: "",
+  assigneeId: "",
+  projectId: "",
+  dueFrom: "",
+  dueTo: "",
+  worklogUserId: "",
+  worklog: "",
+};
 
 function dateLabel(value?: string | null) {
   if (!value) return "—";
@@ -55,6 +87,8 @@ export function AssignedTasksPage() {
   const canEditTaskPermission = usePermission("tasks", "edit");
   const canDeleteTaskPermission = usePermission("tasks", "manage");
   const [tasks, setTasks] = useState<AssignedTask[]>([]);
+  const [taskFilters, setTaskFilters] = useState<AssignedTaskFilters>(defaultTaskFilters);
+  const [filterOptions, setFilterOptions] = useState<AssignedTaskFilterOptions>({ projects: [], assignees: [], worklogUsers: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState("my-tasks");
@@ -72,10 +106,12 @@ export function AssignedTasksPage() {
   const hasBroadVisibility = session?.user.kind === "company" && session.user.roles.some((role) => broadVisibilityRoles.has(role));
   const currentUserId = session?.user.kind === "company" ? session.user.id : "";
 
-  function load() {
-    api.listAssignedTasks()
-      .then(({ tasks: rows }) => {
+  function load(activeFilters = taskFilters) {
+    setLoading(true);
+    api.listAssignedTasks(activeFilters)
+      .then(({ tasks: rows, options }) => {
         setTasks(rows);
+        if (options) setFilterOptions(options);
         setError(null);
         // The active-timer endpoint is one-per-user tenant-wide (see server/BACKEND.md §3), so
         // any accessible project id works here — it's just needed as a route param.
@@ -89,7 +125,10 @@ export function AssignedTasksPage() {
       .catch((err) => setError(err instanceof ApiError ? err.message : "Assigned tasks could not be loaded"))
       .finally(() => setLoading(false));
   }
-  useEffect(load, []);
+  useEffect(() => {
+    const timeout = window.setTimeout(() => load(taskFilters), 250);
+    return () => window.clearTimeout(timeout);
+  }, [taskFilters]);
   useEffect(() => {
     if (!activeTimer) return;
     const interval = setInterval(() => setNow(Date.now()), 1000);
@@ -216,6 +255,10 @@ export function AssignedTasksPage() {
                   timerBusy={timerBusy}
                   canEditTimer={canEditTaskPermission}
                   onToggleTimer={toggleTimer}
+                  filters={taskFilters}
+                  filterOptions={filterOptions}
+                  onFiltersChange={setTaskFilters}
+                  onClearFilters={() => setTaskFilters(defaultTaskFilters)}
                 />
               )}
               {tab === "overdue-tasks" && <OverdueTaskTable tasks={overdueTasks} onOpenTask={openTaskDrawer} />}
@@ -260,6 +303,10 @@ function TaskTable({
   timerBusy,
   canEditTimer,
   onToggleTimer,
+  filters,
+  filterOptions,
+  onFiltersChange,
+  onClearFilters,
 }: {
   tasks: AssignedTask[];
   emptyLabel: string;
@@ -269,20 +316,18 @@ function TaskTable({
   timerBusy: string | null;
   canEditTimer: boolean;
   onToggleTimer: (task: AssignedTask) => void;
+  filters: AssignedTaskFilters;
+  filterOptions: AssignedTaskFilterOptions;
+  onFiltersChange: Dispatch<SetStateAction<AssignedTaskFilters>>;
+  onClearFilters: () => void;
 }) {
-  const [search, setSearch] = useState("");
-  const [status, setStatus] = useState<"all" | ProjectTaskStatus>("all");
-  const [priority, setPriority] = useState<"all" | ProjectPriority>("all");
-
-  const filtered = useMemo(() => tasks.filter((task) => {
-    const query = search.trim().toLowerCase();
-    const matchesSearch = !query || task.name.toLowerCase().includes(query) || task.project.name.toLowerCase().includes(query) || task.project.key.toLowerCase().includes(query);
-    return matchesSearch && (status === "all" || task.status === status) && (priority === "all" || task.priority === priority);
-  }), [tasks, search, status, priority]);
-
+  const activeFilterCount = Object.values(filters).filter(Boolean).length;
   const openCount = tasks.filter((task) => task.status !== "done").length;
   const doneCount = tasks.filter((task) => task.status === "done").length;
   const overdueCount = tasks.filter(isOverdue).length;
+  const setFilter = <K extends keyof AssignedTaskFilters>(key: K, value: AssignedTaskFilters[K]) => {
+    onFiltersChange((current) => ({ ...current, [key]: value }));
+  };
 
   return (
     <div>
@@ -293,36 +338,68 @@ function TaskTable({
           <SummaryChip icon={<CheckCircle2 size={15} />} label="Done" value={doneCount} />
           <SummaryChip icon={<CalendarDays size={15} />} label="Overdue" value={overdueCount} danger={overdueCount > 0} />
         </div>
+        {activeFilterCount > 0 && (
+          <button onClick={onClearFilters} className="text-xs font-semibold text-brand-600 hover:text-brand-700">
+            Clear filters ({activeFilterCount})
+          </button>
+        )}
       </div>
-      <div className="flex flex-col gap-3 border-b border-ink-200 p-4 md:flex-row md:items-center">
-        <div className="relative min-w-0 flex-1">
+      <div className="grid gap-3 border-b border-ink-200 p-4 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-6">
+        <div className="relative min-w-0 md:col-span-2 xl:col-span-2">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-400" />
-          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search task, project, or project key" className="h-10 w-full rounded-lg border border-ink-200 bg-white pl-9 pr-3 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" />
+          <input value={filters.search} onChange={(event) => setFilter("search", event.target.value)} placeholder="Search task, project, or project key" className="h-10 w-full rounded-lg border border-ink-200 bg-white pl-9 pr-3 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" />
         </div>
-        <Select value={status} onChange={(event) => setStatus(event.target.value as typeof status)} className="md:w-44">
-          <option value="all">All statuses</option>
+        <Select value={filters.assigneeId} onChange={(event) => setFilter("assigneeId", event.target.value)}>
+          <option value="">All assignees</option>
+          <option value="unassigned">Unassigned</option>
+          {filterOptions.assignees.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}
+        </Select>
+        <Select value={filters.worklogUserId} onChange={(event) => setFilter("worklogUserId", event.target.value)}>
+          <option value="">All work logs</option>
+          {filterOptions.worklogUsers.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}
+        </Select>
+        <Select value={filters.projectId} onChange={(event) => setFilter("projectId", event.target.value)}>
+          <option value="">All projects</option>
+          {filterOptions.projects.map((project) => <option key={project.id} value={project.id}>{project.name} ({project.key})</option>)}
+        </Select>
+        <Select value={filters.status} onChange={(event) => setFilter("status", event.target.value as AssignedTaskFilters["status"])}>
+          <option value="">All statuses</option>
           <option value="new_request">New Request</option>
           <option value="in_progress">In Progress</option>
           <option value="done">Done</option>
         </Select>
-        <Select value={priority} onChange={(event) => setPriority(event.target.value as typeof priority)} className="md:w-40">
-          <option value="all">All priorities</option>
+        <Select value={filters.priority} onChange={(event) => setFilter("priority", event.target.value as AssignedTaskFilters["priority"])}>
+          <option value="">All priorities</option>
           <option value="critical">Critical</option>
           <option value="high">High</option>
           <option value="medium">Medium</option>
           <option value="low">Low</option>
         </Select>
+        <Select value={filters.worklog} onChange={(event) => setFilter("worklog", event.target.value as AssignedTaskFilters["worklog"])}>
+          <option value="">Any work log state</option>
+          <option value="with_logs">Has work logs</option>
+          <option value="without_logs">No work logs</option>
+          <option value="billable">Billable logs</option>
+          <option value="non_billable">Non-billable logs</option>
+        </Select>
+        <label className="flex h-10 items-center gap-2 rounded-lg border border-ink-200 bg-white px-3 text-xs text-ink-500">
+          <span className="shrink-0">Due from</span>
+          <input type="date" value={filters.dueFrom} onChange={(event) => setFilter("dueFrom", event.target.value)} className="min-w-0 flex-1 bg-transparent text-sm text-ink-700 outline-none" />
+        </label>
+        <label className="flex h-10 items-center gap-2 rounded-lg border border-ink-200 bg-white px-3 text-xs text-ink-500">
+          <span className="shrink-0">Due to</span>
+          <input type="date" value={filters.dueTo} onChange={(event) => setFilter("dueTo", event.target.value)} className="min-w-0 flex-1 bg-transparent text-sm text-ink-700 outline-none" />
+        </label>
       </div>
 
-      {filtered.length === 0 ? (
+      {tasks.length === 0 ? (
         <div className="flex flex-col items-center px-6 py-16 text-center"><CheckCircle2 size={36} className="text-brand-500" /><p className="mt-3 font-semibold text-ink-900">No matching tasks</p><p className="mt-1 text-sm text-ink-500">{emptyLabel}</p></div>
       ) : (
-        <TaskGrid tasks={filtered} onOpenTask={onOpenTask} activeTimer={activeTimer} now={now} timerBusy={timerBusy} canEditTimer={canEditTimer} onToggleTimer={onToggleTimer} />
+        <TaskGrid tasks={tasks} onOpenTask={onOpenTask} activeTimer={activeTimer} now={now} timerBusy={timerBusy} canEditTimer={canEditTimer} onToggleTimer={onToggleTimer} />
       )}
     </div>
   );
 }
-
 const gridHeaders = [
   "Task Name", "Project", "Assignee", "Due Date", "Section", "Task Type", "Task Status", "Tags",
   "Task Progress", "Estimation Hours", "Work Logs", "Task Followers", "Task Assigner", "Last Comment",

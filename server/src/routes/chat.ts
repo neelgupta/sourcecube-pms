@@ -200,7 +200,7 @@ chatRouter.post("/channels/:id/read", requirePermission("chat", "view"), async (
   const tid = tenantId(req);
   const uid = userId(req);
   const channelId = req.params.id as string;
-  const channel = await prisma.chatChannel.findFirst({ where: { id: channelId, tenantId: tid } });
+  const channel = await prisma.chatChannel.findFirst({ where: { id: channelId, tenantId: tid }, include: { project: { select: { name: true, key: true } } } });
   if (!channel) {
     res.status(404).json({ error: "Channel not found" });
     return;
@@ -231,7 +231,7 @@ chatRouter.post("/channels/:id/members", requirePermission("chat", "invite"), as
   const tid = tenantId(req);
   const uid = userId(req);
   const channelId = req.params.id as string;
-  const channel = await prisma.chatChannel.findFirst({ where: { id: channelId, tenantId: tid } });
+  const channel = await prisma.chatChannel.findFirst({ where: { id: channelId, tenantId: tid }, include: { project: { select: { name: true, key: true } } } });
   if (!channel) {
     res.status(404).json({ error: "Channel not found" });
     return;
@@ -276,7 +276,7 @@ chatRouter.delete("/channels/:id/members/:userId", requirePermission("chat", "in
   const uid = userId(req);
   const channelId = req.params.id as string;
   const removedUserId = req.params.userId as string;
-  const channel = await prisma.chatChannel.findFirst({ where: { id: channelId, tenantId: tid } });
+  const channel = await prisma.chatChannel.findFirst({ where: { id: channelId, tenantId: tid }, include: { project: { select: { name: true, key: true } } } });
   if (!channel) {
     res.status(404).json({ error: "Channel not found" });
     return;
@@ -334,7 +334,7 @@ chatRouter.patch("/channels/:id/favorite", requirePermission("chat", "view"), as
   const tid = tenantId(req);
   const uid = userId(req);
   const channelId = req.params.id as string;
-  const channel = await prisma.chatChannel.findFirst({ where: { id: channelId, tenantId: tid } });
+  const channel = await prisma.chatChannel.findFirst({ where: { id: channelId, tenantId: tid }, include: { project: { select: { name: true, key: true } } } });
   if (!channel) {
     res.status(404).json({ error: "Channel not found" });
     return;
@@ -357,7 +357,7 @@ chatRouter.get("/channels/:id/messages", requirePermission("chat", "view"), asyn
   const tid = tenantId(req);
   const uid = userId(req);
   const channelId = req.params.id as string;
-  const channel = await prisma.chatChannel.findFirst({ where: { id: channelId, tenantId: tid } });
+  const channel = await prisma.chatChannel.findFirst({ where: { id: channelId, tenantId: tid }, include: { project: { select: { name: true, key: true } } } });
   if (!channel) {
     res.status(404).json({ error: "Channel not found" });
     return;
@@ -410,7 +410,7 @@ chatRouter.post("/channels/:id/messages", requirePermission("chat", "create"), a
   const tid = tenantId(req);
   const uid = userId(req);
   const channelId = req.params.id as string;
-  const channel = await prisma.chatChannel.findFirst({ where: { id: channelId, tenantId: tid } });
+  const channel = await prisma.chatChannel.findFirst({ where: { id: channelId, tenantId: tid }, include: { project: { select: { name: true, key: true } } } });
   if (!channel) {
     res.status(404).json({ error: "Channel not found" });
     return;
@@ -459,20 +459,30 @@ chatRouter.post("/channels/:id/messages", requirePermission("chat", "create"), a
   const notificationBody = data.body ? plainTextBody(data.body).slice(0, 140) : undefined;
 
   const senderName = message.author.name;
+  const channelContext = channel.type === "project"
+    ? `Project: ${channel.project?.name ?? channel.name ?? "Project"}`
+    : channel.type === "group"
+      ? `Group: ${channel.name ?? "Group chat"}`
+      : channel.type === "announcement"
+        ? "Announcements"
+        : "Direct message";
+  const messageTitle = channel.type === "dm" ? `${senderName} sent you a message` : `${senderName} in ${channelContext}`;
+  const mentionTitle = channel.type === "dm" ? `${senderName} mentioned you` : `${senderName} mentioned you in ${channelContext}`;
+
   if (channel.type === "announcement") {
     const everyone = await prisma.companyUser.findMany({ where: { tenantId: tid, accountStatus: "active", id: { not: uid } }, select: { id: true } });
     for (const target of everyone) {
-      await createNotification({ tenantId: tid, userId: target.id, type: "announcement", title: `New announcement from ${senderName}`, body: notificationBody, channelId, messageId: message.id, actorId: uid });
+      await createNotification({ tenantId: tid, userId: target.id, type: "announcement", title: `${senderName} in ${channelContext}`, body: notificationBody, channelId, messageId: message.id, actorId: uid });
     }
   } else {
     const recipients = await prisma.chatChannelMember.findMany({ where: { channelId, userId: { not: uid } }, select: { userId: true } });
     for (const recipient of recipients) {
       if (mentionIds.includes(recipient.userId)) continue;
-      await createNotification({ tenantId: tid, userId: recipient.userId, type: "message", title: `New message from ${senderName}`, body: notificationBody, channelId, messageId: message.id, actorId: uid });
+      await createNotification({ tenantId: tid, userId: recipient.userId, type: "message", title: messageTitle, body: notificationBody, channelId, messageId: message.id, actorId: uid });
     }
   }
   for (const mentionUserId of mentionIds) {
-    await createNotification({ tenantId: tid, userId: mentionUserId, type: "mention", title: `${senderName} mentioned you`, body: notificationBody, channelId, messageId: message.id, actorId: uid });
+    await createNotification({ tenantId: tid, userId: mentionUserId, type: "mention", title: mentionTitle, body: notificationBody, channelId, messageId: message.id, actorId: uid });
   }
 
   res.status(201).json({ message });

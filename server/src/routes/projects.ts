@@ -137,10 +137,28 @@ projectsRouter.get("/", requirePermission("projects", "view"), async (req, res) 
   res.json({ projects: rows });
 });
 
+const assignedTaskQuerySchema = z.object({
+  search: z.string().trim().max(120).optional(),
+  status: z.enum(["new_request", "in_progress", "done"]).optional(),
+  priority: z.enum(["critical", "high", "medium", "low"]).optional(),
+  assigneeId: z.string().optional(),
+  projectId: z.string().optional(),
+  dueFrom: z.string().optional(),
+  dueTo: z.string().optional(),
+  worklogUserId: z.string().optional(),
+  worklog: z.enum(["with_logs", "without_logs", "billable", "non_billable"]).optional(),
+});
+
 projectsRouter.get("/tasks/assigned", requirePermission("tasks", "view"), async (req, res) => {
   const tid = tenantId(req);
   const uid = userId(req);
   const roles = await getCompanyUserRoles(tid, uid);
+  const parsed = assignedTaskQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.issues.map((issue) => issue.message).join(", ") });
+    return;
+  }
+  const input = parsed.data;
   const assignments: Prisma.ProjectTaskWhereInput[] = [
     { assigneeId: uid },
     { followers: { some: { userId: uid } } },
@@ -153,27 +171,83 @@ projectsRouter.get("/tasks/assigned", requirePermission("tasks", "view"), async 
   const taskScope: Prisma.ProjectTaskWhereInput = roles.some((role) => elevatedProjectReaders.has(role))
     ? { tenantId: tid }
     : { tenantId: tid, OR: assignments };
-  const tasks = await prisma.projectTask.findMany({
-    where: taskScope,
-    include: {
-      ...taskDetailInclude,
-      project: { select: { id: true, name: true, key: true, status: true, priority: true } },
-      section: { select: { id: true, name: true } },
-    },
-    orderBy: [{ dueDate: "asc" }, { updatedAt: "desc" }],
-    take: 500,
-  });
-  // ProjectTask.createdBy is a raw id with no Prisma relation, so the "assigner" (who created
-  // the task) is resolved here via a single batch lookup rather than per-row.
+
+  const filters: Prisma.ProjectTaskWhereInput[] = [];
+  if (input.search) {
+    filters.push({
+      OR: [
+        { name: { contains: input.search, mode: "insensitive" } },
+        { project: { name: { contains: input.search, mode: "insensitive" } } },
+        { project: { key: { contains: input.search, mode: "insensitive" } } },
+      ],
+    });
+  }
+  if (input.status) filters.push({ status: input.status });
+  if (input.priority) filters.push({ priority: input.priority });
+  if (input.assigneeId) filters.push({ assigneeId: input.assigneeId === "unassigned" ? null : input.assigneeId });
+  if (input.projectId) filters.push({ projectId: input.projectId });
+  if (input.dueFrom || input.dueTo) {
+    const dueDate: Prisma.DateTimeNullableFilter = {};
+    if (input.dueFrom) dueDate.gte = new Date(`${input.dueFrom}T00:00:00.000Z`);
+    if (input.dueTo) dueDate.lte = new Date(`${input.dueTo}T23:59:59.999Z`);
+    filters.push({ dueDate });
+  }
+  if (input.worklogUserId) filters.push({ timeEntries: { some: { userId: input.worklogUserId } } });
+  if (input.worklog === "with_logs") filters.push({ timeEntries: { some: {} } });
+  if (input.worklog === "without_logs") filters.push({ timeEntries: { none: {} } });
+  if (input.worklog === "billable") filters.push({ timeEntries: { some: { billable: true } } });
+  if (input.worklog === "non_billable") filters.push({ timeEntries: { some: { billable: false } } });
+
+  const where: Prisma.ProjectTaskWhereInput = filters.length ? { AND: [taskScope, ...filters] } : taskScope;
+
+  const [tasks, optionRows] = await Promise.all([
+    prisma.projectTask.findMany({
+      where,
+      include: {
+        ...taskDetailInclude,
+        project: { select: { id: true, name: true, key: true, status: true, priority: true } },
+        section: { select: { id: true, name: true } },
+      },
+      orderBy: [{ dueDate: "asc" }, { updatedAt: "desc" }],
+      take: 500,
+    }),
+    prisma.projectTask.findMany({
+      where: taskScope,
+      select: {
+        project: { select: { id: true, name: true, key: true } },
+        assignee: { select: userSelect },
+        timeEntries: { select: { user: { select: userSelect } }, take: 100 },
+      },
+      orderBy: [{ updatedAt: "desc" }],
+      take: 1000,
+    }),
+  ]);
+
   const assignerIds = [...new Set(tasks.map((task) => task.createdBy).filter((id): id is string => Boolean(id)))];
   const assigners = assignerIds.length
     ? await prisma.companyUser.findMany({ where: { id: { in: assignerIds }, tenantId: tid }, select: userSelect })
     : [];
   const assignerById = new Map(assigners.map((user) => [user.id, user]));
   const rows = tasks.map((task) => ({ ...task, assigner: task.createdBy ? assignerById.get(task.createdBy) ?? null : null }));
-  res.json({ tasks: rows });
-});
 
+  const projects = new Map<string, { id: string; name: string; key: string }>();
+  const assignees = new Map<string, { id: string; name: string; email: string; accountStatus: string }>();
+  const worklogUsers = new Map<string, { id: string; name: string; email: string; accountStatus: string }>();
+  for (const task of optionRows) {
+    projects.set(task.project.id, task.project);
+    if (task.assignee) assignees.set(task.assignee.id, task.assignee);
+    for (const entry of task.timeEntries) worklogUsers.set(entry.user.id, entry.user);
+  }
+
+  res.json({
+    tasks: rows,
+    options: {
+      projects: Array.from(projects.values()).sort((a, b) => a.name.localeCompare(b.name)),
+      assignees: Array.from(assignees.values()).sort((a, b) => a.name.localeCompare(b.name)),
+      worklogUsers: Array.from(worklogUsers.values()).sort((a, b) => a.name.localeCompare(b.name)),
+    },
+  });
+});
 const breakdownRoles = new Set(["company_super_admin", "hr_admin", "auditor", "team_lead", "department_head"]);
 
 projectsRouter.get("/tasks/breakdown", requirePermission("tasks", "view"), async (req, res) => {

@@ -1,4 +1,5 @@
-import { Check, CheckCheck, Hash, Megaphone, Plus, Star, Users } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Check, CheckCheck, ChevronDown, ChevronRight, Hash, Megaphone, Plus, Star, Users } from "lucide-react";
 import { Badge, MemberAvatar } from "@/components/common";
 import { cn } from "@/lib/cn";
 import type { ChatChannel, ChatMessage } from "@/types/tenant";
@@ -79,8 +80,8 @@ export function ChannelList({
       <div className="min-h-0 flex-1 overflow-y-auto py-2">
         <Section title="Favorites" channels={favorites} activeChannelId={activeChannelId} currentUserId={currentUserId} onlineUserIds={onlineUserIds} onSelect={onSelect} onToggleFavorite={onToggleFavorite} />
         <Section title="Announcements" channels={announcement} activeChannelId={activeChannelId} currentUserId={currentUserId} onlineUserIds={onlineUserIds} onSelect={onSelect} onToggleFavorite={onToggleFavorite} />
-        <Section title="Projects" channels={projects} activeChannelId={activeChannelId} currentUserId={currentUserId} onlineUserIds={onlineUserIds} onSelect={onSelect} onToggleFavorite={onToggleFavorite} />
-        <Section title="Groups" channels={groups} activeChannelId={activeChannelId} currentUserId={currentUserId} onlineUserIds={onlineUserIds} onSelect={onSelect} onToggleFavorite={onToggleFavorite} />
+        <Section title="Projects" channels={projects} activeChannelId={activeChannelId} currentUserId={currentUserId} onlineUserIds={onlineUserIds} onSelect={onSelect} onToggleFavorite={onToggleFavorite} collapsible collapseWhenMoreThan={4} />
+        <Section title="Groups" channels={groups} activeChannelId={activeChannelId} currentUserId={currentUserId} onlineUserIds={onlineUserIds} onSelect={onSelect} onToggleFavorite={onToggleFavorite} collapsible collapseWhenMoreThan={4} />
         <Section title="Direct messages" channels={dms} activeChannelId={activeChannelId} currentUserId={currentUserId} onlineUserIds={onlineUserIds} onSelect={onSelect} onToggleFavorite={onToggleFavorite} />
       </div>
     </div>
@@ -95,6 +96,8 @@ function Section({
   onlineUserIds,
   onSelect,
   onToggleFavorite,
+  collapsible = false,
+  collapseWhenMoreThan = 4,
 }: {
   title: string;
   channels: ChatChannel[];
@@ -103,12 +106,37 @@ function Section({
   onlineUserIds: Set<string>;
   onSelect: (channel: ChatChannel) => void;
   onToggleFavorite: (channelId: string, isFavorite: boolean) => void;
+  collapsible?: boolean;
+  collapseWhenMoreThan?: number;
 }) {
+  const hasActiveChannel = Boolean(activeChannelId && channels.some((channel) => channel.id === activeChannelId));
+  const shouldCollapseByDefault = collapsible && channels.length > collapseWhenMoreThan && !hasActiveChannel;
+  const [collapsed, setCollapsed] = useState<boolean | null>(null);
+  const isCollapsed = collapsed ?? shouldCollapseByDefault;
+
+  useEffect(() => {
+    if (hasActiveChannel) setCollapsed(false);
+  }, [hasActiveChannel]);
+
   if (channels.length === 0) return null;
   return (
     <div className="mb-2">
-      <p className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-ink-400">{title}</p>
-      {channels.map((channel) => {
+      {collapsible ? (
+        <button
+          type="button"
+          onClick={() => setCollapsed((value) => !value)}
+          className="flex w-full items-center justify-between px-3 py-1.5 text-left text-[11px] font-semibold uppercase tracking-wide text-ink-400 hover:bg-ink-50 hover:text-ink-600"
+        >
+          <span className="flex items-center gap-1.5">
+            {isCollapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+            {title}
+          </span>
+          <span className="rounded-full bg-ink-100 px-1.5 py-0.5 text-[10px] text-ink-500">{channels.length}</span>
+        </button>
+      ) : (
+        <p className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-ink-400">{title}</p>
+      )}
+      {!isCollapsed && channels.map((channel) => {
         const label = channelLabel(channel, currentUserId);
         const lastMessage = channel.messages?.[0];
         const isDm = channel.type === "dm";

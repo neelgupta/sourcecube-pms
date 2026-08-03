@@ -51,6 +51,22 @@ import type {
 } from "@/types/tenant";
 
 export const API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:4100/api";
+export const AUTH_FAILURE_EVENT = "sourcecube-pms:auth-failed";
+export const AUTH_FAILURE_STORAGE_KEY = "sourcecube-pms:last-auth-failure";
+
+function notifyAuthFailure() {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent(AUTH_FAILURE_EVENT));
+  try {
+    window.localStorage.setItem(AUTH_FAILURE_STORAGE_KEY, String(Date.now()));
+  } catch {
+    // Ignore private-mode/storage-disabled cases; same-tab event still works.
+  }
+}
+
+export function isAuthFailureStatus(status: number) {
+  return status === 401;
+}
 
 export class ApiError extends Error {
   status: number;
@@ -74,6 +90,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   const body = await res.json().catch(() => undefined);
   if (!res.ok) {
+    if (isAuthFailureStatus(res.status)) notifyAuthFailure();
     throw new ApiError((body as { error?: string })?.error ?? "Request failed", res.status, body);
   }
   return body as T;
@@ -267,7 +284,31 @@ export const api = {
 
   listProjects: () => request<{ projects: RealProject[] }>("/projects"),
   getProject: (id: string) => request<{ project: RealProject }>(`/projects/${id}`),
-  listAssignedTasks: () => request<{ tasks: AssignedTask[] }>("/projects/tasks/assigned"),
+  listAssignedTasks: (filters?: {
+    search?: string;
+    status?: ProjectTaskStatus | "";
+    priority?: ProjectPriority | "";
+    assigneeId?: string;
+    projectId?: string;
+    dueFrom?: string;
+    dueTo?: string;
+    worklogUserId?: string;
+    worklog?: "" | "with_logs" | "without_logs" | "billable" | "non_billable";
+  }) => {
+    const params = new URLSearchParams();
+    Object.entries(filters ?? {}).forEach(([key, value]) => {
+      if (value !== undefined && value !== "") params.set(key, String(value));
+    });
+    const query = params.toString();
+    return request<{
+      tasks: AssignedTask[];
+      options?: {
+        projects: Array<{ id: string; name: string; key: string }>;
+        assignees: Array<Pick<CompanyUser, "id" | "name" | "email" | "accountStatus">>;
+        worklogUsers: Array<Pick<CompanyUser, "id" | "name" | "email" | "accountStatus">>;
+      };
+    }>(`/projects/tasks/assigned${query ? `?${query}` : ""}`);
+  },
   getTaskBreakdown: () => request<{ employees: TaskBreakdownRow[] }>("/projects/tasks/breakdown"),
   createProject: (input: {
     name: string;
@@ -501,7 +542,10 @@ export const api = {
     formData.append("file", file);
     const res = await fetch(`${API_BASE}/chat/upload`, { method: "POST", credentials: "include", body: formData });
     const body = await res.json().catch(() => undefined);
-    if (!res.ok) throw new ApiError((body as { error?: string })?.error ?? "Upload failed", res.status, body);
+    if (!res.ok) {
+      if (isAuthFailureStatus(res.status)) notifyAuthFailure();
+      throw new ApiError((body as { error?: string })?.error ?? "Upload failed", res.status, body);
+    }
     return body as { url: string; name: string; size: number };
   },
   listNotifications: () => request<{ notifications: Notification[] }>("/chat/notifications"),

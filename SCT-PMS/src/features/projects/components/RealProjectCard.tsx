@@ -49,32 +49,48 @@ export function RealProjectCard({
   canArchiveOrDelete,
 }: Props) {
   const progress = project.completionPercent;
+  const openProject = () => onOpen(project);
+
 
   return (
-    <div className="group relative rounded-card border border-ink-200 bg-white p-4 shadow-card transition-all hover:-translate-y-0.5 hover:shadow-card-hover">
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={openProject}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          openProject();
+        }
+      }}
+      className="group relative cursor-pointer rounded-card border border-ink-200 bg-white p-4 shadow-card transition-all hover:-translate-y-0.5 hover:shadow-card-hover focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+    >
       <span className="absolute inset-y-4 left-0 w-[3px] rounded-r-full bg-brand-500" />
 
       <div className="flex items-start gap-3">
         <Avatar initials={initialsOf(project.name)} color={memberColor(project.id)} size="lg" className="ring-0" />
         <div className="min-w-0 flex-1">
-          <button
-            onClick={() => onOpen(project)}
-            className="block w-full truncate text-left text-sm font-semibold text-ink-900 hover:text-brand-600"
-          >
+          <span className="block w-full truncate text-left text-sm font-semibold text-ink-900 transition-colors group-hover:text-brand-600">
             {project.name}
-          </button>
+          </span>
           <p className="mt-0.5 truncate text-xs text-ink-500">{project.clientName || "No client set"}</p>
         </div>
-        <div className="flex shrink-0 items-center gap-0.5">
+        <div className="flex shrink-0 items-center gap-0.5" onClick={(event) => event.stopPropagation()}>
           <button
-            onClick={() => onToggleFavourite(project.id)}
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggleFavourite(project.id);
+            }}
             className="rounded p-1 text-ink-400 transition-colors hover:bg-ink-100"
           >
             <Star size={16} className={cn(project.favourite && "fill-warning-500 text-warning-500")} />
           </button>
           <DropdownMenu
             trigger={
-              <button className="rounded p-1 text-ink-400 transition-colors hover:bg-ink-100">
+              <button
+                onClick={(event) => event.stopPropagation()}
+                className="rounded p-1 text-ink-400 transition-colors hover:bg-ink-100"
+              >
                 <MoreHorizontal size={16} />
               </button>
             }

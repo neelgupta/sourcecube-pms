@@ -6,6 +6,7 @@ import { cn } from "@/lib/cn";
 import { useSession } from "@/lib/session";
 import { formatHoursMinutes, isOverdue, useDashboardData } from "./useDashboardData";
 import { TaskActivityChart } from "./components/TaskActivityCard";
+import { projectWorkspacePath } from "@/features/projects/projectRoutes";
 
 export type RangePreset = "today" | "this_week" | "last_week" | "this_month";
 
@@ -233,7 +234,7 @@ export function OverviewTab() {
                             <div className="flex min-w-0 items-center gap-2">
                               <span className="shrink-0 text-xs font-medium text-ink-400">{task.code}</span>
                               <CheckCircle2 size={15} className="shrink-0 text-ink-300" />
-                              <Link to={`/projects/${task.project.id}?task=${task.id}`} className="truncate font-medium text-brand-600 hover:underline">{task.name}</Link>
+                              <Link to={`${projectWorkspacePath(task.project)}?task=${task.id}`} className="truncate font-medium text-brand-600 hover:underline">{task.name}</Link>
                             </div>
                           </td>
                           <td className="truncate px-3 py-2.5 text-ink-700">{task.project.name}</td>
@@ -255,7 +256,7 @@ export function OverviewTab() {
                 <ul className="divide-y divide-ink-100">
                   {trackedToday.map(({ task, seconds }) => (
                     <li key={task.id} className="flex items-center justify-between gap-3 py-2.5">
-                      <Link to={`/projects/${task.project.id}?task=${task.id}`} className="truncate text-sm font-medium text-ink-900 hover:text-brand-600">{task.name}</Link>
+                      <Link to={`${projectWorkspacePath(task.project)}?task=${task.id}`} className="truncate text-sm font-medium text-ink-900 hover:text-brand-600">{task.name}</Link>
                       <span className="shrink-0 font-mono text-xs text-ink-600">{formatHoursMinutes(seconds / 60)}</span>
                     </li>
                   ))}
@@ -305,7 +306,7 @@ function SidePanel({ title, projects }: { title: string; projects: { id: string;
         <ul className="divide-y divide-ink-100 px-4 pb-3">
           {projects.map((project) => (
             <li key={project.id} className="py-2">
-              <Link to={`/projects/${project.id}`} className="truncate text-sm font-medium text-ink-800 hover:text-brand-600">{project.name}</Link>
+              <Link to={projectWorkspacePath(project)} className="truncate text-sm font-medium text-ink-800 hover:text-brand-600">{project.name}</Link>
             </li>
           ))}
         </ul>

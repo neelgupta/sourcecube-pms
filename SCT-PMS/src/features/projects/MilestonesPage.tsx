@@ -5,6 +5,7 @@ import { Badge, Button, Card, DatePicker, Field, Input, MemberAvatar, Modal, Sel
 import { api, ApiError } from "@/lib/api";
 import { usePermission } from "@/lib/session";
 import type { AllMilestone, CompanyUser } from "@/types/tenant";
+import { projectWorkspacePath } from "./projectRoutes";
 
 function formatDate(value?: string | null) {
   return value ? new Date(value).toLocaleDateString() : "—";
@@ -113,7 +114,7 @@ export function MilestonesPage() {
                       <tr
                         key={milestone.id}
                         className="cursor-pointer border-b border-ink-100 hover:bg-brand-50/30"
-                        onClick={() => navigate(`/projects/${project.id}?view=milestones`)}
+                        onClick={() => navigate(`${projectWorkspacePath(project)}?view=milestones`)}
                       >
                         <td className="px-4 py-3 font-medium text-ink-900">{milestone.name}</td>
                         <td className="px-4 py-3">

@@ -17,6 +17,7 @@ import { Badge, Button, Card, DateRangePicker, EmployeeMultiPicker, FilterSelect
 import { api, ApiError } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { usePermission } from "@/lib/session";
+import { projectWorkspacePath } from "@/features/projects/projectRoutes";
 import type { ProjectPriority, ProjectSection, RealProject, ResourcePlannerDay, ResourcePlannerDayDetail, ResourcePlannerEmployee, ResourcePlannerResponse, WorkspaceTask } from "@/types/tenant";
 
 const occupancyOptions = [
@@ -135,6 +136,15 @@ export function ResourcesPage() {
     setRevision((value) => value + 1);
   }
 
+  async function openResourceTask(projectId: string, taskId: string) {
+    try {
+      const result = await api.getProject(projectId);
+      navigate(`${projectWorkspacePath(result.project)}?task=${taskId}`);
+    } catch {
+      navigate(`/projects/${projectId}?task=${taskId}`);
+    }
+  }
+
   const employees = planner?.employees ?? [];
   const days = planner?.days ?? [];
   return (
@@ -202,9 +212,15 @@ export function ResourcesPage() {
         <Card className="h-full overflow-hidden">
           <div className="h-full overflow-auto">
             <table className="w-full min-w-max border-collapse text-sm">
+              <colgroup>
+                <col className="w-[300px] min-w-[300px]" />
+                <col className="w-32 min-w-32" />
+                <col className="w-48 min-w-48" />
+                {days.map((day) => <col key={day.date} className="w-28 min-w-28" />)}
+              </colgroup>
               <thead className="sticky top-0 z-20">
                 <tr className="border-b border-ink-200 bg-surface-subtle">
-                  <th className="sticky left-0 z-30 min-w-72 border-r border-ink-200 bg-surface-subtle px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-ink-500">Employee Name</th>
+                  <th className="sticky left-0 z-40 w-[300px] min-w-[300px] max-w-[300px] border-r border-ink-200 bg-surface-subtle px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-ink-500 shadow-[4px_0_8px_-8px_rgba(15,23,42,0.35)]">Employee Name</th>
                   <th className="min-w-32 border-r border-ink-200 px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-ink-500">Employee ID</th>
                   <th className="min-w-48 border-r border-ink-200 px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-ink-500">Projects / Tasks</th>
                   {days.map((day) => <th key={day.date} className={cn("min-w-28 border-r border-ink-200 px-3 py-3 text-center text-xs font-semibold uppercase tracking-wide", !day.isWorkingDay ? "bg-info-50 text-info-600" : "text-ink-500")}>{day.label}</th>)}
@@ -227,7 +243,7 @@ export function ResourcesPage() {
           employeeId={selectedDay.employeeId}
           date={selectedDay.date}
           onClose={() => setSelectedDay(null)}
-          onOpenTask={(projectId, taskId) => navigate(`/projects/${projectId}?task=${taskId}`)}
+          onOpenTask={(projectId, taskId) => openResourceTask(projectId, taskId)}
           onTaskAssigned={handleTaskAssigned}
         />
       )}
@@ -237,8 +253,8 @@ export function ResourcesPage() {
 
 function ResourceRow({ employee, days, onSelectDay }: { employee: ResourcePlannerEmployee; days: ResourcePlannerDay[]; onSelectDay: (date: string) => void }) {
   return <tr className="group border-b border-ink-100 transition-colors hover:bg-brand-50/30">
-    <td className="sticky left-0 z-10 border-r border-ink-200 bg-white px-4 py-3 group-hover:bg-brand-50/30">
-      <div className="flex items-center gap-3"><MemberAvatar id={employee.id} name={employee.name} size="sm" status="active" className="ring-0" /><div className="min-w-0"><p className="truncate font-medium text-ink-900">{employee.name}</p><p className="truncate text-[11px] text-ink-400">{employee.email}</p></div><span className={cn("ml-auto shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-semibold", employee.utilisationPercent === 0 ? "bg-ink-100 text-ink-500" : employee.utilisationPercent > 100 ? "bg-danger-50 text-danger-600" : "bg-success-50 text-success-600")}>{employee.utilisationPercent}%</span></div>
+    <td className="sticky left-0 z-30 w-[300px] min-w-[300px] max-w-[300px] overflow-hidden border-r border-ink-200 bg-white px-4 py-3 shadow-[4px_0_8px_-8px_rgba(15,23,42,0.35)] group-hover:bg-brand-50">
+      <div className="flex w-full min-w-0 items-center gap-3 overflow-hidden"><MemberAvatar id={employee.id} name={employee.name} size="sm" status="active" className="shrink-0 ring-0" /><div className="min-w-0 flex-1 overflow-hidden"><p className="truncate font-medium text-ink-900">{employee.name}</p><p className="truncate text-[11px] text-ink-400">{employee.email}</p></div><span className={cn("ml-auto shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-semibold", employee.utilisationPercent === 0 ? "bg-ink-100 text-ink-500" : employee.utilisationPercent > 100 ? "bg-danger-50 text-danger-600" : "bg-success-50 text-success-600")}>{employee.utilisationPercent}%</span></div>
     </td>
     <td className="border-r border-ink-200 px-4 py-3 text-xs font-medium text-ink-500">{employee.employeeCode}</td>
     <td className="border-r border-ink-200 px-4 py-3 text-xs text-ink-700"><div className="flex items-center gap-1.5"><Briefcase size={13} className="text-brand-500" />Projects: <b>{employee.projectsCount}</b></div><div className="mt-1 flex items-center gap-1.5"><ListChecks size={13} className={employee.hasTasks ? "text-success-500" : "text-ink-400"} />Tasks: <b>{employee.incompleteTaskCount}</b> active / {employee.taskCount}</div><Badge className="mt-1.5" tone={employee.hasTasks ? "green" : "neutral"}>{employee.hasTasks ? "Has assigned tasks" : "No assigned tasks"}</Badge></td>
