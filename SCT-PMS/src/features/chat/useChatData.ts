@@ -43,7 +43,13 @@ export function useChatData(activeChannelId?: string | null) {
       // only inside that message's own side panel — so they must never become the sidebar
       // preview or count toward the channel's unread badge the way a top-level message does.
       if (message.parentMessageId) return;
-      const isViewingChannel = message.channelId === activeChannelIdRef.current;
+      // "Viewing" requires the tab to actually be focused, not just that this channel is the
+      // last one that was open — otherwise a message arriving while the user is on another
+      // app/tab (or the screen is locked) gets silently treated as already-seen and never
+      // bumps the badge, even though the user never looked at it.
+      const isViewingChannel = message.channelId === activeChannelIdRef.current
+        && document.visibilityState === "visible"
+        && document.hasFocus();
       setChannels((current) => current.map((channel) => {
         if (channel.id !== message.channelId) return channel;
         const isMine = message.authorId === currentUserId;
@@ -143,9 +149,21 @@ export function useChatData(activeChannelId?: string | null) {
     };
   }, [currentUserId]);
 
-  async function markChannelRead(channelId: string) {
+  function clearUnread(channelId: string) {
     setChannels((current) => current.map((channel) => (channel.id === channelId ? { ...channel, unreadCount: 0 } : channel)));
-    await api.markChannelRead(channelId);
+  }
+
+  async function markChannelRead(channelId: string) {
+    clearUnread(channelId);
+    try {
+      await api.markChannelRead(channelId);
+    } catch (err) {
+      // The optimistic zero-out above must not stick if the server never actually recorded
+      // the read — otherwise the badge silently reverts (e.g. on the next reload/reconnect)
+      // with no visible indication anything failed.
+      console.error("Failed to mark channel read", err);
+      await loadChannels();
+    }
   }
 
   async function createChannel(input: { type: "group" | "dm"; name?: string; description?: string | null; memberIds: string[] }) {
@@ -176,6 +194,7 @@ export function useChatData(activeChannelId?: string | null) {
     reloadChannels: loadChannels,
     reloadNotifications: loadNotifications,
     markChannelRead,
+    clearUnread,
     createChannel,
     updateChannel,
     setChannelFavorite,

@@ -18,6 +18,7 @@ export function MessageThread({
   canInvite,
   onlineUserIds,
   onChannelUpdated,
+  onRead,
 }: {
   channel: ChatChannel;
   users: ChatUser[];
@@ -27,6 +28,7 @@ export function MessageThread({
   canInvite: boolean;
   onlineUserIds: Set<string>;
   onChannelUpdated?: (channel: ChatChannel) => void;
+  onRead?: (channelId: string) => void;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(true);
@@ -112,7 +114,26 @@ export function MessageThread({
   }, [messages.length, loading]);
 
   useEffect(() => {
-    api.markChannelRead(channel.id).catch(() => undefined);
+    // This is the single source of truth for marking a channel read — it fires whenever the
+    // thread is on screen, however it got there (sidebar click, auto-selected first channel,
+    // deep link). The result must be reported back up via onRead so the sidebar's unreadCount
+    // badge (owned by ChatPage/useChatData, not this component) actually clears — otherwise
+    // the server-side read is recorded correctly but the badge stays stuck until a full reload.
+    // Only counts as "read" while the tab is actually focused — mounting in the background
+    // (e.g. this was the last-open channel when the tab regains state) must not silently mark
+    // messages read that the user hasn't actually looked at yet.
+    function markRead() {
+      if (document.visibilityState !== "visible" || !document.hasFocus()) return;
+      api.markChannelRead(channel.id).then(() => onRead?.(channel.id)).catch(() => undefined);
+    }
+    markRead();
+    window.addEventListener("focus", markRead);
+    document.addEventListener("visibilitychange", markRead);
+    return () => {
+      window.removeEventListener("focus", markRead);
+      document.removeEventListener("visibilitychange", markRead);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channel.id]);
 
   async function sendMessage(input: Parameters<typeof api.sendChatMessage>[1], parentMessageId?: string) {

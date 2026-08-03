@@ -16,7 +16,7 @@ export function ChatPage() {
   const canInvite = usePermission("chat", "invite") || canManage;
   const [users, setUsers] = useState<ChatUser[]>([]);
   const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
-  const { channels, loading, error, currentUserId, onlineUserIds, reloadChannels, markChannelRead, createChannel, updateChannel, setChannelFavorite } = useChatData(activeChannelId);
+  const { channels, loading, error, currentUserId, onlineUserIds, reloadChannels, clearUnread, createChannel, updateChannel, setChannelFavorite } = useChatData(activeChannelId);
   const [showDirectory, setShowDirectory] = useState(false);
   const [showNewChannel, setShowNewChannel] = useState(false);
 
@@ -25,7 +25,8 @@ export function ChatPage() {
   }, []);
 
   useEffect(() => {
-    if (!activeChannelId && channels.length > 0) setActiveChannelId(channels[0].id);
+    if (!activeChannelId && channels.length > 0) selectChannel(channels[0]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channels, activeChannelId]);
 
   const activeChannel: ChatChannel | undefined = channels.find((channel) => channel.id === activeChannelId);
@@ -33,7 +34,6 @@ export function ChatPage() {
   function selectChannel(channel: ChatChannel) {
     setShowDirectory(false);
     setActiveChannelId(channel.id);
-    if (channel.unreadCount > 0) markChannelRead(channel.id);
   }
 
   async function startDirectMessage(userId: string) {
@@ -83,6 +83,7 @@ export function ChatPage() {
             canInvite={canInvite}
             onlineUserIds={onlineUserIds}
             onChannelUpdated={updateChannel}
+            onRead={clearUnread}
           />
         ) : (
           <div className="flex flex-1 items-center justify-center text-sm text-ink-500">
