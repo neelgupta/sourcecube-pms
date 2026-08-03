@@ -211,6 +211,8 @@ export function MessageThread({
       return live ? Math.max(base, new Date(live).getTime()) : base;
     });
   const latestOtherRead = otherMembersLastRead.length > 0 ? Math.max(...otherMembersLastRead) : 0;
+  const mentionUsers = channel.members.map((member) => member.user).filter((user) => user.accountStatus === "active");
+  const allowEveryoneMention = channel.type === "group" || channel.type === "project" || channel.type === "announcement";
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1">
@@ -270,7 +272,7 @@ export function MessageThread({
         </div>
 
         {canPost ? (
-          <MessageComposer users={users} onSend={async (input) => { await sendMessage(input); }} />
+          <MessageComposer users={mentionUsers} allowEveryone={allowEveryoneMention} onSend={async (input) => { await sendMessage(input); }} />
         ) : (
           <div className="border-t border-ink-200 bg-surface-subtle px-4 py-3 text-center text-xs text-ink-500">
             {channel.type === "announcement" ? "Only a company super admin can post announcements." : "You do not have permission to post here."}
@@ -285,6 +287,8 @@ export function MessageThread({
           channelId={channel.id}
           root={activeThread}
           users={users}
+          mentionUsers={mentionUsers}
+          allowEveryone={allowEveryoneMention}
           currentUserId={currentUserId}
           canManage={canManage}
           canPost={canPost}
@@ -448,6 +452,8 @@ function ThreadPanel({
   channelId,
   root,
   users,
+  mentionUsers,
+  allowEveryone,
   currentUserId,
   canManage,
   canPost,
@@ -457,6 +463,8 @@ function ThreadPanel({
   channelId: string;
   root: ChatMessage;
   users: ChatUser[];
+  mentionUsers: ChatUser[];
+  allowEveryone: boolean;
   currentUserId: string;
   canManage: boolean;
   canPost: boolean;
@@ -511,7 +519,7 @@ function ThreadPanel({
           ))
         )}
       </div>
-      {canPost && <MessageComposer users={users} onSend={send} placeholder="Reply in thread..." />}
+      {canPost && <MessageComposer users={mentionUsers} allowEveryone={allowEveryone} onSend={send} placeholder="Reply in thread..." />}
     </div>
   );
 }

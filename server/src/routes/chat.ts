@@ -427,7 +427,13 @@ chatRouter.post("/channels/:id/messages", requirePermission("chat", "create"), a
     return;
   }
 
-  const mentionIds = data.body ? extractMentionIds(data.body) : [];
+  const channelRecipients = channel.type === "announcement"
+    ? []
+    : await prisma.chatChannelMember.findMany({ where: { channelId, userId: { not: uid } }, select: { userId: true } });
+  const channelRecipientIds = channelRecipients.map((recipient) => recipient.userId);
+  const wantsEveryoneMention = Boolean(data.body && /(^|\s)@everyone\b/i.test(data.body) && (channel.type === "group" || channel.type === "project"));
+  const directMentionIds = data.body ? extractMentionIds(data.body).filter((mentionUserId) => mentionUserId !== uid && (channel.type === "announcement" || channelRecipientIds.includes(mentionUserId))) : [];
+  const mentionIds = [...new Set(wantsEveryoneMention ? [...directMentionIds, ...channelRecipientIds] : directMentionIds)];
   const message = await prisma.chatMessage.create({
     data: {
       tenantId: tid,
@@ -475,8 +481,7 @@ chatRouter.post("/channels/:id/messages", requirePermission("chat", "create"), a
       await createNotification({ tenantId: tid, userId: target.id, type: "announcement", title: `${senderName} in ${channelContext}`, body: notificationBody, channelId, messageId: message.id, actorId: uid });
     }
   } else {
-    const recipients = await prisma.chatChannelMember.findMany({ where: { channelId, userId: { not: uid } }, select: { userId: true } });
-    for (const recipient of recipients) {
+    for (const recipient of channelRecipients) {
       if (mentionIds.includes(recipient.userId)) continue;
       await createNotification({ tenantId: tid, userId: recipient.userId, type: "message", title: messageTitle, body: notificationBody, channelId, messageId: message.id, actorId: uid });
     }

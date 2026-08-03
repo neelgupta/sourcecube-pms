@@ -43,25 +43,34 @@ function renderBody(body: string, users: ChatUser[]) {
       const known = users.find((user) => user.id === userId);
       return <span key={index} className="rounded bg-brand-50 px-1 font-medium text-brand-700">@{known?.name ?? name}</span>;
     }
-    const urlParts = part.split(/(\s+)/).filter(Boolean);
+    const everyoneParts = part.split(/(@everyone\b)/gi).filter(Boolean);
     return (
       <span key={index}>
-        {urlParts.map((segment, segIndex) => {
-          if (URL_TEST.test(segment)) {
-            const href = segment.startsWith("www.") ? `https://${segment}` : segment;
-            return (
-              <a key={segIndex} href={href} target="_blank" rel="noreferrer" className="break-all text-brand-600 underline hover:text-brand-700">
-                {segment}
-              </a>
-            );
+        {everyoneParts.map((everyonePart, everyoneIndex) => {
+          if (/^@everyone$/i.test(everyonePart)) {
+            return <span key={everyoneIndex} className="rounded bg-brand-50 px-1 font-medium text-brand-700">@everyone</span>;
           }
-          return <span key={segIndex}>{segment}</span>;
+          const urlParts = everyonePart.split(/(\s+)/).filter(Boolean);
+          return (
+            <span key={everyoneIndex}>
+              {urlParts.map((segment, segIndex) => {
+                if (URL_TEST.test(segment)) {
+                  const href = segment.startsWith("www.") ? `https://${segment}` : segment;
+                  return (
+                    <a key={segIndex} href={href} target="_blank" rel="noreferrer" className="break-all [overflow-wrap:anywhere] text-brand-600 underline hover:text-brand-700">
+                      {segment}
+                    </a>
+                  );
+                }
+                return <span key={segIndex} className="[overflow-wrap:anywhere]">{segment}</span>;
+              })}
+            </span>
+          );
         })}
       </span>
     );
   });
 }
-
 export function MessageBubble({
   message,
   users,
@@ -155,12 +164,12 @@ export function MessageBubble({
     <div className={cn("group flex items-end gap-2 px-4 py-1", isMine ? "flex-row-reverse" : "flex-row")}>
       {!isMine && <MemberAvatar id={message.authorId} name={message.author.name} size="sm" className="mb-4 shrink-0 ring-0" />}
 
-      <div className={cn("flex min-w-0 flex-col", isEditing ? "w-[85%] max-w-md" : "max-w-[70%]", isMine ? "items-end" : "items-start")}>
+      <div className={cn("flex min-w-0 max-w-[78%] lg:max-w-[52rem] flex-col", isEditing ? "w-[85%] max-w-md" : "", isMine ? "items-end" : "items-start")}>
         {!isMine && <span className="mb-0.5 px-1 text-xs font-semibold text-ink-500">{message.author.name}</span>}
 
         <div
           className={cn(
-            "relative rounded-2xl px-3.5 py-2 shadow-sm",
+            "relative max-w-full overflow-hidden rounded-2xl px-3.5 py-2 shadow-sm",
             isMine ? "rounded-br-md bg-brand-600 text-white" : "rounded-bl-md border border-ink-200 bg-white text-ink-800",
             message.isPinned && "ring-2 ring-warning-400",
             isEditing && "w-full",
@@ -194,7 +203,7 @@ export function MessageBubble({
             </div>
           ) : (
             message.body && (
-              <p className={cn("whitespace-pre-wrap break-words text-sm", isMine && "[&_a]:text-white [&_a]:underline")}>
+              <p className={cn("max-w-full whitespace-pre-wrap break-words text-sm leading-5 [overflow-wrap:anywhere]", isMine && "[&_a]:text-white [&_a]:underline")}>
                 {renderBody(message.body, users)}
               </p>
             )

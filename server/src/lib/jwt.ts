@@ -7,7 +7,7 @@ export type AuthTokenPayload =
   | { kind: "company"; userId: string; tenantId: string };
 
 export function signToken(payload: AuthTokenPayload): string {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: "8h" });
+  return jwt.sign(payload, JWT_SECRET);
 }
 
 export function verifyToken(token: string): AuthTokenPayload {

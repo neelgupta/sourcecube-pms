@@ -90,7 +90,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   const body = await res.json().catch(() => undefined);
   if (!res.ok) {
-    if (isAuthFailureStatus(res.status)) notifyAuthFailure();
+    if (isAuthFailureStatus(res.status) && path === "/auth/me") notifyAuthFailure();
     throw new ApiError((body as { error?: string })?.error ?? "Request failed", res.status, body);
   }
   return body as T;
@@ -543,7 +543,6 @@ export const api = {
     const res = await fetch(`${API_BASE}/chat/upload`, { method: "POST", credentials: "include", body: formData });
     const body = await res.json().catch(() => undefined);
     if (!res.ok) {
-      if (isAuthFailureStatus(res.status)) notifyAuthFailure();
       throw new ApiError((body as { error?: string })?.error ?? "Upload failed", res.status, body);
     }
     return body as { url: string; name: string; size: number };
