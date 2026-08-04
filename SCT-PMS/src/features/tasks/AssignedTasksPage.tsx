@@ -434,8 +434,8 @@ function TaskGrid({
             const lastComment = task.comments[task.comments.length - 1];
             return (
               <tr key={task.id} onClick={() => onOpenTask(task)} className="cursor-pointer bg-white transition-colors hover:bg-brand-50/40">
-                <td className="px-3 py-3"><div className="font-medium text-ink-900">{task.name}</div><div className="mt-0.5 text-xs text-ink-400">#{task.code}</div></td>
-                <td className="px-3 py-3"><div className="font-medium text-ink-800">{task.project.name}</div><div className="text-xs text-ink-400">{task.project.key}</div></td>
+                <td className="w-64 min-w-[16rem] max-w-[16rem] px-3 py-3"><div className="break-words font-medium text-ink-900">{task.name}</div><div className="mt-0.5 text-xs text-ink-400">#{task.code}</div></td>
+                <td className="whitespace-nowrap px-3 py-3"><div className="font-medium text-ink-800">{task.project.name}</div><div className="text-xs text-ink-400">{task.project.key}</div></td>
                 <td className="px-3 py-3">{task.assignee ? <div className="flex items-center gap-2 whitespace-nowrap"><MemberAvatar id={task.assigneeId ?? task.assignee.id} name={task.assignee.name} size="sm" status="active" className="ring-0" /><span>{task.assignee.name}</span></div> : <span className="text-ink-400">Unassigned</span>}</td>
                 <td className="whitespace-nowrap px-3 py-3"><span className={isOverdue(task) ? "font-medium text-danger-600" : "text-ink-600"}>{dateLabel(task.dueDate)}</span></td>
                 <td className="whitespace-nowrap px-3 py-3 text-ink-600">{task.section.name}</td>
@@ -503,7 +503,7 @@ function OverdueTaskTable({ tasks, onOpenTask }: { tasks: AssignedTask[]; onOpen
               </tr>
               {!collapsed[project.id] && projectTasks.map((task) => (
                 <tr key={task.id} onClick={() => onOpenTask(task)} className="cursor-pointer bg-white transition-colors hover:bg-brand-50/40">
-                  <td className="px-4 py-3 pl-8"><div className="font-medium text-ink-900">{task.name}</div><div className="mt-0.5 text-xs text-ink-400">#{task.code} · {task.section.name}</div></td>
+                  <td className="w-64 min-w-[16rem] max-w-[16rem] px-4 py-3 pl-8"><div className="break-words font-medium text-ink-900">{task.name}</div><div className="mt-0.5 text-xs text-ink-400">#{task.code} · {task.section.name}</div></td>
                   <td className="px-4 py-3">{task.assignee ? <div className="flex items-center gap-2"><MemberAvatar id={task.assigneeId ?? task.assignee.id} name={task.assignee.name} size="sm" status="active" className="ring-0" /><span>{task.assignee.name}</span></div> : <span className="text-ink-400">Unassigned</span>}</td>
                   <td className="px-4 py-3"><span className="font-medium text-danger-600">{dateLabel(task.dueDate)}</span></td>
                   <td className="px-4 py-3"><Badge tone={statusTones[task.status]}>{statusLabels[task.status]}</Badge></td>

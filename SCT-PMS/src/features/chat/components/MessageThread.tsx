@@ -4,7 +4,7 @@ import { Button, EmptyState, MemberAvatar, Modal } from "@/components/common";
 import { api, ApiError } from "@/lib/api";
 import { getChatSocket } from "@/lib/chatSocket";
 import { cn } from "@/lib/cn";
-import type { ChatChannel, ChatMessage, ChatUser } from "@/types/tenant";
+import type { ChatChannel, ChatMessage, ChatUser, TeamMemberSummary } from "@/types/tenant";
 import { AddMembersModal } from "./AddMembersModal";
 import { MessageBubble } from "./MessageBubble";
 import { MessageComposer } from "./MessageComposer";
@@ -463,7 +463,7 @@ function ThreadPanel({
   channelId: string;
   root: ChatMessage;
   users: ChatUser[];
-  mentionUsers: ChatUser[];
+  mentionUsers: TeamMemberSummary[];
   allowEveryone: boolean;
   currentUserId: string;
   canManage: boolean;

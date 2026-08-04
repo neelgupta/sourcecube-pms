@@ -2,9 +2,13 @@ import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { Send } from "lucide-react";
 import { Button } from "@/components/common";
 import { ApiError } from "@/lib/api";
-import type { ChatUser } from "@/types/tenant";
+import type { TeamMemberSummary } from "@/types/tenant";
 
-type MentionCandidate = ChatUser | { id: "__everyone"; name: "everyone"; email: "Notify everyone in this chat"; isEveryone: true };
+/** Only id/name/email are ever read here (search + @-mention insertion), so this accepts the
+ *  narrower TeamMemberSummary rather than the full ChatUser (which additionally carries roles)
+ *  — callers with either shape (e.g. channel members, which are TeamMemberSummary) can pass
+ *  their list straight through without an unnecessary roles fetch or manual cast. */
+type MentionCandidate = TeamMemberSummary | { id: "__everyone"; name: "everyone"; email: "Notify everyone in this chat"; isEveryone: true };
 
 interface ResolvedMention {
   userId: string;
@@ -35,7 +39,7 @@ export function MessageComposer({
   allowEveryone = false,
   placeholder = "Write a message...",
 }: {
-  users: ChatUser[];
+  users: TeamMemberSummary[];
   onSend: (input: { body?: string }) => Promise<void>;
   disabled?: boolean;
   allowEveryone?: boolean;
@@ -57,11 +61,10 @@ export function MessageComposer({
   }, [text]);
 
   const normalizedMentionQuery = mentionQuery?.query.trim().toLowerCase() ?? "";
+  const everyoneCandidate: MentionCandidate = { id: "__everyone", name: "everyone", email: "Notify everyone in this chat", isEveryone: true };
   const mentionCandidates: MentionCandidate[] = mentionQuery
     ? [
-        ...(allowEveryone && "everyone".includes(normalizedMentionQuery)
-          ? [{ id: "__everyone" as const, name: "everyone" as const, email: "Notify everyone in this chat", isEveryone: true as const }]
-          : []),
+        ...(allowEveryone && "everyone".includes(normalizedMentionQuery) ? [everyoneCandidate] : []),
         ...users
           .filter((user) => user.name.toLowerCase().includes(normalizedMentionQuery) || user.email.toLowerCase().includes(normalizedMentionQuery))
           .slice(0, allowEveryone ? 5 : 6),
