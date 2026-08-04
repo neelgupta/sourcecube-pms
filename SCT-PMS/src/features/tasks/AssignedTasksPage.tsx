@@ -82,6 +82,18 @@ function isOverdue(task: AssignedTask) {
   return task.status !== "done" && Boolean(task.dueDate) && new Date(task.dueDate as string).getTime() < Date.now();
 }
 
+function assignedDateMatches(task: AssignedTask, filter: "" | "yesterday" | "today" | "tomorrow") {
+  if (!filter) return true;
+  if (!task.createdAt) return false;
+  const startOfDay = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const assignedDay = startOfDay(new Date(task.createdAt));
+  const today = startOfDay(new Date());
+  const diffDays = Math.round((assignedDay.getTime() - today.getTime()) / 86_400_000);
+  if (filter === "yesterday") return diffDays === -1;
+  if (filter === "today") return diffDays === 0;
+  return diffDays === 1;
+}
+
 export function AssignedTasksPage() {
   const { session } = useSession();
   const canEditTaskPermission = usePermission("tasks", "edit");
@@ -215,11 +227,17 @@ export function AssignedTasksPage() {
     setOpenTask((current) => (current && current.id === next.id ? { ...current, ...next } : current));
   }
 
+  const [assignedQuickFilter, setAssignedQuickFilter] = useState<"" | "yesterday" | "today" | "tomorrow">("");
   const myTasks = useMemo(
-    () => (hasBroadVisibility ? tasks : tasks.filter((task) => task.assigneeId === currentUserId)),
-    [tasks, currentUserId, hasBroadVisibility],
+    // Subtasks belong under their parent task (see the drawer's Subtasks tab), not as their
+    // own row in this flat cross-project list — otherwise a task and its subtasks all show up
+    // as unrelated-looking sibling rows here even though there's no nesting UI to group them.
+    () => (hasBroadVisibility ? tasks : tasks.filter((task) => task.assigneeId === currentUserId))
+      .filter((task) => !task.parentTaskId)
+      .filter((task) => assignedDateMatches(task, assignedQuickFilter)),
+    [tasks, currentUserId, hasBroadVisibility, assignedQuickFilter],
   );
-  const overdueTasks = useMemo(() => tasks.filter(isOverdue), [tasks]);
+  const overdueTasks = useMemo(() => tasks.filter((task) => isOverdue(task) && !task.parentTaskId), [tasks]);
 
   const tabs: TabItem[] = [
     { id: "my-tasks", label: hasBroadVisibility ? "All Tasks" : "My Tasks", count: myTasks.length },
@@ -259,6 +277,8 @@ export function AssignedTasksPage() {
                   filterOptions={filterOptions}
                   onFiltersChange={setTaskFilters}
                   onClearFilters={() => setTaskFilters(defaultTaskFilters)}
+                  assignedQuickFilter={assignedQuickFilter}
+                  onAssignedQuickFilterChange={setAssignedQuickFilter}
                 />
               )}
               {tab === "overdue-tasks" && <OverdueTaskTable tasks={overdueTasks} onOpenTask={openTaskDrawer} />}
@@ -307,6 +327,8 @@ function TaskTable({
   filterOptions,
   onFiltersChange,
   onClearFilters,
+  assignedQuickFilter,
+  onAssignedQuickFilterChange,
 }: {
   tasks: AssignedTask[];
   emptyLabel: string;
@@ -320,6 +342,8 @@ function TaskTable({
   filterOptions: AssignedTaskFilterOptions;
   onFiltersChange: Dispatch<SetStateAction<AssignedTaskFilters>>;
   onClearFilters: () => void;
+  assignedQuickFilter: "" | "yesterday" | "today" | "tomorrow";
+  onAssignedQuickFilterChange: (value: "" | "yesterday" | "today" | "tomorrow") => void;
 }) {
   const activeFilterCount = Object.values(filters).filter(Boolean).length;
   const openCount = tasks.filter((task) => task.status !== "done").length;
@@ -382,6 +406,12 @@ function TaskTable({
           <option value="billable">Billable logs</option>
           <option value="non_billable">Non-billable logs</option>
         </Select>
+        <Select value={assignedQuickFilter} onChange={(event) => onAssignedQuickFilterChange(event.target.value as typeof assignedQuickFilter)}>
+          <option value="">Any assigned date</option>
+          <option value="yesterday">Assigned yesterday</option>
+          <option value="today">Assigned today</option>
+          <option value="tomorrow">Assigned tomorrow</option>
+        </Select>
         <label className="flex h-10 items-center gap-2 rounded-lg border border-ink-200 bg-white px-3 text-xs text-ink-500">
           <span className="shrink-0">Due from</span>
           <input type="date" value={filters.dueFrom} onChange={(event) => setFilter("dueFrom", event.target.value)} className="min-w-0 flex-1 bg-transparent text-sm text-ink-700 outline-none" />
@@ -406,23 +436,50 @@ const gridHeaders = [
   "Created Date", "Start Date", "Completed Date",
 ];
 
-function TaskGrid({
-  tasks,
-  onOpenTask,
-  activeTimer,
-  now,
-  timerBusy,
-  canEditTimer,
-  onToggleTimer,
-}: {
-  tasks: AssignedTask[];
+type TaskGridRowProps = {
   onOpenTask: (task: AssignedTask) => void;
   activeTimer: ActiveTaskTimer | null;
   now: number;
   timerBusy: string | null;
   canEditTimer: boolean;
   onToggleTimer: (task: AssignedTask) => void;
-}) {
+};
+
+function TaskGridRow({ task, onOpenTask, activeTimer, now, timerBusy, canEditTimer, onToggleTimer }: TaskGridRowProps & { task: AssignedTask }) {
+  const lastComment = task.comments[task.comments.length - 1];
+  return (
+    <tr onClick={() => onOpenTask(task)} className="cursor-pointer bg-white transition-colors hover:bg-brand-50/40">
+      <td className="w-64 min-w-[16rem] max-w-[16rem] px-3 py-3"><div className="break-words font-medium text-ink-900">{task.name}</div><div className="mt-0.5 text-xs text-ink-400">#{task.code}</div></td>
+      <td className="whitespace-nowrap px-3 py-3"><div className="font-medium text-ink-800">{task.project.name}</div><div className="text-xs text-ink-400">{task.project.key}</div></td>
+      <td className="px-3 py-3">{task.assignee ? <div className="flex items-center gap-2 whitespace-nowrap"><MemberAvatar id={task.assigneeId ?? task.assignee.id} name={task.assignee.name} size="sm" status="active" className="ring-0" /><span>{task.assignee.name}</span></div> : <span className="text-ink-400">Unassigned</span>}</td>
+      <td className="whitespace-nowrap px-3 py-3"><span className={isOverdue(task) ? "font-medium text-danger-600" : "text-ink-600"}>{dateLabel(task.dueDate)}</span></td>
+      <td className="whitespace-nowrap px-3 py-3 text-ink-600">{task.section.name}</td>
+      <td className="whitespace-nowrap px-3 py-3 text-ink-600">{task.taskType ?? "—"}</td>
+      <td className="px-3 py-3"><Badge tone={statusTones[task.status]}>{statusLabels[task.status]}</Badge></td>
+      <td className="px-3 py-3">{task.tags.length ? <div className="flex flex-wrap gap-1">{task.tags.map((tag) => <Badge key={tag} tone="purple">{tag}</Badge>)}</div> : <span className="text-ink-400">—</span>}</td>
+      <td className="whitespace-nowrap px-3 py-3 text-ink-600">{task.progress}%</td>
+      <td className="whitespace-nowrap px-3 py-3"><div className="font-mono text-xs text-ink-700">{timeLabel(task.estimatedMinutes)}</div></td>
+      <td className="whitespace-nowrap px-3 py-3" onClick={(event) => event.stopPropagation()}>
+        <WorkLogCell
+          task={task}
+          canEdit={canEditTimer}
+          isRunning={activeTimer?.taskId === task.id}
+          runningSeconds={activeTimer?.taskId === task.id ? Math.max(0, Math.floor((now - new Date(activeTimer.startedAt).getTime()) / 1000)) : 0}
+          busy={timerBusy === task.id}
+          onToggle={() => onToggleTimer(task)}
+        />
+      </td>
+      <td className="px-3 py-3">{task.followers.length ? <div className="flex -space-x-2">{task.followers.slice(0, 3).map((follower) => <MemberAvatar key={follower.userId} id={follower.userId} name={follower.user.name} size="xs" status="active" />)}{task.followers.length > 3 && <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-ink-200 text-[10px] font-semibold text-ink-700 ring-2 ring-white">+{task.followers.length - 3}</span>}</div> : <span className="text-ink-400">—</span>}</td>
+      <td className="whitespace-nowrap px-3 py-3 text-ink-600">{task.assigner?.name ?? "—"}</td>
+      <td className="max-w-48 truncate px-3 py-3 text-ink-500" title={lastComment?.body}>{lastComment ? lastComment.body : "—"}</td>
+      <td className="whitespace-nowrap px-3 py-3 text-ink-600">{dateLabel(task.createdAt)}</td>
+      <td className="whitespace-nowrap px-3 py-3 text-ink-600">{dateLabel(task.startDate)}</td>
+      <td className="whitespace-nowrap px-3 py-3 text-ink-600">{dateLabel(task.completedAt)}</td>
+    </tr>
+  );
+}
+
+function TaskGrid({ tasks, ...rowProps }: TaskGridRowProps & { tasks: AssignedTask[] }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full border-collapse text-left text-sm">
@@ -430,39 +487,7 @@ function TaskGrid({
           <tr>{gridHeaders.map((header) => <th key={header} className="whitespace-nowrap px-3 py-3 font-semibold">{header}</th>)}</tr>
         </thead>
         <tbody className="divide-y divide-ink-100">
-          {tasks.map((task) => {
-            const lastComment = task.comments[task.comments.length - 1];
-            return (
-              <tr key={task.id} onClick={() => onOpenTask(task)} className="cursor-pointer bg-white transition-colors hover:bg-brand-50/40">
-                <td className="w-64 min-w-[16rem] max-w-[16rem] px-3 py-3"><div className="break-words font-medium text-ink-900">{task.name}</div><div className="mt-0.5 text-xs text-ink-400">#{task.code}</div></td>
-                <td className="whitespace-nowrap px-3 py-3"><div className="font-medium text-ink-800">{task.project.name}</div><div className="text-xs text-ink-400">{task.project.key}</div></td>
-                <td className="px-3 py-3">{task.assignee ? <div className="flex items-center gap-2 whitespace-nowrap"><MemberAvatar id={task.assigneeId ?? task.assignee.id} name={task.assignee.name} size="sm" status="active" className="ring-0" /><span>{task.assignee.name}</span></div> : <span className="text-ink-400">Unassigned</span>}</td>
-                <td className="whitespace-nowrap px-3 py-3"><span className={isOverdue(task) ? "font-medium text-danger-600" : "text-ink-600"}>{dateLabel(task.dueDate)}</span></td>
-                <td className="whitespace-nowrap px-3 py-3 text-ink-600">{task.section.name}</td>
-                <td className="whitespace-nowrap px-3 py-3 text-ink-600">{task.taskType ?? "—"}</td>
-                <td className="px-3 py-3"><Badge tone={statusTones[task.status]}>{statusLabels[task.status]}</Badge></td>
-                <td className="px-3 py-3">{task.tags.length ? <div className="flex flex-wrap gap-1">{task.tags.map((tag) => <Badge key={tag} tone="purple">{tag}</Badge>)}</div> : <span className="text-ink-400">—</span>}</td>
-                <td className="whitespace-nowrap px-3 py-3 text-ink-600">{task.progress}%</td>
-                <td className="whitespace-nowrap px-3 py-3"><div className="font-mono text-xs text-ink-700">{timeLabel(task.estimatedMinutes)}</div></td>
-                <td className="whitespace-nowrap px-3 py-3" onClick={(event) => event.stopPropagation()}>
-                  <WorkLogCell
-                    task={task}
-                    canEdit={canEditTimer}
-                    isRunning={activeTimer?.taskId === task.id}
-                    runningSeconds={activeTimer?.taskId === task.id ? Math.max(0, Math.floor((now - new Date(activeTimer.startedAt).getTime()) / 1000)) : 0}
-                    busy={timerBusy === task.id}
-                    onToggle={() => onToggleTimer(task)}
-                  />
-                </td>
-                <td className="px-3 py-3">{task.followers.length ? <div className="flex -space-x-2">{task.followers.slice(0, 3).map((follower) => <MemberAvatar key={follower.userId} id={follower.userId} name={follower.user.name} size="xs" status="active" />)}{task.followers.length > 3 && <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-ink-200 text-[10px] font-semibold text-ink-700 ring-2 ring-white">+{task.followers.length - 3}</span>}</div> : <span className="text-ink-400">—</span>}</td>
-                <td className="whitespace-nowrap px-3 py-3 text-ink-600">{task.assigner?.name ?? "—"}</td>
-                <td className="max-w-48 truncate px-3 py-3 text-ink-500" title={lastComment?.body}>{lastComment ? lastComment.body : "—"}</td>
-                <td className="whitespace-nowrap px-3 py-3 text-ink-600">{dateLabel(task.createdAt)}</td>
-                <td className="whitespace-nowrap px-3 py-3 text-ink-600">{dateLabel(task.startDate)}</td>
-                <td className="whitespace-nowrap px-3 py-3 text-ink-600">{dateLabel(task.completedAt)}</td>
-              </tr>
-            );
-          })}
+          {tasks.map((task) => <TaskGridRow key={task.id} task={task} {...rowProps} />)}
         </tbody>
       </table>
     </div>

@@ -93,6 +93,7 @@ export function EmployeeMultiPicker({
       {open && !disabled && coords && createPortal(
         <div
           ref={panelRef}
+          data-portal-panel
           style={{ position: "fixed", top: coords.top, left: coords.left, width: coords.width, maxHeight: coords.maxHeight, transform: coords.placement === "top" ? "translateY(-100%)" : undefined }}
           className="z-[80] overflow-hidden rounded-xl border border-ink-200 bg-white shadow-popover"
         >

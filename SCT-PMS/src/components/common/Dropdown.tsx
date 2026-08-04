@@ -70,6 +70,7 @@ export function DropdownMenu({
       {open && coords && createPortal(
         <div
           ref={menuRef}
+          data-portal-panel
           style={{
             position: "absolute",
             top: coords.top,
@@ -192,6 +193,7 @@ export function FilterSelect({
       {open && coords && createPortal(
         <div
           ref={panelRef}
+          data-portal-panel
           style={{ position: "fixed", top: coords.top, left: coords.left, minWidth: coords.width, transform: coords.placement === "top" ? "translateY(-100%)" : undefined }}
           className="z-50 w-max max-w-xs overflow-hidden rounded-lg border border-ink-200 bg-white py-1 shadow-popover"
         >

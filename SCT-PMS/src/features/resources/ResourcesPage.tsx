@@ -143,6 +143,11 @@ export function ResourcesPage() {
       const target = event.target as Node;
       if (filterButtonRef.current?.contains(target) || scheduleButtonRef.current?.contains(target)) return;
       if (filterPopoverRef.current?.contains(target) || schedulePopoverRef.current?.contains(target)) return;
+      // Nested pickers (FilterSelect, EmployeePicker, etc.) render their dropdown panel via a
+      // body portal, so it isn't a DOM descendant of filterPopoverRef even though it's visually
+      // inside the "Resource filters" popover — without this check, clicking a team option here
+      // closes the whole popover on mousedown before the option's own onClick can fire.
+      if (target instanceof Element && target.closest("[data-portal-panel]")) return;
       closeResourcePopovers();
     }
     document.addEventListener("mousedown", handleOutside);

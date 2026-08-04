@@ -114,6 +114,7 @@ export function MessageComposer({
         if (!textareaRef.current) return;
         textareaRef.current.style.height = "auto";
         textareaRef.current.style.overflowY = "hidden";
+        textareaRef.current.focus();
       });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Message could not be sent");

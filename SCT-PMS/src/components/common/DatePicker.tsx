@@ -180,6 +180,7 @@ export function DatePicker({
       {open && !disabled && coords && createPortal(
         <div
           ref={panelRef}
+          data-portal-panel
           style={{ position: "fixed", top: coords.top, left: coords.left, transform: coords.placement === "top" ? "translateY(-100%)" : undefined }}
           className="z-[80] w-72 overflow-hidden rounded-xl border border-ink-200 bg-white pb-3 shadow-popover"
         >
@@ -329,6 +330,7 @@ export function DateRangePicker({
       {open && !disabled && coords && createPortal(
         <div
           ref={panelRef}
+          data-portal-panel
           style={{ position: "fixed", top: coords.top, left: coords.left, transform: coords.placement === "top" ? "translateY(-100%)" : undefined }}
           className="z-[80] w-72 overflow-hidden rounded-xl border border-ink-200 bg-white pb-3 shadow-popover"
           onMouseLeave={() => setHoverDate(null)}
