@@ -72,6 +72,7 @@ import type {
   ProjectWorkspace,
   ProjectMilestone,
   ProjectTaskStatus,
+  ProjectPriority,
   ProjectTaskFilters,
   ProjectTaskFilterOptions,
   AuditLogEntry,
@@ -695,6 +696,7 @@ function TaskListWorkspace({
   const [collapsedTasks, setCollapsedTasks] = useState<Record<string, boolean>>({});
   const [subtaskParent, setSubtaskParent] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [draftPriorities, setDraftPriorities] = useState<Record<string, ProjectPriority>>({});
   const [saving, setSaving] = useState<string | null>(null);
   const [savingField, setSavingField] = useState<string | null>(null);
   const [activeTimer, setActiveTimer] = useState<ActiveTaskTimer | null>(null);
@@ -777,8 +779,9 @@ function TaskListWorkspace({
     if (!name) return;
     setSaving(draftKey);
     try {
-      const { task } = await api.createProjectTask(projectId, { name, sectionId: section.id, parentTaskId: parentTaskId ?? null });
+      const { task } = await api.createProjectTask(projectId, { name, sectionId: section.id, parentTaskId: parentTaskId ?? null, priority: draftPriorities[draftKey] ?? "medium" });
       setDrafts((current) => ({ ...current, [draftKey]: "" }));
+      setDraftPriorities((current) => ({ ...current, [draftKey]: "medium" }));
       setSubtaskParent(null);
       // Merge the created task straight into local state (same path as onTaskUpdated for edits)
       // instead of a full onChanged() reload — that reload raced against the debounced
@@ -930,6 +933,12 @@ function TaskListWorkspace({
                       <div className="flex max-w-xl items-center gap-2">
                         <span className="text-xs text-ink-400">↳</span>
                         <input autoFocus value={drafts[`sub-${task.id}`] ?? ""} onChange={(event) => setDrafts((value) => ({ ...value, [`sub-${task.id}`]: event.target.value }))} onKeyDown={(event) => { if (event.key === "Enter") addTask(section, task.id); if (event.key === "Escape") setSubtaskParent(null); }} placeholder={`Add subtask under ${task.name}`} className="h-8 flex-1 rounded-md border border-ink-200 bg-white px-3 text-sm outline-none focus:border-brand-500" />
+                        <select value={draftPriorities[`sub-${task.id}`] ?? "medium"} onChange={(event) => setDraftPriorities((value) => ({ ...value, [`sub-${task.id}`]: event.target.value as ProjectPriority }))} className="h-8 rounded-md border border-ink-200 bg-white px-2 text-xs text-ink-700 outline-none focus:border-brand-500">
+                          <option value="low">Low</option>
+                          <option value="medium">Medium</option>
+                          <option value="high">High</option>
+                          <option value="critical">Critical</option>
+                        </select>
                         <Button size="sm" onClick={() => addTask(section, task.id)} disabled={saving === `sub-${task.id}`}>Add Subtask</Button>
                         <button onClick={() => setSubtaskParent(null)} className="p-1 text-ink-400"><X size={14} /></button>
                       </div>
@@ -951,6 +960,14 @@ function TaskListWorkspace({
                         placeholder="Add Task"
                         className="h-8 flex-1 bg-transparent text-sm outline-none placeholder:text-ink-500"
                       />
+                      {drafts[section.id] && (
+                        <select value={draftPriorities[section.id] ?? "medium"} onChange={(event) => setDraftPriorities((value) => ({ ...value, [section.id]: event.target.value as ProjectPriority }))} className="h-8 rounded-md border border-ink-200 bg-white px-2 text-xs text-ink-700 outline-none focus:border-brand-500">
+                          <option value="low">Low</option>
+                          <option value="medium">Medium</option>
+                          <option value="high">High</option>
+                          <option value="critical">Critical</option>
+                        </select>
+                      )}
                       {drafts[section.id] && <Button size="sm" onClick={() => addTask(section)} disabled={saving === section.id}>Add</Button>}
                     </div>
                   </td>
@@ -1294,6 +1311,7 @@ function KanbanWorkspace({
   const [dragOverSection, setDragOverSection] = useState<string | null>(null);
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
   const [draft, setDraft] = useState<Record<string, string>>({});
+  const [draftPriority, setDraftPriority] = useState<Record<string, ProjectPriority>>({});
   const [adding, setAdding] = useState<string | null>(null);
   const [savingField, setSavingField] = useState<string | null>(null);
   const [addingSection, setAddingSection] = useState(false);
@@ -1329,8 +1347,9 @@ function KanbanWorkspace({
     if (!name) return;
     setAdding(section.id);
     try {
-      const { task } = await api.createProjectTask(projectId, { name, sectionId: section.id });
+      const { task } = await api.createProjectTask(projectId, { name, sectionId: section.id, priority: draftPriority[section.id] ?? "medium" });
       setDraft((current) => ({ ...current, [section.id]: "" }));
+      setDraftPriority((current) => ({ ...current, [section.id]: "medium" }));
       onTaskUpdated(task);
     } finally {
       setAdding(null);
@@ -1528,9 +1547,17 @@ function KanbanWorkspace({
               })}
 
               {adding === section.id && (
-                <div className="flex items-center gap-2 rounded-xl border border-brand-300 bg-white p-2">
-                  <input autoFocus value={draft[section.id] ?? ""} onChange={(event) => setDraft((current) => ({ ...current, [section.id]: event.target.value }))} onKeyDown={(event) => { if (event.key === "Enter") addTask(section); if (event.key === "Escape") setAdding(null); }} onBlur={() => { if (!draft[section.id]?.trim()) setAdding(null); }} placeholder="Task name" className="h-8 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-ink-400" />
-                  <Button size="sm" disabled={!draft[section.id]?.trim()} onClick={() => addTask(section)}>Add</Button>
+                <div className="rounded-xl border border-brand-300 bg-white p-2">
+                  <input autoFocus value={draft[section.id] ?? ""} onChange={(event) => setDraft((current) => ({ ...current, [section.id]: event.target.value }))} onKeyDown={(event) => { if (event.key === "Enter") addTask(section); if (event.key === "Escape") setAdding(null); }} onBlur={(event) => { if (!draft[section.id]?.trim() && !event.relatedTarget?.closest("[data-add-task-priority]")) setAdding(null); }} placeholder="Task name" className="h-8 w-full bg-transparent text-sm outline-none placeholder:text-ink-400" />
+                  <div className="mt-1.5 flex items-center gap-2">
+                    <select data-add-task-priority value={draftPriority[section.id] ?? "medium"} onChange={(event) => setDraftPriority((current) => ({ ...current, [section.id]: event.target.value as ProjectPriority }))} className="h-8 flex-1 rounded-md border border-ink-200 bg-white px-2 text-xs text-ink-700 outline-none focus:border-brand-500">
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                      <option value="critical">Critical</option>
+                    </select>
+                    <Button size="sm" disabled={!draft[section.id]?.trim()} onClick={() => addTask(section)}>Add</Button>
+                  </div>
                 </div>
               )}
             </div>
@@ -2596,7 +2623,7 @@ export function TimerStopDialog({
           </div>
           <p className="mt-1 text-[11px] text-ink-400">Live timer: {formatSeconds(seconds)}. Adjust this if the timer was left running after actual work ended.</p>
         </Field>
-        <Field label="Description" required><textarea value={note} onChange={(event) => setNote(event.target.value.slice(0, 500))} disabled={busy} placeholder="What did you work on?" className="min-h-28 w-full resize-none rounded-lg border border-ink-200 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/15" /><p className="mt-1 text-right text-[11px] text-ink-400">{note.length}/500</p></Field>
+        <Field label="Description" required><textarea value={note} onChange={(event) => setNote(event.target.value.slice(0, 2000))} disabled={busy} placeholder="What did you work on?" className="min-h-28 w-full resize-none rounded-lg border border-ink-200 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/15" /><p className="mt-1 text-right text-[11px] text-ink-400">{note.length}/2000</p></Field>
         <label className="flex cursor-pointer items-center gap-2 text-sm text-ink-600"><input type="checkbox" checked={billable} onChange={(event) => setBillable(event.target.checked)} disabled={busy} className="h-4 w-4 rounded border-ink-300 text-brand-600" />Billable</label>
         {error && <p className="rounded-lg border border-danger-200 bg-danger-50 px-3 py-2 text-sm text-danger-700">{error}</p>}
       </div>

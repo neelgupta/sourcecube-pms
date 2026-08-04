@@ -395,6 +395,7 @@ export interface ResourcePlannerDayDetail {
   tasks: Array<{
     id: ID; code: number; name: string; status: ProjectTaskStatus; progress: number; estimatedMinutes: number; trackedSeconds: number;
     plannedMinutes: number; startDate?: string | null; dueDate?: string | null; completedAt?: string | null;
+    hasExplicitAllocation: boolean; withinTaskWindow: boolean; allocationNote?: string | null;
     project: { id: ID; name: string; key: string };
   }>;
   logs: Array<{
@@ -403,6 +404,13 @@ export interface ResourcePlannerDayDetail {
     task: { id: ID; code: number; name: string; status: ProjectTaskStatus; progress: number };
     project: { id: ID; name: string; key: string };
   }>;
+}
+
+export interface TaskDailyAllocationEntry {
+  taskId: ID;
+  date: string;
+  plannedMinutes: number;
+  note?: string | null;
 }
 export interface OnboardingState {
   tenantId: ID;

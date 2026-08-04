@@ -32,8 +32,17 @@ function localDateKey(value: Date, timezone: string) {
     return `${get("year")}-${get("month")}-${get("day")}`;
   } catch { return value.toISOString().slice(0, 10); }
 }
+/** A timer left running (endedAt still null — abandoned rather than stopped) counts elapsed
+ *  time up to "now," which can be days or weeks after startedAt if nobody ever closed it. Left
+ *  unclamped, a single forgotten timer balloons a report's trackedSeconds far past what was
+ *  actually worked, which is how utilisation ends up reading 300%+ for one person. Capping the
+ *  live elapsed time at 24h caps the damage from any one stale entry to "a full day," which is
+ *  still generous but no longer distorts the report by orders of magnitude. */
+const MAX_RUNNING_TIMER_SECONDS = 24 * 60 * 60;
 function effectiveDuration(entry: { durationSeconds: number; startedAt: Date; endedAt: Date | null }) {
-  return entry.endedAt ? entry.durationSeconds : Math.max(entry.durationSeconds, Math.floor((Date.now() - entry.startedAt.getTime()) / 1000));
+  if (entry.endedAt) return entry.durationSeconds;
+  const elapsed = Math.floor((Date.now() - entry.startedAt.getTime()) / 1000);
+  return Math.max(entry.durationSeconds, Math.min(elapsed, MAX_RUNNING_TIMER_SECONDS));
 }
 /** A plain average of task.progress treats a 5-minute task and a 3-week epic as equally
  *  significant, so whichever tasks happen to overlap a given day/range swings the number

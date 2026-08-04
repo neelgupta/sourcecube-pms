@@ -82,23 +82,24 @@ model Company {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  companyUsers      CompanyUser[]
-  invitations       Invitation[]
-  auditLogs         AuditLog[]
-  departments       Department[]
-  designations      Designation[]
-  holidays          Holiday[]
-  leaveTypes        LeaveType[]
-  workingSchedules  WorkingSchedule[]
-  onboardingState   OnboardingState?
-  teams             Team[]
-  projects          Project[]
-  projectSections   ProjectSection[]
-  projectTasks      ProjectTask[]
-  projectMilestones ProjectMilestone[]
-  projectMembers    ProjectMember[]
-  taskTimeEntries   TaskTimeEntry[]
-  chatChannels      ChatChannel[]
+  companyUsers         CompanyUser[]
+  invitations          Invitation[]
+  auditLogs            AuditLog[]
+  departments          Department[]
+  designations         Designation[]
+  holidays             Holiday[]
+  leaveTypes           LeaveType[]
+  workingSchedules     WorkingSchedule[]
+  onboardingState      OnboardingState?
+  teams                Team[]
+  projects             Project[]
+  projectSections      ProjectSection[]
+  projectTasks         ProjectTask[]
+  projectMilestones    ProjectMilestone[]
+  projectMembers       ProjectMember[]
+  taskTimeEntries      TaskTimeEntry[]
+  chatChannels         ChatChannel[]
+  taskDailyAllocations TaskDailyAllocation[]
 }
 
 model PlatformUser {
@@ -129,23 +130,24 @@ model CompanyUser {
 
   invitations            Invitation[]
   departmentsHeaded      Department[]
-  teamsLed               Team[]              @relation("TeamLead")
-  teamMemberships        TeamMember[]        @relation("TeamMembership")
-  projectsManaged        Project[]           @relation("ProjectManager")
-  projectsOwned          Project[]           @relation("ProjectOwner")
-  favouriteProjects      ProjectFavourite[]  @relation("ProjectFavourites")
+  teamsLed               Team[]                @relation("TeamLead")
+  teamMemberships        TeamMember[]          @relation("TeamMembership")
+  projectsManaged        Project[]             @relation("ProjectManager")
+  projectsOwned          Project[]             @relation("ProjectOwner")
+  favouriteProjects      ProjectFavourite[]    @relation("ProjectFavourites")
   projectMemberships     ProjectMember[]
-  projectTasksAssigned   ProjectTask[]       @relation("TaskAssignee")
-  projectSectionsOwned   ProjectSection[]    @relation("SectionOwner")
-  projectMilestonesOwned ProjectMilestone[]  @relation("MilestoneOwner")
+  projectTasksAssigned   ProjectTask[]         @relation("TaskAssignee")
+  projectSectionsOwned   ProjectSection[]      @relation("SectionOwner")
+  projectMilestonesOwned ProjectMilestone[]    @relation("MilestoneOwner")
   taskTimeEntries        TaskTimeEntry[]
   taskFollowers          TaskFollower[]
   taskComments           TaskComment[]
   chatChannelMemberships ChatChannelMember[]
-  chatMessages           ChatMessage[]       @relation("ChatMessageAuthor")
+  chatMessages           ChatMessage[]         @relation("ChatMessageAuthor")
   chatReactions          ChatReaction[]
-  chatMentionsReceived   ChatMention[]       @relation("ChatMentionTarget")
-  notifications          Notification[]      @relation("NotificationRecipient")
+  chatMentionsReceived   ChatMention[]         @relation("ChatMentionTarget")
+  notifications          Notification[]        @relation("NotificationRecipient")
+  taskDailyAllocations   TaskDailyAllocation[]
 
   @@unique([tenantId, email])
 }
@@ -505,50 +507,72 @@ model ProjectSection {
 }
 
 model ProjectTask {
-  id               String              @id @default(cuid())
+  id               String                @id @default(cuid())
   tenantId         String
-  company          Company             @relation(fields: [tenantId], references: [id])
+  company          Company               @relation(fields: [tenantId], references: [id])
   projectId        String
-  project          Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project          Project               @relation(fields: [projectId], references: [id], onDelete: Cascade)
   sectionId        String
-  section          ProjectSection      @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  section          ProjectSection        @relation(fields: [sectionId], references: [id], onDelete: Cascade)
   parentTaskId     String?
-  parentTask       ProjectTask?        @relation("TaskHierarchy", fields: [parentTaskId], references: [id], onDelete: Cascade)
-  subtasks         ProjectTask[]       @relation("TaskHierarchy")
+  parentTask       ProjectTask?          @relation("TaskHierarchy", fields: [parentTaskId], references: [id], onDelete: Cascade)
+  subtasks         ProjectTask[]         @relation("TaskHierarchy")
   code             Int
   name             String
   description      String?
-  status           TaskStatus          @default(new_request)
-  priority         ProjectPriority     @default(medium)
+  status           TaskStatus            @default(new_request)
+  priority         ProjectPriority       @default(medium)
   taskType         String?
-  billingType      String              @default("non_billable")
-  tags             String[]            @default([])
+  billingType      String                @default("non_billable")
+  tags             String[]              @default([])
   startDate        DateTime?
   dueDate          DateTime?
-  estimatedMinutes Int                 @default(0)
-  progress         Int                 @default(0)
+  estimatedMinutes Int                   @default(0)
+  progress         Int                   @default(0)
   completedAt      DateTime?
-  trackedMinutes   Int                 @default(0)
-  trackedSeconds   Int                 @default(0)
+  trackedMinutes   Int                   @default(0)
+  trackedSeconds   Int                   @default(0)
   assigneeId       String?
-  assignee         CompanyUser?        @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  assignee         CompanyUser?          @relation("TaskAssignee", fields: [assigneeId], references: [id])
   milestoneId      String?
-  milestone        ProjectMilestone?   @relation(fields: [milestoneId], references: [id])
+  milestone        ProjectMilestone?     @relation(fields: [milestoneId], references: [id])
   position         Int
   createdBy        String?
   updatedBy        String?
-  createdAt        DateTime            @default(now())
-  updatedAt        DateTime            @updatedAt
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
   timeEntries      TaskTimeEntry[]
   followers        TaskFollower[]
   comments         TaskComment[]
   checklistItems   TaskChecklistItem[]
   attachments      TaskAttachment[]
-  dependencies     TaskDependency[]    @relation("TaskDependencies")
-  dependentTasks   TaskDependency[]    @relation("DependentTasks")
+  dependencies     TaskDependency[]      @relation("TaskDependencies")
+  dependentTasks   TaskDependency[]      @relation("DependentTasks")
+  dailyAllocations TaskDailyAllocation[] @relation("TaskAllocations")
 
   @@unique([projectId, code])
   @@index([parentTaskId])
+}
+
+model TaskDailyAllocation {
+  id             String      @id @default(cuid())
+  tenantId       String
+  company        Company     @relation(fields: [tenantId], references: [id])
+  taskId         String
+  task           ProjectTask @relation("TaskAllocations", fields: [taskId], references: [id], onDelete: Cascade)
+  userId         String
+  user           CompanyUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date           DateTime    @db.Date
+  plannedMinutes Int
+  note           String?
+  createdBy      String?
+  updatedBy      String?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  @@unique([taskId, userId, date])
+  @@index([tenantId, userId, date])
+  @@index([tenantId, taskId])
 }
 
 model TaskFollower {

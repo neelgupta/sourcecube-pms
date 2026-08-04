@@ -39,6 +39,7 @@ import type {
   ProjectTaskFilterOptions,
   ResourcePlannerResponse,
   ResourcePlannerDayDetail,
+  TaskDailyAllocationEntry,
   TeamProductivityReport,
   TeamMemberProductivityReport,
   ProjectPerformanceReport,
@@ -163,6 +164,10 @@ export const api = {
   },
   getResourcePlannerDay: (employeeId: string, date: string) =>
     request<ResourcePlannerDayDetail>(`/resources/planner/${employeeId}/day?date=${encodeURIComponent(date)}`),
+  getResourcePlannerAllocations: (employeeId: string, start: string, end: string) =>
+    request<{ allocations: TaskDailyAllocationEntry[] }>(`/resources/planner/${employeeId}/allocations?start=${start}&end=${end}`),
+  saveResourcePlannerDayAllocations: (employeeId: string, date: string, allocations: Array<{ taskId: string; plannedMinutes: number; note?: string | null }>) =>
+    request<ResourcePlannerDayDetail>(`/resources/planner/${employeeId}/day/${date}/allocations`, { method: "PUT", body: JSON.stringify({ allocations }) }),
   getTeamProductivityReport: (input: { start: string; end: string; teamId?: string; search?: string }) => {
     const params = new URLSearchParams();
     Object.entries(input).forEach(([key, value]) => { if (value) params.set(key, value); });

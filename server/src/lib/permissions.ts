@@ -57,7 +57,7 @@ const MATRIX: Record<SystemRole, Partial<Record<Module, Action[]>>> = {
   employee: {
     projects: ["view"],
     tasks: ["view", "create", "edit"],
-    resources: ["view"],
+    resources: ["view", "edit"],
     chat: ["view", "create"],
   },
   auditor: {

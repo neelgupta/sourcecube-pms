@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import { CalendarDays, CheckCircle2, ChevronDown, ChevronRight, Clock3, FolderKanban, Play, Search } from "lucide-react";
-import { Badge, Card, MemberAvatar, Select, Tabs, type TabItem } from "@/components/common";
+import { Badge, Card, DateRangePicker, MemberAvatar, Select, Tabs, type TabItem } from "@/components/common";
 import { api, ApiError } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { TaskWorkspaceDrawer, TimerStopDialog, type ActiveTaskTimer, type StopTimerInput, type StopTimerTarget } from "@/features/projects/ProjectDetailPage";
@@ -412,14 +412,12 @@ function TaskTable({
           <option value="today">Assigned today</option>
           <option value="tomorrow">Assigned tomorrow</option>
         </Select>
-        <label className="flex h-10 items-center gap-2 rounded-lg border border-ink-200 bg-white px-3 text-xs text-ink-500">
-          <span className="shrink-0">Due from</span>
-          <input type="date" value={filters.dueFrom} onChange={(event) => setFilter("dueFrom", event.target.value)} className="min-w-0 flex-1 bg-transparent text-sm text-ink-700 outline-none" />
-        </label>
-        <label className="flex h-10 items-center gap-2 rounded-lg border border-ink-200 bg-white px-3 text-xs text-ink-500">
-          <span className="shrink-0">Due to</span>
-          <input type="date" value={filters.dueTo} onChange={(event) => setFilter("dueTo", event.target.value)} className="min-w-0 flex-1 bg-transparent text-sm text-ink-700 outline-none" />
-        </label>
+        <DateRangePicker
+          from={filters.dueFrom}
+          to={filters.dueTo}
+          onChange={(range) => onFiltersChange((current) => ({ ...current, dueFrom: range.from ?? "", dueTo: range.to ?? "" }))}
+          placeholder="Due date range"
+        />
       </div>
 
       {tasks.length === 0 ? (

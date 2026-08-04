@@ -1539,7 +1539,7 @@ const timerSchema = z.object({
 const stopTimerSchema = z.object({
   activityType: z.string().trim().min(1, "Activity is required").max(100),
   billable: z.boolean(),
-  note: z.string().trim().min(1, "Description is required").max(500),
+  note: z.string().trim().min(1, "Description is required").max(2000),
   durationSeconds: z.number().int().positive("Duration must be greater than 0").max(7 * 24 * 60 * 60, "Duration cannot exceed 7 days").optional(),
 });
 
@@ -1708,7 +1708,7 @@ const manualLogSchema = z.object({
   durationMinutes: z.number().int().positive("Duration must be greater than 0"),
   activityType: z.string().trim().min(1, "Activity is required").max(100),
   billable: z.boolean(),
-  note: z.string().trim().min(1, "Description is required").max(500),
+  note: z.string().trim().min(1, "Description is required").max(2000),
 });
 
 projectsRouter.post("/:id/tasks/:taskId/timer/log", requirePermission("tasks", "edit"), async (req, res) => {
