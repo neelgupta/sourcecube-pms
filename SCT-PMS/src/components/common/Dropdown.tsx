@@ -25,7 +25,7 @@ export function DropdownMenu({
   align?: "left" | "right";
 }) {
   const [open, setOpen] = useState(false);
-  const [coords, setCoords] = useState<{ top: number; left: number } | null>(null);
+  const [coords, setCoords] = useState<{ top: number; left: number; placement: "top" | "bottom" } | null>(null);
   const triggerRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -34,9 +34,15 @@ export function DropdownMenu({
     function updatePosition() {
       const rect = triggerRef.current?.getBoundingClientRect();
       if (!rect) return;
+      const viewportPadding = 12;
+      const estimatedHeight = 40 + items.length * 38;
+      const spaceBelow = window.innerHeight - rect.bottom - viewportPadding;
+      const spaceAbove = rect.top - viewportPadding;
+      const placement = spaceBelow < estimatedHeight && spaceAbove > spaceBelow ? "top" : "bottom";
       setCoords({
-        top: rect.bottom + window.scrollY + 6,
+        top: placement === "top" ? rect.top + window.scrollY - 6 : rect.bottom + window.scrollY + 6,
         left: align === "right" ? rect.right + window.scrollX : rect.left + window.scrollX,
+        placement,
       });
     }
     updatePosition();
@@ -69,6 +75,7 @@ export function DropdownMenu({
             top: coords.top,
             left: align === "right" ? undefined : coords.left,
             right: align === "right" ? window.innerWidth - coords.left : undefined,
+            transform: coords.placement === "top" ? "translateY(-100%)" : undefined,
           }}
           className="z-50 min-w-52 overflow-hidden rounded-lg border border-ink-200 bg-white py-1 shadow-popover"
         >
@@ -124,7 +131,7 @@ export function FilterSelect({
   closeSignal?: unknown;
 }) {
   const [open, setOpen] = useState(false);
-  const [coords, setCoords] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [coords, setCoords] = useState<{ top: number; left: number; width: number; placement: "top" | "bottom" } | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const selected = options.find((o) => o.value === value);
@@ -136,7 +143,13 @@ export function FilterSelect({
     function updatePosition() {
       const rect = triggerRef.current?.getBoundingClientRect();
       if (!rect) return;
-      setCoords({ top: rect.bottom + 6, left: rect.left, width: rect.width });
+      const gap = 6;
+      const viewportPadding = 12;
+      const estimatedHeight = Math.min(300, 40 + options.length * 36);
+      const spaceBelow = window.innerHeight - rect.bottom - viewportPadding;
+      const spaceAbove = rect.top - viewportPadding;
+      const placement = spaceBelow < estimatedHeight && spaceAbove > spaceBelow ? "top" : "bottom";
+      setCoords({ top: placement === "top" ? rect.top - gap : rect.bottom + gap, left: rect.left, width: rect.width, placement });
     }
     updatePosition();
     function handleOutside(event: MouseEvent) {
@@ -179,7 +192,7 @@ export function FilterSelect({
       {open && coords && createPortal(
         <div
           ref={panelRef}
-          style={{ position: "fixed", top: coords.top, left: coords.left, minWidth: coords.width }}
+          style={{ position: "fixed", top: coords.top, left: coords.left, minWidth: coords.width, transform: coords.placement === "top" ? "translateY(-100%)" : undefined }}
           className="z-50 w-max max-w-xs overflow-hidden rounded-lg border border-ink-200 bg-white py-1 shadow-popover"
         >
           {options.map((opt) => (

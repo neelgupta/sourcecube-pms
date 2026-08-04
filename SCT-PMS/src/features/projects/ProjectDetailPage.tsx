@@ -239,6 +239,12 @@ export function ProjectDetailPage() {
           : { ...section, tasks: remaining };
       }),
     } : current);
+    // visibleSections prefers serverTasks over workspace.sections whenever a filtered fetch has
+    // run (which is effectively always, once the list/kanban view has mounted) — so updating
+    // workspace alone is invisible until the next debounced refetch lands. Merging the new/changed
+    // task into serverTasks too means a just-created subtask (or any edit) shows immediately
+    // instead of only after that refetch completes or a manual page reload.
+    setServerTasks((current) => current === null ? current : [...current.filter((item) => item.id !== nextTask.id), nextTask]);
     setSelectedTask((current) => current?.id === nextTask.id ? nextTask : current);
     setFilterRevision((value) => value + 1);
   }
@@ -248,6 +254,7 @@ export function ProjectDetailPage() {
       ...current,
       sections: current.sections.map((section) => ({ ...section, tasks: section.tasks.filter((item) => item.id !== taskId) })),
     } : current);
+    setServerTasks((current) => current === null ? current : current.filter((item) => item.id !== taskId));
     setSelectedTask((current) => current?.id === taskId ? null : current);
     setFilterRevision((value) => value + 1);
   }
@@ -496,7 +503,6 @@ export function ProjectDetailPage() {
             canReassignTask={canReassignTask}
             employees={companyUsers}
             milestones={milestones}
-            onChanged={load}
             onTaskUpdated={syncWorkspaceTask}
             onProjectTimeChanged={syncProjectTrackedSeconds}
             onSelectTask={setSelectedTask}
@@ -668,7 +674,6 @@ function TaskListWorkspace({
   canReassignTask,
   employees,
   milestones,
-  onChanged,
   onTaskUpdated,
   onProjectTimeChanged,
   onSelectTask,
@@ -681,7 +686,6 @@ function TaskListWorkspace({
   canReassignTask: (task: WorkspaceTask) => boolean;
   employees: CompanyUser[];
   milestones: ProjectMilestone[];
-  onChanged: () => void;
   onTaskUpdated: (task: WorkspaceTask) => void;
   onProjectTimeChanged: (trackedSeconds: number) => void;
   onSelectTask: (task: WorkspaceTask) => void;
@@ -773,10 +777,16 @@ function TaskListWorkspace({
     if (!name) return;
     setSaving(draftKey);
     try {
-      await api.createProjectTask(projectId, { name, sectionId: section.id, parentTaskId: parentTaskId ?? null });
+      const { task } = await api.createProjectTask(projectId, { name, sectionId: section.id, parentTaskId: parentTaskId ?? null });
       setDrafts((current) => ({ ...current, [draftKey]: "" }));
       setSubtaskParent(null);
-      onChanged();
+      // Merge the created task straight into local state (same path as onTaskUpdated for edits)
+      // instead of a full onChanged() reload — that reload raced against the debounced
+      // serverTasks refetch (see the effect keyed on filterRevision in ProjectDetailPage),
+      // and whichever response landed last could win, which is why a new subtask sometimes
+      // needed a second manual refresh — or worse, landed without its parentTaskId link — to
+      // actually show up correctly nested under its parent.
+      onTaskUpdated(task);
     } finally {
       setSaving(null);
     }
@@ -1319,9 +1329,9 @@ function KanbanWorkspace({
     if (!name) return;
     setAdding(section.id);
     try {
-      await api.createProjectTask(projectId, { name, sectionId: section.id });
+      const { task } = await api.createProjectTask(projectId, { name, sectionId: section.id });
       setDraft((current) => ({ ...current, [section.id]: "" }));
-      onChanged();
+      onTaskUpdated(task);
     } finally {
       setAdding(null);
     }

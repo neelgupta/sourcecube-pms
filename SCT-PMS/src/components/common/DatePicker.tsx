@@ -38,14 +38,24 @@ function buildMonthGrid(year: number, month: number) {
   return Array.from({ length: 42 }, (_, index) => new Date(start.getFullYear(), start.getMonth(), start.getDate() + index));
 }
 
+/** Panel height estimate used to decide whether it fits below the trigger before falling
+ *  back to opening upward — matches the calendar panel's rendered height closely enough
+ *  for the flip decision (month grid + nav + footer). */
+const PANEL_HEIGHT_ESTIMATE = 360;
+
 function useFloatingPosition(open: boolean, triggerRef: React.RefObject<HTMLElement | null>, panelRef: React.RefObject<HTMLElement | null>, onClose: () => void) {
-  const [coords, setCoords] = useState<{ top: number; left: number } | null>(null);
+  const [coords, setCoords] = useState<{ top: number; left: number; placement: "top" | "bottom" } | null>(null);
   useEffect(() => {
     if (!open) return;
     function updatePosition() {
       const rect = triggerRef.current?.getBoundingClientRect();
       if (!rect) return;
-      setCoords({ top: rect.bottom + 6, left: rect.left });
+      const gap = 6;
+      const viewportPadding = 12;
+      const spaceBelow = window.innerHeight - rect.bottom - viewportPadding;
+      const spaceAbove = rect.top - viewportPadding;
+      const placement = spaceBelow < PANEL_HEIGHT_ESTIMATE && spaceAbove > spaceBelow ? "top" : "bottom";
+      setCoords({ top: placement === "top" ? rect.top - gap : rect.bottom + gap, left: rect.left, placement });
     }
     updatePosition();
     function handleOutside(event: MouseEvent) {
@@ -170,7 +180,7 @@ export function DatePicker({
       {open && !disabled && coords && createPortal(
         <div
           ref={panelRef}
-          style={{ position: "fixed", top: coords.top, left: coords.left }}
+          style={{ position: "fixed", top: coords.top, left: coords.left, transform: coords.placement === "top" ? "translateY(-100%)" : undefined }}
           className="z-[80] w-72 overflow-hidden rounded-xl border border-ink-200 bg-white pb-3 shadow-popover"
         >
           <MonthNav cursor={cursor} onChange={setCursor} />
@@ -319,7 +329,7 @@ export function DateRangePicker({
       {open && !disabled && coords && createPortal(
         <div
           ref={panelRef}
-          style={{ position: "fixed", top: coords.top, left: coords.left }}
+          style={{ position: "fixed", top: coords.top, left: coords.left, transform: coords.placement === "top" ? "translateY(-100%)" : undefined }}
           className="z-[80] w-72 overflow-hidden rounded-xl border border-ink-200 bg-white pb-3 shadow-popover"
           onMouseLeave={() => setHoverDate(null)}
         >
