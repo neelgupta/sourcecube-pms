@@ -367,9 +367,13 @@ export function ProjectDetailPage() {
    *  themselves) is a project-management action, not self-editing — mirrors the backend's
    *  PATCH /:id/tasks/:taskId check in server/src/routes/projects.ts, which independently
    *  requires real project edit access for any assigneeId change. Without this, an employee
-   *  could open their own assigned task and hand it off to anyone else in the company. */
+   *  could open their own assigned task and hand it off to anyone else in the company.
+   *  The "employee"-only role check mirrors canReassignTasks in server/src/routes/projects.ts:
+   *  a plain employee can't reassign tasks even if a manager granted them "edit" project-member
+   *  access for other reasons — reassignment is a distinct, higher-trust capability. */
+  const isEmployeeOnly = session?.user.kind === "company" && session.user.roles.every((role) => role === "employee");
   function canReassignTask(_task: WorkspaceTask): boolean {
-    return canEditTaskPermission && projectHasEditAccess;
+    return canEditTaskPermission && projectHasEditAccess && !isEmployeeOnly;
   }
   const tasks = sections.flatMap((section) => section.tasks);
   const visibleSections = sections.map((section) => ({
@@ -1461,20 +1465,28 @@ function KanbanWorkspace({
           <button onClick={() => setTimerError(null)} className="text-danger-500 hover:text-danger-700">×</button>
         </div>
       )}
-    <div className="flex min-w-max flex-1 gap-2.5 p-3">
-      {sections.map((section) => {
+    <div className="flex min-w-max flex-1 flex-col gap-2.5 p-3">
+      {sections.some((section) => collapsedSections[section.id]) && (
+        <div className="flex flex-wrap gap-2">
+          {sections.filter((section) => collapsedSections[section.id]).map((section) => (
+            <button
+              key={section.id}
+              onClick={() => setCollapsedSections((value) => ({ ...value, [section.id]: false }))}
+              className="flex items-center gap-2 rounded-xl border border-ink-200 bg-surface-muted px-3 py-2 text-ink-600 hover:text-brand-600"
+              title="Expand section"
+            >
+              <ChevronDown size={14} />
+              <span className="text-sm font-semibold text-ink-800">{section.name}</span>
+              <span className="text-xs font-semibold text-brand-600">({section.tasks.length})</span>
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="flex min-w-max flex-1 gap-2.5">
+      {sections.filter((section) => !collapsedSections[section.id]).map((section) => {
         const cards = collapseSubtasks
           ? section.tasks.filter((task) => !task.parentTaskId || !section.tasks.some((candidate) => candidate.id === task.parentTaskId))
           : section.tasks;
-        if (collapsedSections[section.id]) {
-          return (
-            <section key={section.id} className="flex h-full w-12 shrink-0 flex-col items-center rounded-xl border border-ink-200 bg-surface-muted py-3">
-              <button onClick={() => setCollapsedSections((value) => ({ ...value, [section.id]: false }))} className="rounded-full border border-ink-200 bg-white p-1 text-ink-500 hover:text-brand-600"><ChevronRight size={14} /></button>
-              <span className="mt-3 text-xs font-semibold text-brand-600">{section.tasks.length}</span>
-              <span className="mt-3 [writing-mode:vertical-rl] text-sm font-semibold text-ink-800">{section.name}</span>
-            </section>
-          );
-        }
         return (
           <section
             key={section.id}
@@ -1572,6 +1584,7 @@ function KanbanWorkspace({
         {sectionError && <p className="mt-1.5 text-xs text-danger-600">{sectionError}</p>}
         <div className="mt-2 flex gap-2"><Button size="sm" onClick={addSection} disabled={savingSection || !sectionDraft.trim()}>Add Section</Button><Button size="sm" variant="outline" onClick={() => { setAddingSection(false); setSectionError(null); }}>Cancel</Button></div>
       </div> : <button onClick={() => setAddingSection(true)} className="flex h-11 w-full items-center gap-2 rounded-xl border border-dashed border-ink-300 px-3 text-sm font-medium text-ink-500 hover:border-brand-400 hover:text-brand-600"><Plus size={16} />Add Section</button>}</div>}
+    </div>
     </div>
     </div>
     <TimerStopDialog target={stopTarget} busy={timerBusy !== null} onCancel={() => setStopTarget(null)} onSave={saveTimerLog} onDiscard={discardTimer} />

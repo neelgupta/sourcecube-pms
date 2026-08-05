@@ -93,6 +93,41 @@ async function projectAccessLevel(
   });
   return connectedTask ? "view" : null;
 }
+/** Plain employees (role set is exactly ["employee"], not the project's own owner/manager/
+ *  department-head, and not a team lead of the assignee's team) only see tasks assigned to them
+ *  or that they follow — never the full task list, and never other people's unassigned/assigned
+ *  work. This intentionally ignores project-member "edit"/"manage" access for employee-role
+ *  users: a manager granting an employee "edit" membership (e.g. so they can update task details
+ *  on a project they're deeply involved in) must not incidentally expose the whole team's task
+ *  list, mirroring canReassignTasks' role-overrides-membership rule for reassignment. Non-employee
+ *  roles (TL/PM/department-head/admins) with real project access continue to see every task.
+ *  Returns a Prisma filter to AND into a ProjectTask query, or null when no restriction applies. */
+async function taskVisibilityScope(
+  tid: string,
+  uid: string,
+  project: { id: string; ownerId: string | null; managerId: string | null; departmentId: string | null },
+): Promise<Prisma.ProjectTaskWhereInput | null> {
+  const [roles, membership] = await Promise.all([
+    getCompanyUserRoles(tid, uid),
+    prisma.projectMember.findUnique({
+      where: { projectId_userId: { projectId: project.id, userId: uid } },
+      select: { access: true },
+    }),
+  ]);
+  const isEmployeeOnly = roles.every((role) => role === "employee");
+  if (roles.some((role) => elevatedProjectReaders.has(role))) return null;
+  if (project.ownerId === uid || project.managerId === uid) return null;
+  if (!isEmployeeOnly && membership && (membership.access === "edit" || membership.access === "manage")) return null;
+  if (roles.includes("department_head") && project.departmentId) {
+    const headed = await prisma.department.findFirst({ where: { id: project.departmentId, tenantId: tid, headUserId: uid }, select: { id: true } });
+    if (headed) return null;
+  }
+  if (roles.includes("team_lead")) {
+    const leadsTeam = await prisma.team.findFirst({ where: { tenantId: tid, leadUserId: uid }, select: { id: true } });
+    if (leadsTeam) return null;
+  }
+  return { OR: [{ assigneeId: uid }, { followers: { some: { userId: uid } } }] };
+}
 async function requireProjectAccess(tid: string, uid: string, projectId: string, minimum: "view" | "edit" | "manage") {
   const project = await prisma.project.findFirst({
     where: { id: projectId, tenantId: tid },
@@ -727,28 +762,33 @@ projectsRouter.get("/:id/workspace", requirePermission("projects", "view"), asyn
       ...projectInclude,
       favouritedBy: { where: { userId: uid }, select: { id: true } },
       members: { include: { user: { select: userSelect } }, orderBy: { joinedAt: "asc" } },
-      sections: {
-        include: {
-          owner: { select: userSelect },
-          tasks: {
-            include: taskDetailInclude,
-
-            orderBy: { position: "asc" },
-          },
-        },
-        orderBy: { position: "asc" },
-      },
-      milestones: {
-        include: { owner: { select: userSelect }, _count: { select: { tasks: true } } },
-        orderBy: { releaseDate: "asc" },
-      },
     },
   });
   if (!project) {
     res.status(404).json({ error: "Project not found" });
     return;
   }
-  const { favouritedBy, sections, members, milestones, ...projectData } = project;
+  const taskScope = await taskVisibilityScope(tid, uid, project);
+  const [sections, milestones] = await Promise.all([
+    prisma.projectSection.findMany({
+      where: { projectId: id },
+      include: {
+        owner: { select: userSelect },
+        tasks: {
+          where: taskScope ?? undefined,
+          include: taskDetailInclude,
+          orderBy: { position: "asc" },
+        },
+      },
+      orderBy: { position: "asc" },
+    }),
+    prisma.projectMilestone.findMany({
+      where: { projectId: id },
+      include: { owner: { select: userSelect }, _count: { select: { tasks: true } } },
+      orderBy: { releaseDate: "asc" },
+    }),
+  ]);
+  const { favouritedBy, members, ...projectData } = project;
   const activities = await prisma.auditLog.findMany({
     where: {
       tenantId: tid,
@@ -791,14 +831,16 @@ projectsRouter.get("/:id/tasks/query", requirePermission("tasks", "view"), async
   const uid = userId(req);
   const projectId = req.params.id as string;
   const scope = await projectReadScope(tid, uid);
-  const project = await prisma.project.findFirst({ where: { AND: [{ id: projectId }, scope] }, select: { id: true } });
+  const project = await prisma.project.findFirst({ where: { AND: [{ id: projectId }, scope] }, select: { id: true, ownerId: true, managerId: true, departmentId: true } });
   if (!project) {
     res.status(404).json({ error: "Project not found" });
     return;
   }
+  const taskScope = await taskVisibilityScope(tid, uid, project);
 
   const input = parsed.data;
   const filters: Prisma.ProjectTaskWhereInput[] = [];
+  if (taskScope) filters.push(taskScope);
   if (input.search) {
     const searchFilters: Prisma.ProjectTaskWhereInput[] = [
       { name: { contains: input.search, mode: "insensitive" } },
@@ -1041,6 +1083,18 @@ async function canEditTaskForProject(tid: string, uid: string, projectId: string
   return Boolean(teamMember);
 }
 
+/** Reassigning a task (or unassigning it) is a project-management action, not task-editing —
+ *  it must require real project edit access AND a non-"employee-only" company role. Without the
+ *  role check, a manager granting a plain employee "edit" project-member access (e.g. to let them
+ *  update task details on a project they're deeply involved in) would incidentally also hand them
+ *  the ability to reassign anyone's tasks, which is a distinct, higher-trust capability. */
+async function canReassignTasks(tid: string, uid: string, projectId: string): Promise<boolean> {
+  const hasProjectAccess = await requireProjectAccess(tid, uid, projectId, "edit");
+  if (!hasProjectAccess) return false;
+  const roles = await getCompanyUserRoles(tid, uid);
+  return roles.some((role) => role !== "employee");
+}
+
 function taskDatesAreValid(startDate?: string | null, dueDate?: string | null) {
   if (!startDate || !dueDate) return true;
   return new Date(startDate).getTime() <= new Date(dueDate).getTime();
@@ -1071,8 +1125,7 @@ projectsRouter.patch("/:id/tasks/:taskId", requirePermission("tasks", "edit"), a
   // (or unassigning themselves) is a project-management action, not self-editing, so it must
   // require real project edit access even when the actor happens to be the current assignee.
   if (data.assigneeId !== undefined && data.assigneeId !== task.assigneeId) {
-    const hasProjectAccess = await requireProjectAccess(tid, uid, projectId, "edit");
-    if (!hasProjectAccess) {
+    if (!(await canReassignTasks(tid, uid, projectId))) {
       res.status(403).json({ error: "You do not have permission to reassign this task" });
       return;
     }

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Users } from "lucide-react";
 import { api } from "@/lib/api";
 import { usePermission, useSession } from "@/lib/session";
@@ -15,7 +16,9 @@ export function ChatPage() {
   const canManage = usePermission("chat", "manage");
   const canInvite = usePermission("chat", "invite") || canManage;
   const [users, setUsers] = useState<ChatUser[]>([]);
-  const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedChannelId = searchParams.get("channel");
+  const [activeChannelId, setActiveChannelId] = useState<string | null>(requestedChannelId);
   const { channels, loading, error, currentUserId, onlineUserIds, reloadChannels, clearUnread, createChannel, updateChannel, setChannelFavorite } = useChatData(activeChannelId);
   const [showDirectory, setShowDirectory] = useState(false);
   const [showNewChannel, setShowNewChannel] = useState(false);
@@ -23,6 +26,18 @@ export function ChatPage() {
   useEffect(() => {
     api.listChatUsers().then(({ users: rows }) => setUsers(rows)).catch(() => undefined);
   }, []);
+
+  // Deep-link from a notification: whenever ?channel=<id> changes (including repeat clicks on
+  // notifications for the same channel while already on /chat), jump straight to that channel
+  // instead of leaving whatever was last open selected.
+  useEffect(() => {
+    if (requestedChannelId && requestedChannelId !== activeChannelId) {
+      setShowDirectory(false);
+      setActiveChannelId(requestedChannelId);
+    }
+    if (requestedChannelId) setSearchParams((params) => { params.delete("channel"); return params; }, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestedChannelId]);
 
   useEffect(() => {
     if (!activeChannelId && channels.length > 0) selectChannel(channels[0]);
@@ -34,6 +49,7 @@ export function ChatPage() {
   function selectChannel(channel: ChatChannel) {
     setShowDirectory(false);
     setActiveChannelId(channel.id);
+    if (requestedChannelId) setSearchParams((params) => { params.delete("channel"); return params; }, { replace: true });
   }
 
   async function startDirectMessage(userId: string) {

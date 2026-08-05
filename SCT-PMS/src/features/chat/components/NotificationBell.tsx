@@ -54,7 +54,7 @@ export function NotificationBell() {
         showDesktopNotification(notification.title, {
           body: notification.body ?? undefined,
           tag: notification.id,
-          onClick: () => navigate("/chat"),
+          onClick: () => navigate(notification.channelId ? `/chat?channel=${notification.channelId}` : "/chat"),
         });
       }
     }
@@ -106,7 +106,7 @@ export function NotificationBell() {
       setNotifications((current) => current.map((item) => (item.id === notification.id ? { ...item, readAt: new Date().toISOString() } : item)));
     }
     setOpen(false);
-    navigate("/chat");
+    navigate(notification.channelId ? `/chat?channel=${notification.channelId}` : "/chat");
   }
 
   async function markAllRead() {
