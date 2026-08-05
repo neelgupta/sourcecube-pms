@@ -75,7 +75,6 @@ export function MessageBubble({
   message,
   users,
   currentUserId,
-  canManage,
   isRead = false,
   onReact,
   onUnreact,
