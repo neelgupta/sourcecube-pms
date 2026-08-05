@@ -394,8 +394,9 @@ export interface ResourcePlannerDayDetail {
   remainingPlannedMinutes: number;
   tasks: Array<{
     id: ID; code: number; name: string; status: ProjectTaskStatus; progress: number; estimatedMinutes: number; trackedSeconds: number;
+    remainingMinutes: number; overdueReviewStatus: "pending_review" | null;
     plannedMinutes: number; startDate?: string | null; dueDate?: string | null; completedAt?: string | null;
-    hasExplicitAllocation: boolean; withinTaskWindow: boolean; allocationNote?: string | null;
+    hasExplicitAllocation: boolean; allocationNote?: string | null;
     project: { id: ID; name: string; key: string };
   }>;
   logs: Array<{
@@ -411,6 +412,29 @@ export interface TaskDailyAllocationEntry {
   date: string;
   plannedMinutes: number;
   note?: string | null;
+}
+
+export interface TaskOverdueReview {
+  id: ID;
+  taskId: ID;
+  triggeredAt: string;
+  originalDueDate: string;
+  reason?: string | null;
+  reasonSubmittedAt?: string | null;
+  reasonSubmittedBy?: ID | null;
+  approverId: ID;
+  status: "pending_review" | "resolved";
+  resolvedAt?: string | null;
+  resolvedBy?: ID | null;
+  resolutionAction?: string | null;
+  newEstimatedMinutes?: number | null;
+  newDueDate?: string | null;
+  createdAt: string;
+  task: {
+    id: ID; code: number; name: string; estimatedMinutes: number; trackedSeconds: number; dueDate?: string | null;
+    assignee?: { id: ID; name: string; email: string } | null;
+    project: { id: ID; name: string; key: string };
+  };
 }
 export interface OnboardingState {
   tenantId: ID;
@@ -583,6 +607,7 @@ export interface WorkspaceTask {
   dependencies: TaskDependency[];
   timeEntries: TaskTimeEntry[];
   createdAt: string;
+  overdueReviewStatus?: "pending_review" | null;
 }
 
 export type ProjectTaskDueFilter = "overdue" | "today" | "this_week" | "no_date";

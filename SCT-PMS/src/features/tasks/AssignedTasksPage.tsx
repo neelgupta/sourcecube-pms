@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import { CalendarDays, CheckCircle2, ChevronDown, ChevronRight, Clock3, FolderKanban, Play, Search } from "lucide-react";
-import { Badge, Card, DateRangePicker, MemberAvatar, Select, Tabs, type TabItem } from "@/components/common";
+import { Badge, Card, DateRangePicker, FilterSelect, MemberAvatar, Tabs, type TabItem } from "@/components/common";
 import { api, ApiError } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { TaskWorkspaceDrawer, TimerStopDialog, type ActiveTaskTimer, type StopTimerInput, type StopTimerTarget } from "@/features/projects/ProjectDetailPage";
@@ -373,45 +373,73 @@ function TaskTable({
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-400" />
           <input value={filters.search} onChange={(event) => setFilter("search", event.target.value)} placeholder="Search task, project, or project key" className="h-10 w-full rounded-lg border border-ink-200 bg-white pl-9 pr-3 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" />
         </div>
-        <Select value={filters.assigneeId} onChange={(event) => setFilter("assigneeId", event.target.value)}>
-          <option value="">All assignees</option>
-          <option value="unassigned">Unassigned</option>
-          {filterOptions.assignees.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}
-        </Select>
-        <Select value={filters.worklogUserId} onChange={(event) => setFilter("worklogUserId", event.target.value)}>
-          <option value="">All work logs</option>
-          {filterOptions.worklogUsers.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}
-        </Select>
-        <Select value={filters.projectId} onChange={(event) => setFilter("projectId", event.target.value)}>
-          <option value="">All projects</option>
-          {filterOptions.projects.map((project) => <option key={project.id} value={project.id}>{project.name} ({project.key})</option>)}
-        </Select>
-        <Select value={filters.status} onChange={(event) => setFilter("status", event.target.value as AssignedTaskFilters["status"])}>
-          <option value="">All statuses</option>
-          <option value="new_request">New Request</option>
-          <option value="in_progress">In Progress</option>
-          <option value="done">Done</option>
-        </Select>
-        <Select value={filters.priority} onChange={(event) => setFilter("priority", event.target.value as AssignedTaskFilters["priority"])}>
-          <option value="">All priorities</option>
-          <option value="critical">Critical</option>
-          <option value="high">High</option>
-          <option value="medium">Medium</option>
-          <option value="low">Low</option>
-        </Select>
-        <Select value={filters.worklog} onChange={(event) => setFilter("worklog", event.target.value as AssignedTaskFilters["worklog"])}>
-          <option value="">Any work log state</option>
-          <option value="with_logs">Has work logs</option>
-          <option value="without_logs">No work logs</option>
-          <option value="billable">Billable logs</option>
-          <option value="non_billable">Non-billable logs</option>
-        </Select>
-        <Select value={assignedQuickFilter} onChange={(event) => onAssignedQuickFilterChange(event.target.value as typeof assignedQuickFilter)}>
-          <option value="">Any assigned date</option>
-          <option value="yesterday">Assigned yesterday</option>
-          <option value="today">Assigned today</option>
-          <option value="tomorrow">Assigned tomorrow</option>
-        </Select>
+        <FilterSelect
+          value={filters.assigneeId}
+          onChange={(value) => setFilter("assigneeId", value)}
+          options={[
+            { value: "", label: "All assignees" },
+            { value: "unassigned", label: "Unassigned" },
+            ...filterOptions.assignees.map((user) => ({ value: user.id, label: user.name })),
+          ]}
+        />
+        <FilterSelect
+          value={filters.worklogUserId}
+          onChange={(value) => setFilter("worklogUserId", value)}
+          options={[
+            { value: "", label: "All work logs" },
+            ...filterOptions.worklogUsers.map((user) => ({ value: user.id, label: user.name })),
+          ]}
+        />
+        <FilterSelect
+          value={filters.projectId}
+          onChange={(value) => setFilter("projectId", value)}
+          options={[
+            { value: "", label: "All projects" },
+            ...filterOptions.projects.map((project) => ({ value: project.id, label: `${project.name} (${project.key})` })),
+          ]}
+        />
+        <FilterSelect
+          value={filters.status}
+          onChange={(value) => setFilter("status", value as AssignedTaskFilters["status"])}
+          options={[
+            { value: "", label: "All statuses" },
+            { value: "new_request", label: "New Request" },
+            { value: "in_progress", label: "In Progress" },
+            { value: "done", label: "Done" },
+          ]}
+        />
+        <FilterSelect
+          value={filters.priority}
+          onChange={(value) => setFilter("priority", value as AssignedTaskFilters["priority"])}
+          options={[
+            { value: "", label: "All priorities" },
+            { value: "critical", label: "Critical" },
+            { value: "high", label: "High" },
+            { value: "medium", label: "Medium" },
+            { value: "low", label: "Low" },
+          ]}
+        />
+        <FilterSelect
+          value={filters.worklog}
+          onChange={(value) => setFilter("worklog", value as AssignedTaskFilters["worklog"])}
+          options={[
+            { value: "", label: "Any work log state" },
+            { value: "with_logs", label: "Has work logs" },
+            { value: "without_logs", label: "No work logs" },
+            { value: "billable", label: "Billable logs" },
+            { value: "non_billable", label: "Non-billable logs" },
+          ]}
+        />
+        <FilterSelect
+          value={assignedQuickFilter}
+          onChange={(value) => onAssignedQuickFilterChange(value as typeof assignedQuickFilter)}
+          options={[
+            { value: "", label: "Any assigned date" },
+            { value: "yesterday", label: "Assigned yesterday" },
+            { value: "today", label: "Assigned today" },
+            { value: "tomorrow", label: "Assigned tomorrow" },
+          ]}
+        />
         <DateRangePicker
           from={filters.dueFrom}
           to={filters.dueTo}

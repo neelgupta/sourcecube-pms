@@ -396,15 +396,30 @@ function AllocationEditor({
   const [hours, setHours] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [markingDone, setMarkingDone] = useState<string | null>(null);
+
+  async function markDone(task: ResourcePlannerDayDetail["tasks"][number]) {
+    setMarkingDone(task.id);
+    setError(null);
+    try {
+      await api.updateProjectTask(task.project.id, task.id, { status: "done" });
+      const next = await api.getResourcePlannerDay(employeeId, date);
+      onSaved(next);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not mark task done");
+    } finally {
+      setMarkingDone(null);
+    }
+  }
 
   function startEditing() {
-    setHours(Object.fromEntries(detail.tasks.map((task) => [task.id, hoursFromMinutes(task.plannedMinutes)])));
+    setHours(Object.fromEntries(detail.tasks.filter((task) => task.status !== "done").map((task) => [task.id, hoursFromMinutes(task.plannedMinutes)])));
     setError(null);
     setEditing(true);
   }
 
   const runningTotalMinutes = editing
-    ? detail.tasks.reduce((total, task) => total + Math.round((Number(hours[task.id]) || 0) * 60), 0)
+    ? detail.tasks.filter((task) => task.status !== "done").reduce((total, task) => total + Math.round((Number(hours[task.id]) || 0) * 60), 0)
     : detail.plannedMinutes;
   const load = detail.capacityMinutes ? runningTotalMinutes / detail.capacityMinutes : 0;
 
@@ -412,7 +427,7 @@ function AllocationEditor({
     setSaving(true);
     setError(null);
     try {
-      const allocations = detail.tasks.map((task) => ({ taskId: task.id, plannedMinutes: Math.round((Number(hours[task.id]) || 0) * 60) }));
+      const allocations = detail.tasks.filter((task) => task.status !== "done").map((task) => ({ taskId: task.id, plannedMinutes: Math.round((Number(hours[task.id]) || 0) * 60) }));
       const next = await api.saveResourcePlannerDayAllocations(employeeId, date, allocations);
       onSaved(next);
       setEditing(false);
@@ -427,7 +442,7 @@ function AllocationEditor({
     <section className="mt-6">
       <div className="mb-2 flex items-center justify-between">
         <div className="flex items-center gap-2"><ListChecks size={16} className="text-brand-600" /><h3 className="font-semibold text-ink-900">Assigned task progress ({detail.tasks.length})</h3></div>
-        {canEdit && detail.tasks.length > 0 && !editing && <button onClick={startEditing} className="text-xs font-semibold text-brand-600 hover:text-brand-700">Edit today's plan</button>}
+        {canEdit && detail.tasks.some((task) => task.status !== "done") && !editing && <button onClick={startEditing} className="text-xs font-semibold text-brand-600 hover:text-brand-700">Edit today's plan</button>}
       </div>
       {editing && (
         <div className={cn("mb-3 flex items-center justify-between rounded-lg border px-3 py-2 text-sm", load > 1 ? "border-danger-200 bg-danger-50 text-danger-700" : load > 0.85 ? "border-warning-200 bg-warning-50 text-warning-700" : "border-success-200 bg-success-50 text-success-700")}>
@@ -447,18 +462,31 @@ function AllocationEditor({
                 </div>
                 <Badge tone={task.status === "done" ? "green" : task.status === "in_progress" ? "amber" : "blue"}>{task.progress}%</Badge>
               </button>
-              {!task.withinTaskWindow && <p className="mt-1.5 text-[11px] font-medium text-warning-600">Outside this task's normal date window</p>}
-              {editing ? (
+              {editing && task.status !== "done" ? (
                 <div className="mt-2 flex items-center gap-2" onClick={(event) => event.stopPropagation()}>
                   <input type="number" min="0" step="0.25" value={hours[task.id] ?? "0"} onChange={(event) => setHours((current) => ({ ...current, [task.id]: event.target.value }))} className="h-8 w-24 rounded-md border border-ink-200 px-2 text-sm outline-none focus:border-brand-500" />
                   <span className="text-xs text-ink-500">hours planned today</span>
-                  <span className="ml-auto text-[11px] text-ink-400">{hoursFromMinutes(task.estimatedMinutes)}h estimated · {durationLabel(task.trackedSeconds)} tracked</span>
+                  <span className="ml-auto text-[11px] text-ink-400">{hoursFromMinutes(task.remainingMinutes)}h remaining · {hoursFromMinutes(task.estimatedMinutes)}h total estimate</span>
                 </div>
-              ) : (
-                <div className="mt-2 flex gap-4 text-[11px] text-ink-500">
-                  <span>{hoursFromMinutes(task.plannedMinutes)}h planned today{task.hasExplicitAllocation && <span className="ml-1 font-semibold text-brand-600">(set)</span>}</span>
+              ) : task.status === "done" ? (
+                <div className="mt-2 flex flex-wrap items-center gap-4 text-[11px] text-ink-500">
+                  <span className="font-semibold text-success-700">Task done{task.trackedSeconds < task.estimatedMinutes * 60 && " — finished earlier than estimated"}</span>
                   <span>{hoursFromMinutes(task.estimatedMinutes)}h estimated</span>
                   <span>{durationLabel(task.trackedSeconds)} total tracked</span>
+                </div>
+              ) : (
+                <div className="mt-2 flex flex-wrap items-center gap-4 text-[11px] text-ink-500">
+                  <span>{hoursFromMinutes(task.plannedMinutes)}h planned today{task.hasExplicitAllocation && <span className="ml-1 font-semibold text-brand-600">(set)</span>}</span>
+                  <span className="font-semibold text-ink-700">{hoursFromMinutes(task.remainingMinutes)}h remaining</span>
+                  <span>{hoursFromMinutes(task.estimatedMinutes)}h total estimate</span>
+                  <span>{durationLabel(task.trackedSeconds)} total tracked</span>
+                  <button
+                    onClick={(event) => { event.stopPropagation(); markDone(task); }}
+                    disabled={markingDone === task.id}
+                    className="ml-auto rounded-md border border-ink-200 px-2 py-1 text-[11px] font-semibold text-ink-600 hover:border-success-300 hover:text-success-700 disabled:opacity-50"
+                  >
+                    {markingDone === task.id ? "Marking done…" : "Mark done"}
+                  </button>
                 </div>
               )}
             </div>

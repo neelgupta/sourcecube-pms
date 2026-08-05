@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertCircle, CheckCircle2, ChevronRight, Clock, FolderOpen, ListChecks, Trophy } from "lucide-react";
-import { Card, CardBody, CardHeader, EmptyState, MemberAvatar } from "@/components/common";
+import { Card, CardBody, CardHeader, EmptyState, FilterSelect, MemberAvatar } from "@/components/common";
 import { cn } from "@/lib/cn";
 import { useSession } from "@/lib/session";
 import { formatHoursMinutes, isOverdue, useDashboardData } from "./useDashboardData";
@@ -166,15 +166,12 @@ export function OverviewTab() {
             <CardHeader
               title="Leaderboard"
               action={
-                <select
+                <FilterSelect
                   value={leaderboardPreset}
-                  onChange={(event) => setLeaderboardPreset(event.target.value as RangePreset)}
-                  className="h-9 rounded-lg border border-ink-200 bg-white px-2.5 text-xs font-medium text-ink-700"
-                >
-                  {rangePresetOptions.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label}</option>
-                  ))}
-                </select>
+                  onChange={(value) => setLeaderboardPreset(value as RangePreset)}
+                  options={rangePresetOptions}
+                  className="w-36"
+                />
               }
             />
             <CardBody className="pt-0">

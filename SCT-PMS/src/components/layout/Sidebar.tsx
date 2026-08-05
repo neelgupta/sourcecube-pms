@@ -1,5 +1,6 @@
 import { NavLink } from "react-router-dom";
 import {
+  AlertTriangle,
   BarChart3,
   Briefcase,
   Building2,
@@ -47,6 +48,7 @@ const companyNavItems: NavItem[] = [
   // { to: "/budgets", label: "Budgets", icon: PiggyBank, requires: { module: "projects", action: "manage" } },
   { to: "/milestones", label: "Milestones", icon: Flag, requires: { module: "projects", action: "view" } },
   { to: "/resources", label: "Resources", icon: Users, requires: { module: "resources", action: "view" } },
+  { to: "/overdue-reviews", label: "Overdue reviews", icon: AlertTriangle, requires: { module: "tasks", action: "approve" } },
   // { to: "/timesheet", label: "Timesheet", icon: CheckSquare, requires: { module: "tasks", action: "view" } },
   { to: "/reports", label: "Reports", icon: BarChart3, requires: { module: "resources", action: "view" } },
   { to: "/settings", label: "Company setup", icon: Settings2, requires: { module: "company_settings", action: "manage" } },

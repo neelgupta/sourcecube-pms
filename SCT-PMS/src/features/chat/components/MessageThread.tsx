@@ -108,6 +108,13 @@ export function MessageThread({
       }
       if (message.authorId === currentUserId && !message.isSystem) return;
       setMessages((current) => (current.some((item) => item.id === message.id) ? current : [...current, message]));
+      // A message arriving while this thread is already open+focused is immediately visible —
+      // mark it read right away so global unread badges (sidebar nav, useUnreadChatCount) don't
+      // momentarily light up for a channel the user is actively looking at. Without this, the
+      // badge only cleared on the next mount/focus event, not on every live incoming message.
+      if (document.visibilityState === "visible" && document.hasFocus()) {
+        api.markChannelRead(channel.id).then(() => onRead?.(channel.id)).catch(() => undefined);
+      }
     }
     function onUpdated(message: ChatMessage) {
       if (message.channelId !== channel.id) return;

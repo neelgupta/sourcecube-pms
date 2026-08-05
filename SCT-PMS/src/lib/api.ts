@@ -40,6 +40,7 @@ import type {
   ResourcePlannerResponse,
   ResourcePlannerDayDetail,
   TaskDailyAllocationEntry,
+  TaskOverdueReview,
   TeamProductivityReport,
   TeamMemberProductivityReport,
   ProjectPerformanceReport,
@@ -168,6 +169,11 @@ export const api = {
     request<{ allocations: TaskDailyAllocationEntry[] }>(`/resources/planner/${employeeId}/allocations?start=${start}&end=${end}`),
   saveResourcePlannerDayAllocations: (employeeId: string, date: string, allocations: Array<{ taskId: string; plannedMinutes: number; note?: string | null }>) =>
     request<ResourcePlannerDayDetail>(`/resources/planner/${employeeId}/day/${date}/allocations`, { method: "PUT", body: JSON.stringify({ allocations }) }),
+  submitOverdueReason: (taskId: string, reason: string) =>
+    request<{ review: TaskOverdueReview }>(`/resources/tasks/${taskId}/overdue-reason`, { method: "POST", body: JSON.stringify({ reason }) }),
+  listOverdueReviews: () => request<{ reviews: TaskOverdueReview[] }>("/resources/overdue-reviews"),
+  resolveOverdueReview: (reviewId: string, input: { newEstimatedMinutes?: number; newDueDate?: string }) =>
+    request<{ review: TaskOverdueReview }>(`/resources/overdue-reviews/${reviewId}/resolve`, { method: "POST", body: JSON.stringify(input) }),
   getTeamProductivityReport: (input: { start: string; end: string; teamId?: string; search?: string }) => {
     const params = new URLSearchParams();
     Object.entries(input).forEach(([key, value]) => { if (value) params.set(key, value); });

@@ -59,7 +59,6 @@ import {
   Input,
   Modal,
   ProgressBar,
-  Select,
   Textarea,
 } from "@/components/common";
 import { api, ApiError } from "@/lib/api";
@@ -937,12 +936,17 @@ function TaskListWorkspace({
                       <div className="flex max-w-xl items-center gap-2">
                         <span className="text-xs text-ink-400">↳</span>
                         <input autoFocus value={drafts[`sub-${task.id}`] ?? ""} onChange={(event) => setDrafts((value) => ({ ...value, [`sub-${task.id}`]: event.target.value }))} onKeyDown={(event) => { if (event.key === "Enter") addTask(section, task.id); if (event.key === "Escape") setSubtaskParent(null); }} placeholder={`Add subtask under ${task.name}`} className="h-8 flex-1 rounded-md border border-ink-200 bg-white px-3 text-sm outline-none focus:border-brand-500" />
-                        <select value={draftPriorities[`sub-${task.id}`] ?? "medium"} onChange={(event) => setDraftPriorities((value) => ({ ...value, [`sub-${task.id}`]: event.target.value as ProjectPriority }))} className="h-8 rounded-md border border-ink-200 bg-white px-2 text-xs text-ink-700 outline-none focus:border-brand-500">
-                          <option value="low">Low</option>
-                          <option value="medium">Medium</option>
-                          <option value="high">High</option>
-                          <option value="critical">Critical</option>
-                        </select>
+                        <FilterSelect
+                          value={draftPriorities[`sub-${task.id}`] ?? "medium"}
+                          onChange={(value) => setDraftPriorities((current) => ({ ...current, [`sub-${task.id}`]: value as ProjectPriority }))}
+                          className="w-28 shrink-0 [&_button]:h-8"
+                          options={[
+                            { value: "low", label: "Low" },
+                            { value: "medium", label: "Medium" },
+                            { value: "high", label: "High" },
+                            { value: "critical", label: "Critical" },
+                          ]}
+                        />
                         <Button size="sm" onClick={() => addTask(section, task.id)} disabled={saving === `sub-${task.id}`}>Add Subtask</Button>
                         <button onClick={() => setSubtaskParent(null)} className="p-1 text-ink-400"><X size={14} /></button>
                       </div>
@@ -965,12 +969,17 @@ function TaskListWorkspace({
                         className="h-8 flex-1 bg-transparent text-sm outline-none placeholder:text-ink-500"
                       />
                       {drafts[section.id] && (
-                        <select value={draftPriorities[section.id] ?? "medium"} onChange={(event) => setDraftPriorities((value) => ({ ...value, [section.id]: event.target.value as ProjectPriority }))} className="h-8 rounded-md border border-ink-200 bg-white px-2 text-xs text-ink-700 outline-none focus:border-brand-500">
-                          <option value="low">Low</option>
-                          <option value="medium">Medium</option>
-                          <option value="high">High</option>
-                          <option value="critical">Critical</option>
-                        </select>
+                        <FilterSelect
+                          value={draftPriorities[section.id] ?? "medium"}
+                          onChange={(value) => setDraftPriorities((current) => ({ ...current, [section.id]: value as ProjectPriority }))}
+                          className="w-28 shrink-0 [&_button]:h-8"
+                          options={[
+                            { value: "low", label: "Low" },
+                            { value: "medium", label: "Medium" },
+                            { value: "high", label: "High" },
+                            { value: "critical", label: "Critical" },
+                          ]}
+                        />
                       )}
                       {drafts[section.id] && <Button size="sm" onClick={() => addTask(section)} disabled={saving === section.id}>Add</Button>}
                     </div>
@@ -1141,7 +1150,9 @@ function TaskStatusCell({
   onChange: (status: ProjectTaskStatus) => void;
 }) {
   const display = <Badge tone={task.status === "done" ? "green" : task.status === "in_progress" ? "amber" : "blue"}>{task.status.replace("_", " ")}</Badge>;
-  if (!canEdit) return <div className="text-xs">{display}</div>;
+  // Once a task is marked done, its status is final from this cell — no dropdown, just the
+  // badge. Reopening a completed task isn't something this inline control supports.
+  if (!canEdit || task.status === "done") return <div className="text-xs">{display}</div>;
   return (
     <FilterSelect
       value={task.status}
@@ -1560,14 +1571,21 @@ function KanbanWorkspace({
 
               {adding === section.id && (
                 <div className="rounded-xl border border-brand-300 bg-white p-2">
-                  <input autoFocus value={draft[section.id] ?? ""} onChange={(event) => setDraft((current) => ({ ...current, [section.id]: event.target.value }))} onKeyDown={(event) => { if (event.key === "Enter") addTask(section); if (event.key === "Escape") setAdding(null); }} onBlur={(event) => { if (!draft[section.id]?.trim() && !event.relatedTarget?.closest("[data-add-task-priority]")) setAdding(null); }} placeholder="Task name" className="h-8 w-full bg-transparent text-sm outline-none placeholder:text-ink-400" />
+                  <input autoFocus value={draft[section.id] ?? ""} onChange={(event) => setDraft((current) => ({ ...current, [section.id]: event.target.value }))} onKeyDown={(event) => { if (event.key === "Enter") addTask(section); if (event.key === "Escape") setAdding(null); }} onBlur={(event) => { if (!draft[section.id]?.trim() && !event.relatedTarget?.closest("[data-add-task-priority], [data-portal-panel]")) setAdding(null); }} placeholder="Task name" className="h-8 w-full bg-transparent text-sm outline-none placeholder:text-ink-400" />
                   <div className="mt-1.5 flex items-center gap-2">
-                    <select data-add-task-priority value={draftPriority[section.id] ?? "medium"} onChange={(event) => setDraftPriority((current) => ({ ...current, [section.id]: event.target.value as ProjectPriority }))} className="h-8 flex-1 rounded-md border border-ink-200 bg-white px-2 text-xs text-ink-700 outline-none focus:border-brand-500">
-                      <option value="low">Low</option>
-                      <option value="medium">Medium</option>
-                      <option value="high">High</option>
-                      <option value="critical">Critical</option>
-                    </select>
+                    <div data-add-task-priority className="flex-1">
+                      <FilterSelect
+                        value={draftPriority[section.id] ?? "medium"}
+                        onChange={(value) => setDraftPriority((current) => ({ ...current, [section.id]: value as ProjectPriority }))}
+                        className="[&_button]:h-8"
+                        options={[
+                          { value: "low", label: "Low" },
+                          { value: "medium", label: "Medium" },
+                          { value: "high", label: "High" },
+                          { value: "critical", label: "Critical" },
+                        ]}
+                      />
+                    </div>
                     <Button size="sm" disabled={!draft[section.id]?.trim()} onClick={() => addTask(section)}>Add</Button>
                   </div>
                 </div>
@@ -1667,7 +1685,7 @@ function MilestoneWorkspace({
 
   return (
     <div className="bg-white">
-      <div className="flex items-center justify-between border-b border-ink-200 px-4 py-3"><p className="font-semibold text-ink-900">{milestones.length} Milestones</p>{canEdit && <div className="flex gap-2"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Milestone name" className="w-52" /><Select value={ownerId} onChange={(e) => setOwnerId(e.target.value)} className="w-44"><option value="">No owner</option>{companyUsers.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}</Select><Button onClick={add}>Add</Button></div>}</div>
+      <div className="flex items-center justify-between border-b border-ink-200 px-4 py-3"><p className="font-semibold text-ink-900">{milestones.length} Milestones</p>{canEdit && <div className="flex gap-2"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Milestone name" className="w-52" /><FilterSelect value={ownerId} onChange={setOwnerId} className="w-44" options={[{ value: "", label: "No owner" }, ...companyUsers.map((user) => ({ value: user.id, label: user.name }))]} /><Button onClick={add}>Add</Button></div>}</div>
       {error && <div className="m-3 rounded-lg border border-danger-200 bg-danger-50 px-3.5 py-2.5 text-sm text-danger-700">{error}</div>}
       <table className="w-full min-w-[900px] text-sm">
         <thead><tr className="border-b border-ink-200 bg-surface-subtle">{["Milestone Name", "Owner", "Start Date", "Release Date", "Progress", "Total Tasks", "Tags", "Description", ""].map((header) => <th key={header} className="px-4 py-3 text-left text-xs font-semibold text-ink-600">{header}</th>)}</tr></thead>
@@ -1772,10 +1790,11 @@ function ProjectMilestoneEditModal({
       <div className="space-y-4">
         <Field label="Milestone name"><Input value={name} onChange={(event) => setName(event.target.value)} /></Field>
         <Field label="Owner">
-          <Select value={ownerId} onChange={(event) => setOwnerId(event.target.value)}>
-            <option value="">No owner</option>
-            {companyUsers.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}
-          </Select>
+          <FilterSelect
+            value={ownerId}
+            onChange={setOwnerId}
+            options={[{ value: "", label: "No owner" }, ...companyUsers.map((user) => ({ value: user.id, label: user.name }))]}
+          />
         </Field>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Start date"><DatePicker value={startDate} onChange={(value) => setStartDate(value ?? "")} max={releaseDate || null} /></Field>
@@ -1793,7 +1812,7 @@ function GanttWorkspace({ sections }: { sections: ProjectSection[] }) {
   const tasks = sections.flatMap((section) => section.tasks);
   const days = Array.from({ length: 31 }, (_, index) => index + 1);
   return <div className="min-w-[1250px] bg-white">
-    <div className="flex items-center gap-2 border-b border-ink-200 px-4 py-3"><span className="text-sm text-ink-600">Group by:</span><Select className="w-36"><option>Tasks</option><option>Sections</option></Select><Button variant="outline" size="icon"><Maximize2 size={15} /></Button><div className="ml-auto flex gap-2"><Button variant="outline" size="sm">Incomplete Tasks</Button><Button variant="outline" size="sm">Due Date</Button><Button variant="outline" size="sm">All Users</Button></div></div>
+    <div className="flex items-center gap-2 border-b border-ink-200 px-4 py-3"><span className="text-sm text-ink-600">Group by:</span><FilterSelect className="w-36" value="Tasks" onChange={() => {}} options={[{ value: "Tasks", label: "Tasks" }, { value: "Sections", label: "Sections" }]} /><Button variant="outline" size="icon"><Maximize2 size={15} /></Button><div className="ml-auto flex gap-2"><Button variant="outline" size="sm">Incomplete Tasks</Button><Button variant="outline" size="sm">Due Date</Button><Button variant="outline" size="sm">All Users</Button></div></div>
     <div className="grid grid-cols-[340px_1fr] border-b border-ink-200"><div className="px-4 py-4 font-semibold">Tasks</div><div><div className="border-b border-ink-200 py-1 text-center text-xs font-semibold">July 2026</div><div className="grid" style={{ gridTemplateColumns: "repeat(31, minmax(28px, 1fr))" }}>{days.map((day) => <div key={day} className="border-r border-ink-100 py-2 text-center text-[10px]">{day}</div>)}</div></div></div>
     {tasks.length === 0 ? <EmptyWorkspace label="No data to display" /> : tasks.map((task) => {
       const start = task.startDate ? new Date(task.startDate).getDate() : 1;
@@ -1810,7 +1829,7 @@ function CalendarWorkspace({ sections, onSelectTask }: { sections: ProjectSectio
   const offset = new Date(year, month, 1).getDay();
   const count = new Date(year, month + 1, 0).getDate();
   const cells = Array.from({ length: 42 }, (_, index) => index - offset + 1);
-  return <div className="bg-white"><div className="flex items-center gap-2 border-b border-ink-200 p-3"><Button variant="outline" size="icon" onClick={() => setCursor(new Date(year, month - 1, 1))}><ChevronLeft size={15} /></Button><b>{cursor.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</b><Button variant="outline" size="icon" onClick={() => setCursor(new Date(year, month + 1, 1))}><ChevronRight size={15} /></Button><Select className="ml-3 w-36"><option>Month</option><option>Week</option></Select><div className="ml-auto"><Button variant="outline" size="sm">View for: Task</Button></div></div><div className="grid grid-cols-7">{["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map((day) => <div key={day} className="border-b border-r border-ink-200 py-3 text-center text-xs font-semibold">{day}</div>)}{cells.map((day, index) => <div key={index} className="min-h-32 border-b border-r border-ink-200 p-2"><span className={cn("float-right text-xs font-semibold", day < 1 || day > count ? "text-ink-300" : "text-ink-800")}>{day < 1 ? new Date(year, month, day).getDate() : day > count ? day - count : day}</span>{day > 0 && day <= count && tasks.filter((task) => task.dueDate && new Date(task.dueDate).getFullYear() === year && new Date(task.dueDate).getMonth() === month && new Date(task.dueDate).getDate() === day).map((task) => <button key={task.id} onClick={() => onSelectTask(task)} className="mt-6 block w-full truncate rounded bg-brand-50 px-2 py-1 text-left text-xs text-brand-700">{task.name}</button>)}</div>)}</div></div>;
+  return <div className="bg-white"><div className="flex items-center gap-2 border-b border-ink-200 p-3"><Button variant="outline" size="icon" onClick={() => setCursor(new Date(year, month - 1, 1))}><ChevronLeft size={15} /></Button><b>{cursor.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</b><Button variant="outline" size="icon" onClick={() => setCursor(new Date(year, month + 1, 1))}><ChevronRight size={15} /></Button><FilterSelect className="ml-3 w-36" value="Month" onChange={() => {}} options={[{ value: "Month", label: "Month" }, { value: "Week", label: "Week" }]} /><div className="ml-auto"><Button variant="outline" size="sm">View for: Task</Button></div></div><div className="grid grid-cols-7">{["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map((day) => <div key={day} className="border-b border-r border-ink-200 py-3 text-center text-xs font-semibold">{day}</div>)}{cells.map((day, index) => <div key={index} className="min-h-32 border-b border-r border-ink-200 p-2"><span className={cn("float-right text-xs font-semibold", day < 1 || day > count ? "text-ink-300" : "text-ink-800")}>{day < 1 ? new Date(year, month, day).getDate() : day > count ? day - count : day}</span>{day > 0 && day <= count && tasks.filter((task) => task.dueDate && new Date(task.dueDate).getFullYear() === year && new Date(task.dueDate).getMonth() === month && new Date(task.dueDate).getDate() === day).map((task) => <button key={task.id} onClick={() => onSelectTask(task)} className="mt-6 block w-full truncate rounded bg-brand-50 px-2 py-1 text-left text-xs text-brand-700">{task.name}</button>)}</div>)}</div></div>;
 }
 
 function ActivityWorkspace({ workspace, users }: { workspace: ProjectWorkspace; users: CompanyUser[] }) {
@@ -1865,8 +1884,8 @@ function MemberDrawer({
     <Drawer open={open} onClose={onClose} title="Project team and access" width="max-w-2xl" footer={<><Button variant="outline" onClick={onClose}>Cancel</Button><Button onClick={add} disabled={!userId}>Add Member</Button></>}>
       <div className="space-y-5">
         <div className="flex gap-5 border-b border-ink-200"><span className="border-b-2 border-brand-600 px-1 pb-3 text-sm font-semibold text-brand-600">Active Members</span><span className="px-1 pb-3 text-sm text-ink-500">Inactive Members</span><span className="px-1 pb-3 text-sm text-ink-500">Default Project Access</span></div>
-        <Field label="Organization member"><Select value={userId} onChange={(e) => setUserId(e.target.value)}><option value="">Select a person</option>{available.map((user) => <option key={user.id} value={user.id}>{user.name} · {user.email}</option>)}</Select></Field>
-        <Field label="Project permission"><Select value={access} onChange={(e) => setAccess(e.target.value as typeof access)}><option value="view">Can view</option><option value="edit">Can edit</option><option value="manage">Can manage</option></Select></Field>
+        <Field label="Organization member"><FilterSelect value={userId} onChange={setUserId} options={[{ value: "", label: "Select a person" }, ...available.map((user) => ({ value: user.id, label: `${user.name} · ${user.email}` }))]} /></Field>
+        <Field label="Project permission"><FilterSelect value={access} onChange={(value) => setAccess(value as typeof access)} options={[{ value: "view", label: "Can view" }, { value: "edit", label: "Can edit" }, { value: "manage", label: "Can manage" }]} /></Field>
       </div>
     </Drawer>
   );
@@ -1974,6 +1993,50 @@ function ActivityTimeline({
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/** Shown to the assignee on an overdue task pending review, until they submit an explanation —
+ *  once submitted the backend rejects a second submission for the same review, so this just
+ *  optimistically hides itself rather than re-checking review state from the server. */
+function OverdueReasonBanner({ taskId }: { taskId: string }) {
+  const [reason, setReason] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit() {
+    if (!reason.trim()) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await api.submitOverdueReason(taskId, reason.trim());
+      setSubmitted(true);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not submit the reason");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (submitted) {
+    return (
+      <div className="m-4 rounded-lg border border-success-200 bg-success-50 px-3 py-2 text-sm text-success-700">
+        Thanks — your reason was sent for review.
+      </div>
+    );
+  }
+
+  return (
+    <div className="m-4 rounded-lg border border-warning-200 bg-warning-50 p-3">
+      <p className="text-sm font-semibold text-warning-800">This task is overdue and needs an explanation</p>
+      <p className="mt-0.5 text-xs text-warning-700">It won't show up on the resource planner again until this is reviewed.</p>
+      <Textarea value={reason} onChange={(event) => setReason(event.target.value)} rows={2} placeholder="What happened?" className="mt-2" />
+      {error && <p className="mt-1.5 text-xs text-danger-600">{error}</p>}
+      <div className="mt-2 flex justify-end">
+        <Button size="sm" onClick={submit} disabled={submitting || !reason.trim()}>{submitting ? "Submitting…" : "Submit reason"}</Button>
+      </div>
     </div>
   );
 }
@@ -2334,22 +2397,45 @@ export function TaskWorkspaceDrawer({
         <div className="min-w-0 border-r border-ink-200">
           <div className="flex flex-wrap items-center gap-2 border-b border-ink-200 bg-surface-subtle px-4 py-3">
             <div className="w-40 shrink-0">
-              <Select value={localTask.status} onChange={(event) => updateTask({ status: event.target.value as WorkspaceTask["status"] })} disabled={!canEdit || saving}>
-                <option value="new_request">New Request</option>
-                <option value="in_progress">In Progress</option>
-                <option value="done">Completed</option>
-              </Select>
+              {localTask.status === "done" ? (
+                <div className="flex h-9 items-center rounded-lg border border-ink-200 bg-white px-3 text-xs">
+                  <Badge tone="green">Completed</Badge>
+                </div>
+              ) : (
+                <FilterSelect
+                  value={localTask.status}
+                  onChange={(value) => updateTask({ status: value as WorkspaceTask["status"] })}
+                  disabled={!canEdit || saving}
+                  options={[
+                    { value: "new_request", label: "New Request" },
+                    { value: "in_progress", label: "In Progress" },
+                    { value: "done", label: "Completed" },
+                  ]}
+                />
+              )}
             </div>
             <div className="w-32 shrink-0">
-              <Select value={localTask.priority} onChange={(event) => updateTask({ priority: event.target.value as WorkspaceTask["priority"] })} disabled={!canEdit || saving}>
-                <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="critical">Critical</option>
-              </Select>
+              <FilterSelect
+                value={localTask.priority}
+                onChange={(value) => updateTask({ priority: value as WorkspaceTask["priority"] })}
+                disabled={!canEdit || saving}
+                options={[
+                  { value: "low", label: "Low" },
+                  { value: "medium", label: "Medium" },
+                  { value: "high", label: "High" },
+                  { value: "critical", label: "Critical" },
+                ]}
+              />
             </div>
-            <div className="flex shrink-0 items-center gap-2 rounded-lg border border-ink-200 bg-white px-3">
+            <div className="flex shrink-0 items-center gap-2">
               <span className="text-xs font-medium text-ink-500">Progress</span>
-              <Select value={localTask.progress} onChange={(event) => updateTask({ progress: Number(event.target.value) })} disabled={!canEdit || saving} className="h-9 w-20 border-0 px-1 pr-6 shadow-none focus:ring-0">
-                {[0, 10, 25, 50, 75, 90, 100].map((value) => <option key={value} value={value}>{value}%</option>)}
-              </Select>
+              <FilterSelect
+                value={String(localTask.progress)}
+                onChange={(value) => updateTask({ progress: Number(value) })}
+                disabled={!canEdit || saving}
+                className="w-24"
+                options={[0, 10, 25, 50, 75, 90, 100].map((value) => ({ value: String(value), label: `${value}%` }))}
+              />
             </div>
             <div className="ml-auto flex items-center gap-2">
               {activeTimer && activeTimer.taskId !== taskId && <span className="hidden max-w-36 truncate text-[11px] font-medium text-warning-600 xl:inline" title={activeTimer.task?.name ?? "Another task"}>Running: {activeTimer.task ? `#${activeTimer.task.code} ${activeTimer.task.name}` : "another task"}</span>}
@@ -2366,6 +2452,9 @@ export function TaskWorkspaceDrawer({
           </div>
 
           {error && <div className="m-4 rounded-lg border border-danger-200 bg-danger-50 px-3 py-2 text-sm text-danger-700">{error}</div>}
+          {localTask.overdueReviewStatus === "pending_review" && localTask.assigneeId === currentUserId && (
+            <OverdueReasonBanner taskId={localTask.id} />
+          )}
 
           <div className="p-4">
             <Input
@@ -2399,11 +2488,11 @@ export function TaskWorkspaceDrawer({
                 </div>
               </TaskRow>
               <TaskRow icon={<List size={15} />} label="Task Type"><Input defaultValue={localTask.taskType ?? ""} placeholder="e.g. Development, Bug, Review" onBlur={(event) => updateTask({ taskType: event.target.value.trim() || null })} disabled={!canEdit} /></TaskRow>
-              <TaskRow icon={<WalletCards size={15} />} label="Billing Type"><Select value={localTask.billingType} onChange={(event) => updateTask({ billingType: event.target.value as "billable" | "non_billable" })} disabled={!canEdit}><option value="non_billable">Non-billable</option><option value="billable">Billable</option></Select></TaskRow>
-              <TaskRow icon={<Flag size={15} />} label="Milestone"><Select value={localTask.milestoneId ?? ""} onChange={(event) => updateTask({ milestoneId: event.target.value || null })} disabled={!canEdit}><option value="">Not selected</option>{milestones.map((milestone) => <option key={milestone.id} value={milestone.id}>{milestone.name}</option>)}</Select></TaskRow>
+              <TaskRow icon={<WalletCards size={15} />} label="Billing Type"><FilterSelect value={localTask.billingType} onChange={(value) => updateTask({ billingType: value as "billable" | "non_billable" })} disabled={!canEdit} options={[{ value: "non_billable", label: "Non-billable" }, { value: "billable", label: "Billable" }]} /></TaskRow>
+              <TaskRow icon={<Flag size={15} />} label="Milestone"><FilterSelect value={localTask.milestoneId ?? ""} onChange={(value) => updateTask({ milestoneId: value || null })} disabled={!canEdit} options={[{ value: "", label: "Not selected" }, ...milestones.map((milestone) => ({ value: milestone.id, label: milestone.name }))]} /></TaskRow>
               <TaskRow icon={<Tag size={15} />} label="Tags"><Input value={tagText} onChange={(event) => setTagText(event.target.value)} onBlur={() => updateTask({ tags: tagText.split(",").map((tag) => tag.trim()).filter(Boolean) })} placeholder="Bug, UI, Urgent" disabled={!canEdit} /></TaskRow>
               <TaskRow icon={<GanttChartSquare size={15} />} label="Dependencies">
-                <div className="space-y-2"><div className="flex flex-wrap gap-1.5">{localTask.dependencies.map((dependency) => <span key={dependency.id} className="flex items-center gap-1 rounded-md bg-ink-100 px-2 py-1 text-xs"><Link2 size={11} />#{dependency.dependsOnTask.code} {dependency.dependsOnTask.name}{canEdit && <button onClick={() => updateTask({ dependencyIds: dependencyIds.filter((id) => id !== dependency.dependsOnTaskId) })}><X size={11} /></button>}</span>)}{localTask.dependencies.length === 0 && <span className="text-xs text-ink-400">No dependencies</span>}</div>{canEdit && <Select value="" onChange={(event) => addDependency(event.target.value)}><option value="">+ Add dependency</option>{dependencyOptions.map((candidate) => <option key={candidate.id} value={candidate.id}>#{candidate.code} {candidate.name}</option>)}</Select>}</div>
+                <div className="space-y-2"><div className="flex flex-wrap gap-1.5">{localTask.dependencies.map((dependency) => <span key={dependency.id} className="flex items-center gap-1 rounded-md bg-ink-100 px-2 py-1 text-xs"><Link2 size={11} />#{dependency.dependsOnTask.code} {dependency.dependsOnTask.name}{canEdit && <button onClick={() => updateTask({ dependencyIds: dependencyIds.filter((id) => id !== dependency.dependsOnTaskId) })}><X size={11} /></button>}</span>)}{localTask.dependencies.length === 0 && <span className="text-xs text-ink-400">No dependencies</span>}</div>{canEdit && <FilterSelect value="" onChange={addDependency} options={[{ value: "", label: "+ Add dependency" }, ...dependencyOptions.map((candidate) => ({ value: candidate.id, label: `#${candidate.code} ${candidate.name}` }))]} />}</div>
               </TaskRow>
             </dl>
 
@@ -2459,16 +2548,18 @@ export function TaskWorkspaceDrawer({
                           </div>
                         </Field>
                         <Field label="Activity" className="mb-0">
-                          <Select value={logActivity} onChange={(event) => setLogActivity(event.target.value)}>
-                            <option value="">Select activity</option>
-                            {timerActivityOptions.map((activity) => <option key={activity} value={activity}>{activity}</option>)}
-                          </Select>
+                          <FilterSelect
+                            value={logActivity}
+                            onChange={setLogActivity}
+                            options={[{ value: "", label: "Select activity" }, ...timerActivityOptions.map((activity) => ({ value: activity, label: activity }))]}
+                          />
                         </Field>
                         <Field label="Billing" className="mb-0">
-                          <Select value={logBillable ? "billable" : "non_billable"} onChange={(event) => setLogBillable(event.target.value === "billable")}>
-                            <option value="non_billable">Non-billable</option>
-                            <option value="billable">Billable</option>
-                          </Select>
+                          <FilterSelect
+                            value={logBillable ? "billable" : "non_billable"}
+                            onChange={(value) => setLogBillable(value === "billable")}
+                            options={[{ value: "non_billable", label: "Non-billable" }, { value: "billable", label: "Billable" }]}
+                          />
                         </Field>
                       </div>
                       <Field label="Description" className="mb-0 mt-2.5">
@@ -2621,7 +2712,7 @@ export function TimerStopDialog({
       </header>
       <div className="space-y-3 p-4">
         <div className="grid grid-cols-2 gap-3"><Summary label="Project Name" value={projectName} /><Summary label="Task Name" value={taskName} /></div>
-        <Field label="Select activity" required><Select value={activityType} onChange={(event) => setActivityType(event.target.value)} disabled={busy}><option value="">Select activity</option>{timerActivityOptions.map((activity) => <option key={activity} value={activity}>{activity}</option>)}</Select></Field>
+        <Field label="Select activity" required><FilterSelect value={activityType} onChange={setActivityType} disabled={busy} options={[{ value: "", label: "Select activity" }, ...timerActivityOptions.map((activity) => ({ value: activity, label: activity }))]} /></Field>
         <Field label="Correct work duration" required>
           <div className="flex flex-wrap items-center gap-2">
             <label className="flex h-10 min-w-[96px] flex-1 items-center rounded-lg border border-ink-200 bg-white px-3 focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-100">

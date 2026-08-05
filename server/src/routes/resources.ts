@@ -4,6 +4,7 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireCompany, requirePermission } from "../middleware/auth.js";
 import type { AuthTokenPayload } from "../lib/jwt.js";
+import { createNotification } from "../lib/chat.js";
 
 export const resourcesRouter = Router();
 resourcesRouter.use(requireAuth, requireCompany);
@@ -64,33 +65,55 @@ function minutesBetween(startTime: string, endTime: string, breakMinutes: number
 function durationSeconds(entry: { durationSeconds: number; startedAt: Date; endedAt: Date | null }) {
   return entry.endedAt ? entry.durationSeconds : Math.max(entry.durationSeconds, Math.floor((Date.now() - entry.startedAt.getTime()) / 1000));
 }
-/** Fallback (auto-split) planned minutes for one task on one day: its estimate divided evenly
- *  across the working days in its date span. Once a task is done, it's excluded from this
- *  fallback for any date at or after completion — otherwise a task finished early keeps
- *  "ghost" planned hours on future days that haven't happened yet. Any date that already has an
- *  explicit TaskDailyAllocation row is untouched by this rule (handled by the caller, which
- *  prefers the stored row before ever reaching this fallback). */
-function fallbackPlannedMinutes(
-  task: { estimatedMinutes: number; status: string; completedAt: Date | null },
-  span: string[],
-  date: string,
-  timezone: string,
-) {
-  if (!span.includes(date)) return 0;
-  if (task.status === "done" && task.completedAt) {
-    const completedKey = localDateKey(task.completedAt, timezone);
-    if (date >= completedKey) return 0;
-  }
-  return Math.round(task.estimatedMinutes / Math.max(1, span.length));
+/** A task's remaining plannable minutes: its estimate minus everything ever logged against it,
+ *  live-recomputed and never stored. There is no per-day auto-split any more — a task simply has
+ *  N minutes remaining, and the person decides day-by-day how much of that they're doing today
+ *  via an explicit TaskDailyAllocation row. */
+function remainingMinutesFor(task: { estimatedMinutes: number; trackedSeconds: number }) {
+  return Math.max(0, task.estimatedMinutes - Math.round(task.trackedSeconds / 60));
 }
-function taskDateSpan(task: { startDate: Date | null; dueDate: Date | null }, timezone: string, workingDays: number[]) {
-  const start = task.startDate ? localDateKey(task.startDate, timezone) : task.dueDate ? localDateKey(task.dueDate, timezone) : null;
-  const end = task.dueDate ? localDateKey(task.dueDate, timezone) : task.startDate ? localDateKey(task.startDate, timezone) : null;
-  if (!start || !end) return [];
-  const first = start <= end ? start : end;
-  const last = start <= end ? end : start;
-  const dates = keysBetween(first, last, 740).filter((key) => workingDays.includes(dateFromKey(key).getUTCDay()));
-  return dates.length ? dates : [last];
+
+/** Resolves who should review a task that's gone overdue: the task's creator (unless that's the
+ *  assignee themselves, which wouldn't be a meaningful approval), falling back to the assignee's
+ *  team lead, falling back to any active company_super_admin in the tenant. Mirrors the
+ *  team-lead lookup pattern already used by canEditTaskForProject in routes/projects.ts. */
+async function resolveOverdueApprover(tid: string, task: { createdBy: string | null; assigneeId: string | null }): Promise<string | null> {
+  if (task.createdBy && task.createdBy !== task.assigneeId) {
+    const creator = await prisma.companyUser.findFirst({ where: { id: task.createdBy, tenantId: tid, accountStatus: "active" }, select: { id: true } });
+    if (creator) return creator.id;
+  }
+  if (task.assigneeId) {
+    const membership = await prisma.teamMember.findFirst({
+      where: { userId: task.assigneeId, team: { tenantId: tid, leadUserId: { not: null } } },
+      select: { team: { select: { leadUserId: true } } },
+    });
+    if (membership?.team.leadUserId) return membership.team.leadUserId;
+  }
+  const superAdmin = await prisma.companyUser.findFirst({ where: { tenantId: tid, accountStatus: "active", roles: { has: "company_super_admin" } }, select: { id: true } });
+  return superAdmin?.id ?? null;
+}
+
+/** Lazily flags tasks that are overdue (past dueDate, not done, never previously flagged) —
+ *  called wherever the planner loads a batch of tasks, since there's no cron/job runner in this
+ *  codebase. Idempotent: only tasks with overdueReviewStatus === null are considered, so a task
+ *  already under review or already resolved-and-still-overdue isn't re-flagged/re-notified every
+ *  page load. Mutates ProjectTask.overdueReviewStatus and creates the TaskOverdueReview row +
+ *  notification for whichever ones just crossed the line. */
+async function flagNewlyOverdueTasks(tid: string, tasks: { id: string; dueDate: Date | null; status: string; createdBy: string | null; assigneeId: string | null; overdueReviewStatus: string | null }[]) {
+  const today = new Date();
+  today.setUTCHours(0, 0, 0, 0);
+  const candidates = tasks.filter((task) => task.overdueReviewStatus === null && task.status !== "done" && task.dueDate && task.dueDate < today);
+  if (!candidates.length) return;
+  for (const task of candidates) {
+    const approverId = await resolveOverdueApprover(tid, task);
+    if (!approverId) continue;
+    const updated = await prisma.projectTask.updateMany({ where: { id: task.id, tenantId: tid, overdueReviewStatus: null }, data: { overdueReviewStatus: "pending_review" } });
+    if (updated.count === 0) continue; // lost the race to a concurrent request; skip duplicate create/notify
+    await prisma.taskOverdueReview.create({
+      data: { tenantId: tid, taskId: task.id, originalDueDate: task.dueDate as Date, approverId, status: "pending_review" },
+    });
+    await createNotification({ tenantId: tid, userId: approverId, type: "task_overdue_review", title: "A task went overdue and needs review", channelId: undefined });
+  }
 }
 
 const plannerQuery = z.object({
@@ -144,7 +167,7 @@ resourcesRouter.get("/planner", requirePermission("resources", "view"), async (r
   const [tasks, entries, allocations] = await Promise.all([
     prisma.projectTask.findMany({
       where: { tenantId: tid, assigneeId: { in: ids }, project: { isArchived: false } },
-      select: { id: true, assigneeId: true, name: true, status: true, progress: true, estimatedMinutes: true, startDate: true, dueDate: true, completedAt: true, project: { select: { id: true, name: true } } },
+      select: { id: true, assigneeId: true, name: true, status: true, progress: true, estimatedMinutes: true, trackedSeconds: true, startDate: true, dueDate: true, completedAt: true, createdBy: true, overdueReviewStatus: true, project: { select: { id: true, name: true } } },
       orderBy: { dueDate: "asc" },
     }),
     prisma.taskTimeEntry.findMany({
@@ -156,34 +179,30 @@ resourcesRouter.get("/planner", requirePermission("resources", "view"), async (r
       select: { userId: true, taskId: true, date: true, plannedMinutes: true },
     }),
   ]);
+  await flagNewlyOverdueTasks(tid, tasks);
   const globalDays = rangeDays.map((date) => {
     const holiday = holidayByDate.get(date);
     const isWorkingDay = workingDays.includes(dateFromKey(date).getUTCDay()) && (!holiday || holiday.optional);
     return { date, label: dateFromKey(date).toLocaleDateString("en-GB", { day: "2-digit", month: "short", timeZone: "UTC" }), isWorkingDay, isWeekend: !workingDays.includes(dateFromKey(date).getUTCDay()), holidayName: holiday?.name ?? null, capacityMinutes: isWorkingDay ? capacityMinutes : 0 };
   });
-  const taskDays = new Map<string, string[]>();
-  tasks.forEach((task) => taskDays.set(task.id, taskDateSpan(task, company.timezone, workingDays)));
+  // Plannable = not done, not currently under overdue review, and has minutes remaining. A task
+  // that's done or fully-logged or awaiting an overdue resolution simply isn't offered to plan
+  // against any more — no auto-split guess is ever substituted for a day with no explicit
+  // allocation.
+  const plannableTasks = tasks.filter((task) => task.status !== "done" && task.overdueReviewStatus === null && remainingMinutesFor(task) > 0);
   const allocationByUserDateTask = new Map<string, number>();
   allocations.forEach((row) => allocationByUserDateTask.set(`${row.userId}|${localDateKey(row.date, company.timezone)}|${row.taskId}`, row.plannedMinutes));
 
   let employees = users.map((user) => {
-    const userTasks = tasks.filter((task) => task.assigneeId === user.id);
-    const incompleteTaskCount = userTasks.filter((task) => task.status !== "done").length;
+    const userTasks = plannableTasks.filter((task) => task.assigneeId === user.id);
+    const incompleteTaskCount = tasks.filter((task) => task.assigneeId === user.id && task.status !== "done").length;
     const projectIds = new Set([...user.projectMemberships.map((item) => item.projectId), ...user.projectsOwned.map((item) => item.id), ...user.projectsManaged.map((item) => item.id), ...userTasks.map((task) => task.project.id)]);
     const dayValues = globalDays.map((day) => {
-      const scheduledTasks = userTasks.filter((task) => {
-        const explicit = allocationByUserDateTask.get(`${user.id}|${day.date}|${task.id}`);
-        if (explicit !== undefined) return explicit > 0;
-        return taskDays.get(task.id)?.includes(day.date) ?? false;
-      });
-      const plannedMinutes = scheduledTasks.reduce((total, task) => {
-        const explicit = allocationByUserDateTask.get(`${user.id}|${day.date}|${task.id}`);
-        if (explicit !== undefined) return total + explicit;
-        return total + fallbackPlannedMinutes(task, taskDays.get(task.id) ?? [], day.date, company.timezone);
-      }, 0);
+      const scheduledTasks = userTasks.filter((task) => (allocationByUserDateTask.get(`${user.id}|${day.date}|${task.id}`) ?? 0) > 0);
+      const plannedMinutes = scheduledTasks.reduce((total, task) => total + (allocationByUserDateTask.get(`${user.id}|${day.date}|${task.id}`) ?? 0), 0);
       const dayEntries = entries.filter((entry) => entry.userId === user.id && localDateKey(entry.startedAt, company.timezone) === day.date);
       const trackedSeconds = dayEntries.reduce((total, entry) => total + durationSeconds(entry), 0);
-      const completedTaskCount = userTasks.filter((task) => task.completedAt && localDateKey(task.completedAt, company.timezone) === day.date).length;
+      const completedTaskCount = tasks.filter((task) => task.assigneeId === user.id && task.completedAt && localDateKey(task.completedAt, company.timezone) === day.date).length;
       const plannedTrackedSeconds = Math.min(trackedSeconds, plannedMinutes * 60);
       return {
         date: day.date, taskCount: scheduledTasks.length, completedTaskCount, plannedMinutes, trackedSeconds,
@@ -219,28 +238,31 @@ async function buildDayDetail(tid: string, employee: { id: string; name: string;
     prisma.company.findUniqueOrThrow({ where: { id: tid }, select: { timezone: true } }),
     prisma.workingSchedule.findFirst({ where: { tenantId: tid }, orderBy: { createdAt: "asc" } }),
     prisma.holiday.findFirst({ where: { tenantId: tid, date: { gte: dateValue, lt: new Date(`${addDays(date, 1)}T00:00:00.000Z`) } } }),
-    prisma.projectTask.findMany({ where: { tenantId: tid, assigneeId: employee.id, project: { isArchived: false } }, select: { id: true, code: true, name: true, status: true, progress: true, estimatedMinutes: true, trackedSeconds: true, startDate: true, dueDate: true, completedAt: true, project: { select: { id: true, name: true, key: true } } }, orderBy: { dueDate: "asc" } }),
+    prisma.projectTask.findMany({ where: { tenantId: tid, assigneeId: employee.id, project: { isArchived: false } }, select: { id: true, code: true, name: true, status: true, progress: true, estimatedMinutes: true, trackedSeconds: true, startDate: true, dueDate: true, completedAt: true, createdBy: true, overdueReviewStatus: true, project: { select: { id: true, name: true, key: true } } }, orderBy: { dueDate: "asc" } }),
     prisma.taskTimeEntry.findMany({ where: { tenantId: tid, userId: employee.id, startedAt: { gte: new Date(`${addDays(date, -1)}T00:00:00.000Z`), lt: new Date(`${addDays(date, 2)}T00:00:00.000Z`) } }, include: { task: { select: { id: true, code: true, name: true, status: true, progress: true } }, project: { select: { id: true, name: true, key: true } } }, orderBy: { startedAt: "asc" } }),
     prisma.taskDailyAllocation.findMany({ where: { tenantId: tid, userId: employee.id, date: dateValue }, select: { taskId: true, plannedMinutes: true, note: true } }),
   ]);
+  await flagNewlyOverdueTasks(tid, tasks.map((task) => ({ ...task, assigneeId: employee.id })));
   const workingDays = schedule?.workingDays ?? [1, 2, 3, 4, 5];
   const dailyMinutes = schedule ? minutesBetween(schedule.startTime, schedule.endTime, schedule.breakMinutes) : 480;
   const relevantEntries = entries.filter((entry) => localDateKey(entry.startedAt, company.timezone) === date);
   const loggedTaskIds = new Set(relevantEntries.map((entry) => entry.taskId));
   const allocationByTaskId = new Map(dayAllocations.map((row) => [row.taskId, row]));
+  // Any open, plannable task is offered on the day panel (not just ones with an existing log or
+  // allocation today) so the person can pick from their full open workload — plus any task that
+  // was actually logged/allocated today even if it's since gone overdue-under-review or done, so
+  // history for this specific date doesn't disappear.
   const relevantTasks = tasks.filter((task) =>
-    taskDateSpan(task, company.timezone, workingDays).includes(date) ||
+    (task.status !== "done" && task.overdueReviewStatus === null && remainingMinutesFor(task) > 0) ||
     loggedTaskIds.has(task.id) ||
-    allocationByTaskId.has(task.id) ||
-    (task.completedAt && localDateKey(task.completedAt, company.timezone) === date));
+    allocationByTaskId.has(task.id));
   const tasksWithPlan = relevantTasks.map((task) => {
-    const span = taskDateSpan(task, company.timezone, workingDays);
     const explicit = allocationByTaskId.get(task.id);
     return {
       ...task,
-      plannedMinutes: explicit ? explicit.plannedMinutes : fallbackPlannedMinutes(task, span, date, company.timezone),
+      remainingMinutes: remainingMinutesFor(task),
+      plannedMinutes: explicit?.plannedMinutes ?? 0,
       hasExplicitAllocation: Boolean(explicit),
-      withinTaskWindow: span.includes(date),
       allocationNote: explicit?.note ?? null,
     };
   });
@@ -329,4 +351,91 @@ resourcesRouter.put("/planner/:employeeId/day/:date/allocations", requirePermiss
   });
 
   res.json(await buildDayDetail(tid, employee, dateParam));
+});
+
+const overdueReasonSchema = z.object({ reason: z.string().trim().min(1).max(2000) });
+resourcesRouter.post("/tasks/:taskId/overdue-reason", requirePermission("tasks", "edit"), async (req, res) => {
+  const parsed = overdueReasonSchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.issues.map((issue) => issue.message).join(", ") }); return; }
+  const tid = tenantId(req), uid = userId(req), taskId = req.params.taskId as string;
+  const task = await prisma.projectTask.findFirst({ where: { id: taskId, tenantId: tid }, select: { id: true, assigneeId: true } });
+  if (!task) { res.status(404).json({ error: "Task not found" }); return; }
+  if (task.assigneeId !== uid) { res.status(403).json({ error: "Only the assignee can submit an overdue reason" }); return; }
+  const review = await prisma.taskOverdueReview.findFirst({ where: { tenantId: tid, taskId, status: "pending_review", reason: null }, orderBy: { triggeredAt: "desc" } });
+  if (!review) { res.status(400).json({ error: "No pending overdue review awaiting a reason for this task" }); return; }
+  const updated = await prisma.taskOverdueReview.update({
+    where: { id: review.id },
+    data: { reason: parsed.data.reason, reasonSubmittedAt: new Date(), reasonSubmittedBy: uid },
+  });
+  await createNotification({ tenantId: tid, userId: review.approverId, type: "task_overdue_review", title: "An overdue task's reason was submitted for your review", actorId: uid });
+  res.json({ review: updated });
+});
+
+resourcesRouter.get("/overdue-reviews", requirePermission("tasks", "approve"), async (req, res) => {
+  const tid = tenantId(req), uid = userId(req);
+  const reviews = await prisma.taskOverdueReview.findMany({
+    where: { tenantId: tid, approverId: uid, status: "pending_review" },
+    include: {
+      task: {
+        select: {
+          id: true, code: true, name: true, estimatedMinutes: true, trackedSeconds: true, dueDate: true,
+          assignee: { select: { id: true, name: true, email: true } },
+          project: { select: { id: true, name: true, key: true } },
+        },
+      },
+    },
+    orderBy: { triggeredAt: "desc" },
+  });
+  res.json({ reviews });
+});
+
+const resolveReviewSchema = z.object({
+  newEstimatedMinutes: z.number().int().positive().optional(),
+  newDueDate: z.string().optional(),
+}).refine((data) => data.newEstimatedMinutes !== undefined || data.newDueDate !== undefined, { message: "Provide a new estimate or a new due date" });
+resourcesRouter.post("/overdue-reviews/:reviewId/resolve", requirePermission("tasks", "approve"), async (req, res) => {
+  const parsed = resolveReviewSchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.issues.map((issue) => issue.message).join(", ") }); return; }
+  const tid = tenantId(req), uid = userId(req), reviewId = req.params.reviewId as string;
+  const review = await prisma.taskOverdueReview.findFirst({
+    where: { id: reviewId, tenantId: tid, status: "pending_review" },
+    include: { task: { select: { id: true, assigneeId: true, trackedSeconds: true } } },
+  });
+  if (!review) { res.status(404).json({ error: "Pending overdue review not found" }); return; }
+  // Routed approver OR anyone with tasks:approve (already enforced by requirePermission) can
+  // resolve — the routed-approver check here is a no-op safety net per the plan, not an
+  // additional restriction, since requirePermission already gates on tasks:approve.
+  const { newEstimatedMinutes, newDueDate } = parsed.data;
+  if (newEstimatedMinutes !== undefined) {
+    const trackedMinutes = Math.round(review.task.trackedSeconds / 60);
+    if (newEstimatedMinutes <= trackedMinutes) {
+      res.status(400).json({ error: "New estimate must exceed time already logged on this task" });
+      return;
+    }
+  }
+  const [, updatedReview] = await prisma.$transaction([
+    prisma.projectTask.update({
+      where: { id: review.taskId },
+      data: {
+        ...(newEstimatedMinutes !== undefined ? { estimatedMinutes: newEstimatedMinutes } : {}),
+        ...(newDueDate !== undefined ? { dueDate: new Date(newDueDate) } : {}),
+        overdueReviewStatus: null,
+      },
+    }),
+    prisma.taskOverdueReview.update({
+      where: { id: review.id },
+      data: {
+        status: "resolved",
+        resolvedAt: new Date(),
+        resolvedBy: uid,
+        resolutionAction: newEstimatedMinutes !== undefined && newDueDate !== undefined ? "re_estimated_and_rescheduled" : newEstimatedMinutes !== undefined ? "re_estimated" : "rescheduled",
+        newEstimatedMinutes: newEstimatedMinutes ?? null,
+        newDueDate: newDueDate ? new Date(newDueDate) : null,
+      },
+    }),
+  ]);
+  if (review.task.assigneeId) {
+    await createNotification({ tenantId: tid, userId: review.task.assigneeId, type: "task_review_resolved", title: "Your overdue task was reviewed and is plannable again", actorId: uid });
+  }
+  res.json({ review: updatedReview });
 });

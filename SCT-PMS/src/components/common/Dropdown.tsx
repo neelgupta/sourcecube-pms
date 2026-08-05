@@ -121,6 +121,7 @@ export function FilterSelect({
   trailingIcon,
   className,
   closeSignal,
+  disabled,
 }: {
   value: string;
   options: SelectOption[];
@@ -130,6 +131,7 @@ export function FilterSelect({
   trailingIcon?: ReactNode;
   className?: string;
   closeSignal?: unknown;
+  disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [coords, setCoords] = useState<{ top: number; left: number; width: number; placement: "top" | "bottom" } | null>(null);
@@ -173,10 +175,13 @@ export function FilterSelect({
     <div className={cn("relative", className)}>
       <button
         ref={triggerRef}
+        type="button"
+        disabled={disabled}
         onClick={() => setOpen((v) => !v)}
         className={cn(
           "flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-ink-200 bg-white px-3 text-sm font-medium text-ink-700 transition-colors hover:bg-ink-100",
           open && "border-brand-500 ring-2 ring-brand-500/20",
+          disabled && "cursor-not-allowed opacity-50 hover:bg-white",
         )}
       >
         <span className="flex items-center gap-2 truncate">

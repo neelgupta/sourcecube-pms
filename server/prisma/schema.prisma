@@ -100,6 +100,7 @@ model Company {
   taskTimeEntries      TaskTimeEntry[]
   chatChannels         ChatChannel[]
   taskDailyAllocations TaskDailyAllocation[]
+  taskOverdueReviews   TaskOverdueReview[]
 }
 
 model PlatformUser {
@@ -404,6 +405,44 @@ enum NotificationType {
   announcement
   channel_invite
   message
+  task_overdue_review
+  task_review_resolved
+}
+
+enum OverdueReviewStatus {
+  pending_review
+  resolved
+}
+
+/// A task that blows past its dueDate while still incomplete gets flagged here instead of just
+/// quietly sitting on the resource planner with a stale due date. The assignee explains why,
+/// the explanation routes to an approver (task creator, falling back to the assignee's team
+/// lead, falling back to any company_super_admin), and only once the approver re-estimates the
+/// hours or reschedules the due date does the task become plannable again. Kept as a separate
+/// model (not fields on ProjectTask) so a task that goes overdue -> resolved -> overdue again
+/// keeps a full history instead of overwriting itself.
+model TaskOverdueReview {
+  id                  String              @id @default(cuid())
+  tenantId            String
+  company             Company             @relation(fields: [tenantId], references: [id])
+  taskId              String
+  task                ProjectTask         @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  triggeredAt         DateTime            @default(now())
+  originalDueDate     DateTime
+  reason              String?
+  reasonSubmittedAt   DateTime?
+  reasonSubmittedBy   String?
+  approverId          String
+  status              OverdueReviewStatus @default(pending_review)
+  resolvedAt          DateTime?
+  resolvedBy          String?
+  resolutionAction    String?
+  newEstimatedMinutes Int?
+  newDueDate          DateTime?
+  createdAt           DateTime            @default(now())
+
+  @@index([tenantId, taskId])
+  @@index([tenantId, approverId, status])
 }
 
 model Project {
@@ -507,48 +546,50 @@ model ProjectSection {
 }
 
 model ProjectTask {
-  id               String                @id @default(cuid())
-  tenantId         String
-  company          Company               @relation(fields: [tenantId], references: [id])
-  projectId        String
-  project          Project               @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  sectionId        String
-  section          ProjectSection        @relation(fields: [sectionId], references: [id], onDelete: Cascade)
-  parentTaskId     String?
-  parentTask       ProjectTask?          @relation("TaskHierarchy", fields: [parentTaskId], references: [id], onDelete: Cascade)
-  subtasks         ProjectTask[]         @relation("TaskHierarchy")
-  code             Int
-  name             String
-  description      String?
-  status           TaskStatus            @default(new_request)
-  priority         ProjectPriority       @default(medium)
-  taskType         String?
-  billingType      String                @default("non_billable")
-  tags             String[]              @default([])
-  startDate        DateTime?
-  dueDate          DateTime?
-  estimatedMinutes Int                   @default(0)
-  progress         Int                   @default(0)
-  completedAt      DateTime?
-  trackedMinutes   Int                   @default(0)
-  trackedSeconds   Int                   @default(0)
-  assigneeId       String?
-  assignee         CompanyUser?          @relation("TaskAssignee", fields: [assigneeId], references: [id])
-  milestoneId      String?
-  milestone        ProjectMilestone?     @relation(fields: [milestoneId], references: [id])
-  position         Int
-  createdBy        String?
-  updatedBy        String?
-  createdAt        DateTime              @default(now())
-  updatedAt        DateTime              @updatedAt
-  timeEntries      TaskTimeEntry[]
-  followers        TaskFollower[]
-  comments         TaskComment[]
-  checklistItems   TaskChecklistItem[]
-  attachments      TaskAttachment[]
-  dependencies     TaskDependency[]      @relation("TaskDependencies")
-  dependentTasks   TaskDependency[]      @relation("DependentTasks")
-  dailyAllocations TaskDailyAllocation[] @relation("TaskAllocations")
+  id                  String                @id @default(cuid())
+  tenantId            String
+  company             Company               @relation(fields: [tenantId], references: [id])
+  projectId           String
+  project             Project               @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sectionId           String
+  section             ProjectSection        @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  parentTaskId        String?
+  parentTask          ProjectTask?          @relation("TaskHierarchy", fields: [parentTaskId], references: [id], onDelete: Cascade)
+  subtasks            ProjectTask[]         @relation("TaskHierarchy")
+  code                Int
+  name                String
+  description         String?
+  status              TaskStatus            @default(new_request)
+  priority            ProjectPriority       @default(medium)
+  taskType            String?
+  billingType         String                @default("non_billable")
+  tags                String[]              @default([])
+  startDate           DateTime?
+  dueDate             DateTime?
+  estimatedMinutes    Int                   @default(0)
+  progress            Int                   @default(0)
+  completedAt         DateTime?
+  trackedMinutes      Int                   @default(0)
+  trackedSeconds      Int                   @default(0)
+  assigneeId          String?
+  assignee            CompanyUser?          @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  milestoneId         String?
+  milestone           ProjectMilestone?     @relation(fields: [milestoneId], references: [id])
+  position            Int
+  createdBy           String?
+  updatedBy           String?
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
+  timeEntries         TaskTimeEntry[]
+  followers           TaskFollower[]
+  comments            TaskComment[]
+  checklistItems      TaskChecklistItem[]
+  attachments         TaskAttachment[]
+  dependencies        TaskDependency[]      @relation("TaskDependencies")
+  dependentTasks      TaskDependency[]      @relation("DependentTasks")
+  dailyAllocations    TaskDailyAllocation[] @relation("TaskAllocations")
+  overdueReviewStatus OverdueReviewStatus?
+  overdueReviews      TaskOverdueReview[]
 
   @@unique([projectId, code])
   @@index([parentTaskId])

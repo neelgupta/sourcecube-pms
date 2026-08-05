@@ -461,6 +461,18 @@ chatRouter.post("/channels/:id/messages", requirePermission("chat", "create"), a
 
   const io = getChatIO();
   io?.to(`channel:${channelId}`).emit("message:new", message);
+  // Also notify each recipient's personal room with a lighter event, not just the channel room —
+  // a client only joins a channel's socket room while that specific chat is open (see
+  // MessageThread's channel:join), so anyone with a different channel open (or no chat page open
+  // at all) would otherwise never learn a new message arrived, leaving the sidebar unread badge
+  // stale until a reload. Deliberately a distinct event (not another message:new) so a client
+  // that's in both rooms — i.e. has this exact channel open — doesn't double-count/double-render.
+  const unreadEventRecipientIds = channel.type === "announcement"
+    ? (await prisma.companyUser.findMany({ where: { tenantId: tid, accountStatus: "active", id: { not: uid } }, select: { id: true } })).map((u) => u.id)
+    : channelRecipientIds;
+  for (const recipientId of unreadEventRecipientIds) {
+    io?.to(`user:${recipientId}`).emit("channel:unread", { channelId });
+  }
 
   const notificationBody = data.body ? plainTextBody(data.body).slice(0, 140) : undefined;
 
