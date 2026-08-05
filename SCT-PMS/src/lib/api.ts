@@ -52,6 +52,33 @@ import type {
   ChatChannelType,
 } from "@/types/tenant";
 
+export type SmtpSecurity = "TLS" | "SSL" | "NONE";
+export type SmtpEmailSettings = {
+  tenantId: string;
+  enabled: boolean;
+  host: string | null;
+  port: number | null;
+  security: SmtpSecurity;
+  username: string | null;
+  senderEmail: string | null;
+  senderName: string | null;
+  defaultRecipients: string[];
+  passwordSet: boolean;
+  lastTestedAt: string | null;
+  lastTestStatus: string | null;
+  lastError: string | null;
+};
+export type SmtpEmailSettingsInput = {
+  enabled: boolean;
+  host?: string | null;
+  port?: number | null;
+  security: SmtpSecurity;
+  username?: string | null;
+  password?: string | null;
+  senderEmail?: string | null;
+  senderName?: string | null;
+  defaultRecipients?: string[];
+};
 export const API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:4100/api";
 export const AUTH_FAILURE_EVENT = "sourcecube-pms:auth-failed";
 export const AUTH_FAILURE_STORAGE_KEY = "sourcecube-pms:last-auth-failure";
@@ -240,7 +267,7 @@ export const api = {
     request<{ user: CompanyUser }>(`/company-users/${id}/status`, { method: "PATCH", body: JSON.stringify({ accountStatus }) }),
   deleteCompanyUser: (id: string) => request<void>(`/company-users/${id}`, { method: "DELETE" }),
 
-  getSettings: () => request<{ company: Company }>("/settings"),
+  getSettings: () => request<{ company: Company; smtpSettings: SmtpEmailSettings | null }>("/settings"),
   updateSettings: (
     input: Partial<
       Pick<
@@ -265,7 +292,11 @@ export const api = {
         | "weekStart"
       >
     >,
-  ) => request<{ company: Company }>("/settings", { method: "PATCH", body: JSON.stringify(input) }),
+  ) => request<{ company: Company; smtpSettings: SmtpEmailSettings | null }>("/settings", { method: "PATCH", body: JSON.stringify(input) }),
+  updateSmtpSettings: (input: SmtpEmailSettingsInput) =>
+    request<{ smtpSettings: SmtpEmailSettings | null }>("/settings/smtp", { method: "PATCH", body: JSON.stringify(input) }),
+  testSmtpSettings: (recipientEmail?: string) =>
+    request<{ ok: true; smtpSettings: SmtpEmailSettings | null }>("/settings/smtp/test", { method: "POST", body: JSON.stringify({ recipientEmail }) }),
 
   listDepartmentsFull: () => request<{ departments: Department[] }>("/departments"),
   createDepartmentFull: (input: {

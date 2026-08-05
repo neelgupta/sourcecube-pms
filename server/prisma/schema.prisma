@@ -103,6 +103,22 @@ model Company {
   taskOverdueReviews   TaskOverdueReview[]
 }
 
+
+model SmtpEmailSetting {
+  tenantId          String   @id
+  company           Company  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  enabled           Boolean  @default(false)
+  host              String?
+  port              Int?
+  securityType          String   @default("TLS")
+  username          String?
+  password          String?
+  senderEmail       String?
+  senderName        String?
+  defaultRecipientEmails  String[] @default([])
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
 model PlatformUser {
   id           String @id @default(cuid())
   name         String
