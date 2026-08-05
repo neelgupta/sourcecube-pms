@@ -49,6 +49,8 @@ export async function createNotification(params: {
   body?: string;
   channelId?: string;
   messageId?: string;
+  taskId?: string;
+  projectId?: string;
   actorId?: string;
 }) {
   const notification = await prisma.notification.create({
@@ -60,6 +62,8 @@ export async function createNotification(params: {
       body: params.body,
       channelId: params.channelId,
       messageId: params.messageId,
+      taskId: params.taskId,
+      projectId: params.projectId,
       actorId: params.actorId,
     },
   });

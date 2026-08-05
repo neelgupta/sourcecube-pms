@@ -833,6 +833,8 @@ model Notification {
   body      String?
   channelId String?
   messageId String?
+  taskId    String?
+  projectId String?
   actorId   String?
   readAt    DateTime?
   createdAt DateTime         @default(now())

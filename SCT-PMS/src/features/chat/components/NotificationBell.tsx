@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useNavigate } from "react-router-dom";
-import { AtSign, Bell, BellRing, Megaphone, MessageCircle, UserPlus } from "lucide-react";
+import { useNavigate, type NavigateFunction } from "react-router-dom";
+import { AlertTriangle, AtSign, Bell, BellRing, CheckCircle2, Megaphone, MessageCircle, UserPlus } from "lucide-react";
 import { api } from "@/lib/api";
 import { getChatSocket } from "@/lib/chatSocket";
 import {
@@ -12,6 +12,7 @@ import {
 } from "@/lib/desktopNotifications";
 import { usePermission } from "@/lib/session";
 import { cn } from "@/lib/cn";
+import { projectWorkspacePath } from "@/features/projects/projectRoutes";
 import type { Notification, NotificationType } from "@/types/tenant";
 
 const typeIcons: Record<NotificationType, React.ReactNode> = {
@@ -19,7 +20,27 @@ const typeIcons: Record<NotificationType, React.ReactNode> = {
   announcement: <Megaphone size={14} className="text-warning-600" />,
   channel_invite: <UserPlus size={14} className="text-success-600" />,
   message: <MessageCircle size={14} className="text-info-600" />,
+  task_overdue_review: <AlertTriangle size={14} className="text-danger-600" />,
+  task_review_resolved: <CheckCircle2 size={14} className="text-success-600" />,
 };
+
+/** Sends the user to whatever the notification is actually about — a chat message/mention
+ *  stays in Chat, but a task-related notification (overdue review, resolution) has nothing to
+ *  do with chat and must land on that task's project workspace instead. Falls back to the
+ *  numeric-id project route if the project fetch fails, mirroring how the Resources page's
+ *  "open task" action already handles the same project-name-slug requirement. */
+async function goToNotificationTarget(navigate: NavigateFunction, notification: Notification) {
+  if (notification.taskId && notification.projectId) {
+    try {
+      const result = await api.getProject(notification.projectId);
+      navigate(`${projectWorkspacePath(result.project)}?task=${notification.taskId}`);
+    } catch {
+      navigate(`/projects/${notification.projectId}?task=${notification.taskId}`);
+    }
+    return;
+  }
+  navigate(notification.channelId ? `/chat?channel=${notification.channelId}` : "/chat");
+}
 
 
 function timeAgo(value: string) {
@@ -54,7 +75,7 @@ export function NotificationBell() {
         showDesktopNotification(notification.title, {
           body: notification.body ?? undefined,
           tag: notification.id,
-          onClick: () => navigate(notification.channelId ? `/chat?channel=${notification.channelId}` : "/chat"),
+          onClick: () => goToNotificationTarget(navigate, notification),
         });
       }
     }
@@ -106,7 +127,7 @@ export function NotificationBell() {
       setNotifications((current) => current.map((item) => (item.id === notification.id ? { ...item, readAt: new Date().toISOString() } : item)));
     }
     setOpen(false);
-    navigate(notification.channelId ? `/chat?channel=${notification.channelId}` : "/chat");
+    await goToNotificationTarget(navigate, notification);
   }
 
   async function markAllRead() {

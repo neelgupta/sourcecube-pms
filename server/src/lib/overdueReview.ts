@@ -51,7 +51,7 @@ export async function resolveOverdueApprover(tid: string, task: { createdBy: str
 export async function flagNewlyOverdueTasks(
   tid: string,
   timezone: string,
-  tasks: { id: string; dueDate: Date | null; status: string; createdBy: string | null; assigneeId: string | null; overdueReviewStatus: string | null }[],
+  tasks: { id: string; dueDate: Date | null; status: string; createdBy: string | null; assigneeId: string | null; overdueReviewStatus: string | null; project?: { id: string } | null }[],
 ) {
   const today = todayStartInTimezone(timezone);
   const candidates = tasks.filter((task) => task.overdueReviewStatus === null && task.status !== "done" && task.dueDate && task.dueDate < today);
@@ -64,6 +64,6 @@ export async function flagNewlyOverdueTasks(
     await prisma.taskOverdueReview.create({
       data: { tenantId: tid, taskId: task.id, originalDueDate: task.dueDate as Date, approverId, status: "pending_review" },
     });
-    await createNotification({ tenantId: tid, userId: approverId, type: "task_overdue_review", title: "A task went overdue and needs review", channelId: undefined });
+    await createNotification({ tenantId: tid, userId: approverId, type: "task_overdue_review", title: "A task went overdue and needs review", taskId: task.id, projectId: task.project?.id });
   }
 }

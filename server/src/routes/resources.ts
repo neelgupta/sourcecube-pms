@@ -376,7 +376,7 @@ resourcesRouter.post("/tasks/:taskId/overdue-reason", requirePermission("tasks",
   const parsed = overdueReasonSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.issues.map((issue) => issue.message).join(", ") }); return; }
   const tid = tenantId(req), uid = userId(req), taskId = req.params.taskId as string;
-  const task = await prisma.projectTask.findFirst({ where: { id: taskId, tenantId: tid }, select: { id: true, assigneeId: true } });
+  const task = await prisma.projectTask.findFirst({ where: { id: taskId, tenantId: tid }, select: { id: true, assigneeId: true, projectId: true } });
   if (!task) { res.status(404).json({ error: "Task not found" }); return; }
   if (task.assigneeId !== uid) { res.status(403).json({ error: "Only the assignee can submit an overdue reason" }); return; }
   const review = await prisma.taskOverdueReview.findFirst({ where: { tenantId: tid, taskId, status: "pending_review", reason: null }, orderBy: { triggeredAt: "desc" } });
@@ -385,7 +385,7 @@ resourcesRouter.post("/tasks/:taskId/overdue-reason", requirePermission("tasks",
     where: { id: review.id },
     data: { reason: parsed.data.reason, reasonSubmittedAt: new Date(), reasonSubmittedBy: uid },
   });
-  await createNotification({ tenantId: tid, userId: review.approverId, type: "task_overdue_review", title: "An overdue task's reason was submitted for your review", actorId: uid });
+  await createNotification({ tenantId: tid, userId: review.approverId, type: "task_overdue_review", title: "An overdue task's reason was submitted for your review", taskId: task.id, projectId: task.projectId, actorId: uid });
   res.json({ review: updated });
 });
 
@@ -418,7 +418,7 @@ resourcesRouter.post("/overdue-reviews/:reviewId/resolve", requirePermission("ta
   const tid = tenantId(req), uid = userId(req), reviewId = req.params.reviewId as string;
   const review = await prisma.taskOverdueReview.findFirst({
     where: { id: reviewId, tenantId: tid, status: "pending_review" },
-    include: { task: { select: { id: true, assigneeId: true, trackedSeconds: true } } },
+    include: { task: { select: { id: true, assigneeId: true, trackedSeconds: true, projectId: true } } },
   });
   if (!review) { res.status(404).json({ error: "Pending overdue review not found" }); return; }
   // Routed approver OR anyone with tasks:approve (already enforced by requirePermission) can
@@ -474,6 +474,8 @@ resourcesRouter.post("/overdue-reviews/:reviewId/resolve", requirePermission("ta
       title: newAssigneeId && newAssigneeId !== review.task.assigneeId
         ? "An overdue task was reassigned to you and is plannable"
         : "Your overdue task was reviewed and is plannable again",
+      taskId: review.task.id,
+      projectId: review.task.projectId,
       actorId: uid,
     });
   }
