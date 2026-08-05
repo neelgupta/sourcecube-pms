@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import { CalendarDays, CheckCircle2, ChevronDown, ChevronRight, Clock3, FolderKanban, Play, Search } from "lucide-react";
-import { Badge, Card, MemberAvatar, Select, Tabs, type TabItem } from "@/components/common";
+import { Badge, Card, DateRangePicker, FilterSelect, MemberAvatar, Tabs, type TabItem } from "@/components/common";
 import { api, ApiError } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { TaskWorkspaceDrawer, TimerStopDialog, type ActiveTaskTimer, type StopTimerInput, type StopTimerTarget } from "@/features/projects/ProjectDetailPage";
@@ -80,6 +80,18 @@ function formatSeconds(seconds: number) {
 }
 function isOverdue(task: AssignedTask) {
   return task.status !== "done" && Boolean(task.dueDate) && new Date(task.dueDate as string).getTime() < Date.now();
+}
+
+function assignedDateMatches(task: AssignedTask, filter: "" | "yesterday" | "today" | "tomorrow") {
+  if (!filter) return true;
+  if (!task.createdAt) return false;
+  const startOfDay = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const assignedDay = startOfDay(new Date(task.createdAt));
+  const today = startOfDay(new Date());
+  const diffDays = Math.round((assignedDay.getTime() - today.getTime()) / 86_400_000);
+  if (filter === "yesterday") return diffDays === -1;
+  if (filter === "today") return diffDays === 0;
+  return diffDays === 1;
 }
 
 export function AssignedTasksPage() {
@@ -215,11 +227,17 @@ export function AssignedTasksPage() {
     setOpenTask((current) => (current && current.id === next.id ? { ...current, ...next } : current));
   }
 
+  const [assignedQuickFilter, setAssignedQuickFilter] = useState<"" | "yesterday" | "today" | "tomorrow">("");
   const myTasks = useMemo(
-    () => (hasBroadVisibility ? tasks : tasks.filter((task) => task.assigneeId === currentUserId)),
-    [tasks, currentUserId, hasBroadVisibility],
+    // Subtasks belong under their parent task (see the drawer's Subtasks tab), not as their
+    // own row in this flat cross-project list — otherwise a task and its subtasks all show up
+    // as unrelated-looking sibling rows here even though there's no nesting UI to group them.
+    () => (hasBroadVisibility ? tasks : tasks.filter((task) => task.assigneeId === currentUserId))
+      .filter((task) => !task.parentTaskId)
+      .filter((task) => assignedDateMatches(task, assignedQuickFilter)),
+    [tasks, currentUserId, hasBroadVisibility, assignedQuickFilter],
   );
-  const overdueTasks = useMemo(() => tasks.filter(isOverdue), [tasks]);
+  const overdueTasks = useMemo(() => tasks.filter((task) => isOverdue(task) && !task.parentTaskId), [tasks]);
 
   const tabs: TabItem[] = [
     { id: "my-tasks", label: hasBroadVisibility ? "All Tasks" : "My Tasks", count: myTasks.length },
@@ -259,6 +277,8 @@ export function AssignedTasksPage() {
                   filterOptions={filterOptions}
                   onFiltersChange={setTaskFilters}
                   onClearFilters={() => setTaskFilters(defaultTaskFilters)}
+                  assignedQuickFilter={assignedQuickFilter}
+                  onAssignedQuickFilterChange={setAssignedQuickFilter}
                 />
               )}
               {tab === "overdue-tasks" && <OverdueTaskTable tasks={overdueTasks} onOpenTask={openTaskDrawer} />}
@@ -307,6 +327,8 @@ function TaskTable({
   filterOptions,
   onFiltersChange,
   onClearFilters,
+  assignedQuickFilter,
+  onAssignedQuickFilterChange,
 }: {
   tasks: AssignedTask[];
   emptyLabel: string;
@@ -320,6 +342,8 @@ function TaskTable({
   filterOptions: AssignedTaskFilterOptions;
   onFiltersChange: Dispatch<SetStateAction<AssignedTaskFilters>>;
   onClearFilters: () => void;
+  assignedQuickFilter: "" | "yesterday" | "today" | "tomorrow";
+  onAssignedQuickFilterChange: (value: "" | "yesterday" | "today" | "tomorrow") => void;
 }) {
   const activeFilterCount = Object.values(filters).filter(Boolean).length;
   const openCount = tasks.filter((task) => task.status !== "done").length;
@@ -349,47 +373,79 @@ function TaskTable({
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-400" />
           <input value={filters.search} onChange={(event) => setFilter("search", event.target.value)} placeholder="Search task, project, or project key" className="h-10 w-full rounded-lg border border-ink-200 bg-white pl-9 pr-3 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" />
         </div>
-        <Select value={filters.assigneeId} onChange={(event) => setFilter("assigneeId", event.target.value)}>
-          <option value="">All assignees</option>
-          <option value="unassigned">Unassigned</option>
-          {filterOptions.assignees.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}
-        </Select>
-        <Select value={filters.worklogUserId} onChange={(event) => setFilter("worklogUserId", event.target.value)}>
-          <option value="">All work logs</option>
-          {filterOptions.worklogUsers.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}
-        </Select>
-        <Select value={filters.projectId} onChange={(event) => setFilter("projectId", event.target.value)}>
-          <option value="">All projects</option>
-          {filterOptions.projects.map((project) => <option key={project.id} value={project.id}>{project.name} ({project.key})</option>)}
-        </Select>
-        <Select value={filters.status} onChange={(event) => setFilter("status", event.target.value as AssignedTaskFilters["status"])}>
-          <option value="">All statuses</option>
-          <option value="new_request">New Request</option>
-          <option value="in_progress">In Progress</option>
-          <option value="done">Done</option>
-        </Select>
-        <Select value={filters.priority} onChange={(event) => setFilter("priority", event.target.value as AssignedTaskFilters["priority"])}>
-          <option value="">All priorities</option>
-          <option value="critical">Critical</option>
-          <option value="high">High</option>
-          <option value="medium">Medium</option>
-          <option value="low">Low</option>
-        </Select>
-        <Select value={filters.worklog} onChange={(event) => setFilter("worklog", event.target.value as AssignedTaskFilters["worklog"])}>
-          <option value="">Any work log state</option>
-          <option value="with_logs">Has work logs</option>
-          <option value="without_logs">No work logs</option>
-          <option value="billable">Billable logs</option>
-          <option value="non_billable">Non-billable logs</option>
-        </Select>
-        <label className="flex h-10 items-center gap-2 rounded-lg border border-ink-200 bg-white px-3 text-xs text-ink-500">
-          <span className="shrink-0">Due from</span>
-          <input type="date" value={filters.dueFrom} onChange={(event) => setFilter("dueFrom", event.target.value)} className="min-w-0 flex-1 bg-transparent text-sm text-ink-700 outline-none" />
-        </label>
-        <label className="flex h-10 items-center gap-2 rounded-lg border border-ink-200 bg-white px-3 text-xs text-ink-500">
-          <span className="shrink-0">Due to</span>
-          <input type="date" value={filters.dueTo} onChange={(event) => setFilter("dueTo", event.target.value)} className="min-w-0 flex-1 bg-transparent text-sm text-ink-700 outline-none" />
-        </label>
+        <FilterSelect
+          value={filters.assigneeId}
+          onChange={(value) => setFilter("assigneeId", value)}
+          options={[
+            { value: "", label: "All assignees" },
+            { value: "unassigned", label: "Unassigned" },
+            ...filterOptions.assignees.map((user) => ({ value: user.id, label: user.name })),
+          ]}
+        />
+        <FilterSelect
+          value={filters.worklogUserId}
+          onChange={(value) => setFilter("worklogUserId", value)}
+          options={[
+            { value: "", label: "All work logs" },
+            ...filterOptions.worklogUsers.map((user) => ({ value: user.id, label: user.name })),
+          ]}
+        />
+        <FilterSelect
+          value={filters.projectId}
+          onChange={(value) => setFilter("projectId", value)}
+          options={[
+            { value: "", label: "All projects" },
+            ...filterOptions.projects.map((project) => ({ value: project.id, label: `${project.name} (${project.key})` })),
+          ]}
+        />
+        <FilterSelect
+          value={filters.status}
+          onChange={(value) => setFilter("status", value as AssignedTaskFilters["status"])}
+          options={[
+            { value: "", label: "All statuses" },
+            { value: "new_request", label: "New Request" },
+            { value: "in_progress", label: "In Progress" },
+            { value: "done", label: "Done" },
+          ]}
+        />
+        <FilterSelect
+          value={filters.priority}
+          onChange={(value) => setFilter("priority", value as AssignedTaskFilters["priority"])}
+          options={[
+            { value: "", label: "All priorities" },
+            { value: "critical", label: "Critical" },
+            { value: "high", label: "High" },
+            { value: "medium", label: "Medium" },
+            { value: "low", label: "Low" },
+          ]}
+        />
+        <FilterSelect
+          value={filters.worklog}
+          onChange={(value) => setFilter("worklog", value as AssignedTaskFilters["worklog"])}
+          options={[
+            { value: "", label: "Any work log state" },
+            { value: "with_logs", label: "Has work logs" },
+            { value: "without_logs", label: "No work logs" },
+            { value: "billable", label: "Billable logs" },
+            { value: "non_billable", label: "Non-billable logs" },
+          ]}
+        />
+        <FilterSelect
+          value={assignedQuickFilter}
+          onChange={(value) => onAssignedQuickFilterChange(value as typeof assignedQuickFilter)}
+          options={[
+            { value: "", label: "Any assigned date" },
+            { value: "yesterday", label: "Assigned yesterday" },
+            { value: "today", label: "Assigned today" },
+            { value: "tomorrow", label: "Assigned tomorrow" },
+          ]}
+        />
+        <DateRangePicker
+          from={filters.dueFrom}
+          to={filters.dueTo}
+          onChange={(range) => onFiltersChange((current) => ({ ...current, dueFrom: range.from ?? "", dueTo: range.to ?? "" }))}
+          placeholder="Due date range"
+        />
       </div>
 
       {tasks.length === 0 ? (
@@ -406,23 +462,50 @@ const gridHeaders = [
   "Created Date", "Start Date", "Completed Date",
 ];
 
-function TaskGrid({
-  tasks,
-  onOpenTask,
-  activeTimer,
-  now,
-  timerBusy,
-  canEditTimer,
-  onToggleTimer,
-}: {
-  tasks: AssignedTask[];
+type TaskGridRowProps = {
   onOpenTask: (task: AssignedTask) => void;
   activeTimer: ActiveTaskTimer | null;
   now: number;
   timerBusy: string | null;
   canEditTimer: boolean;
   onToggleTimer: (task: AssignedTask) => void;
-}) {
+};
+
+function TaskGridRow({ task, onOpenTask, activeTimer, now, timerBusy, canEditTimer, onToggleTimer }: TaskGridRowProps & { task: AssignedTask }) {
+  const lastComment = task.comments[task.comments.length - 1];
+  return (
+    <tr onClick={() => onOpenTask(task)} className="cursor-pointer bg-white transition-colors hover:bg-brand-50/40">
+      <td className="w-64 min-w-[16rem] max-w-[16rem] px-3 py-3"><div className="break-words font-medium text-ink-900">{task.name}</div><div className="mt-0.5 text-xs text-ink-400">#{task.code}</div></td>
+      <td className="whitespace-nowrap px-3 py-3"><div className="font-medium text-ink-800">{task.project.name}</div><div className="text-xs text-ink-400">{task.project.key}</div></td>
+      <td className="px-3 py-3">{task.assignee ? <div className="flex items-center gap-2 whitespace-nowrap"><MemberAvatar id={task.assigneeId ?? task.assignee.id} name={task.assignee.name} size="sm" status="active" className="ring-0" /><span>{task.assignee.name}</span></div> : <span className="text-ink-400">Unassigned</span>}</td>
+      <td className="whitespace-nowrap px-3 py-3"><span className={isOverdue(task) ? "font-medium text-danger-600" : "text-ink-600"}>{dateLabel(task.dueDate)}</span></td>
+      <td className="whitespace-nowrap px-3 py-3 text-ink-600">{task.section.name}</td>
+      <td className="whitespace-nowrap px-3 py-3 text-ink-600">{task.taskType ?? "—"}</td>
+      <td className="px-3 py-3"><Badge tone={statusTones[task.status]}>{statusLabels[task.status]}</Badge></td>
+      <td className="px-3 py-3">{task.tags.length ? <div className="flex flex-wrap gap-1">{task.tags.map((tag) => <Badge key={tag} tone="purple">{tag}</Badge>)}</div> : <span className="text-ink-400">—</span>}</td>
+      <td className="whitespace-nowrap px-3 py-3 text-ink-600">{task.progress}%</td>
+      <td className="whitespace-nowrap px-3 py-3"><div className="font-mono text-xs text-ink-700">{timeLabel(task.estimatedMinutes)}</div></td>
+      <td className="whitespace-nowrap px-3 py-3" onClick={(event) => event.stopPropagation()}>
+        <WorkLogCell
+          task={task}
+          canEdit={canEditTimer}
+          isRunning={activeTimer?.taskId === task.id}
+          runningSeconds={activeTimer?.taskId === task.id ? Math.max(0, Math.floor((now - new Date(activeTimer.startedAt).getTime()) / 1000)) : 0}
+          busy={timerBusy === task.id}
+          onToggle={() => onToggleTimer(task)}
+        />
+      </td>
+      <td className="px-3 py-3">{task.followers.length ? <div className="flex -space-x-2">{task.followers.slice(0, 3).map((follower) => <MemberAvatar key={follower.userId} id={follower.userId} name={follower.user.name} size="xs" status="active" />)}{task.followers.length > 3 && <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-ink-200 text-[10px] font-semibold text-ink-700 ring-2 ring-white">+{task.followers.length - 3}</span>}</div> : <span className="text-ink-400">—</span>}</td>
+      <td className="whitespace-nowrap px-3 py-3 text-ink-600">{task.assigner?.name ?? "—"}</td>
+      <td className="max-w-48 truncate px-3 py-3 text-ink-500" title={lastComment?.body}>{lastComment ? lastComment.body : "—"}</td>
+      <td className="whitespace-nowrap px-3 py-3 text-ink-600">{dateLabel(task.createdAt)}</td>
+      <td className="whitespace-nowrap px-3 py-3 text-ink-600">{dateLabel(task.startDate)}</td>
+      <td className="whitespace-nowrap px-3 py-3 text-ink-600">{dateLabel(task.completedAt)}</td>
+    </tr>
+  );
+}
+
+function TaskGrid({ tasks, ...rowProps }: TaskGridRowProps & { tasks: AssignedTask[] }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full border-collapse text-left text-sm">
@@ -430,39 +513,7 @@ function TaskGrid({
           <tr>{gridHeaders.map((header) => <th key={header} className="whitespace-nowrap px-3 py-3 font-semibold">{header}</th>)}</tr>
         </thead>
         <tbody className="divide-y divide-ink-100">
-          {tasks.map((task) => {
-            const lastComment = task.comments[task.comments.length - 1];
-            return (
-              <tr key={task.id} onClick={() => onOpenTask(task)} className="cursor-pointer bg-white transition-colors hover:bg-brand-50/40">
-                <td className="px-3 py-3"><div className="font-medium text-ink-900">{task.name}</div><div className="mt-0.5 text-xs text-ink-400">#{task.code}</div></td>
-                <td className="px-3 py-3"><div className="font-medium text-ink-800">{task.project.name}</div><div className="text-xs text-ink-400">{task.project.key}</div></td>
-                <td className="px-3 py-3">{task.assignee ? <div className="flex items-center gap-2 whitespace-nowrap"><MemberAvatar id={task.assigneeId ?? task.assignee.id} name={task.assignee.name} size="sm" status="active" className="ring-0" /><span>{task.assignee.name}</span></div> : <span className="text-ink-400">Unassigned</span>}</td>
-                <td className="whitespace-nowrap px-3 py-3"><span className={isOverdue(task) ? "font-medium text-danger-600" : "text-ink-600"}>{dateLabel(task.dueDate)}</span></td>
-                <td className="whitespace-nowrap px-3 py-3 text-ink-600">{task.section.name}</td>
-                <td className="whitespace-nowrap px-3 py-3 text-ink-600">{task.taskType ?? "—"}</td>
-                <td className="px-3 py-3"><Badge tone={statusTones[task.status]}>{statusLabels[task.status]}</Badge></td>
-                <td className="px-3 py-3">{task.tags.length ? <div className="flex flex-wrap gap-1">{task.tags.map((tag) => <Badge key={tag} tone="purple">{tag}</Badge>)}</div> : <span className="text-ink-400">—</span>}</td>
-                <td className="whitespace-nowrap px-3 py-3 text-ink-600">{task.progress}%</td>
-                <td className="whitespace-nowrap px-3 py-3"><div className="font-mono text-xs text-ink-700">{timeLabel(task.estimatedMinutes)}</div></td>
-                <td className="whitespace-nowrap px-3 py-3" onClick={(event) => event.stopPropagation()}>
-                  <WorkLogCell
-                    task={task}
-                    canEdit={canEditTimer}
-                    isRunning={activeTimer?.taskId === task.id}
-                    runningSeconds={activeTimer?.taskId === task.id ? Math.max(0, Math.floor((now - new Date(activeTimer.startedAt).getTime()) / 1000)) : 0}
-                    busy={timerBusy === task.id}
-                    onToggle={() => onToggleTimer(task)}
-                  />
-                </td>
-                <td className="px-3 py-3">{task.followers.length ? <div className="flex -space-x-2">{task.followers.slice(0, 3).map((follower) => <MemberAvatar key={follower.userId} id={follower.userId} name={follower.user.name} size="xs" status="active" />)}{task.followers.length > 3 && <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-ink-200 text-[10px] font-semibold text-ink-700 ring-2 ring-white">+{task.followers.length - 3}</span>}</div> : <span className="text-ink-400">—</span>}</td>
-                <td className="whitespace-nowrap px-3 py-3 text-ink-600">{task.assigner?.name ?? "—"}</td>
-                <td className="max-w-48 truncate px-3 py-3 text-ink-500" title={lastComment?.body}>{lastComment ? lastComment.body : "—"}</td>
-                <td className="whitespace-nowrap px-3 py-3 text-ink-600">{dateLabel(task.createdAt)}</td>
-                <td className="whitespace-nowrap px-3 py-3 text-ink-600">{dateLabel(task.startDate)}</td>
-                <td className="whitespace-nowrap px-3 py-3 text-ink-600">{dateLabel(task.completedAt)}</td>
-              </tr>
-            );
-          })}
+          {tasks.map((task) => <TaskGridRow key={task.id} task={task} {...rowProps} />)}
         </tbody>
       </table>
     </div>
@@ -503,7 +554,7 @@ function OverdueTaskTable({ tasks, onOpenTask }: { tasks: AssignedTask[]; onOpen
               </tr>
               {!collapsed[project.id] && projectTasks.map((task) => (
                 <tr key={task.id} onClick={() => onOpenTask(task)} className="cursor-pointer bg-white transition-colors hover:bg-brand-50/40">
-                  <td className="px-4 py-3 pl-8"><div className="font-medium text-ink-900">{task.name}</div><div className="mt-0.5 text-xs text-ink-400">#{task.code} · {task.section.name}</div></td>
+                  <td className="w-64 min-w-[16rem] max-w-[16rem] px-4 py-3 pl-8"><div className="break-words font-medium text-ink-900">{task.name}</div><div className="mt-0.5 text-xs text-ink-400">#{task.code} · {task.section.name}</div></td>
                   <td className="px-4 py-3">{task.assignee ? <div className="flex items-center gap-2"><MemberAvatar id={task.assigneeId ?? task.assignee.id} name={task.assignee.name} size="sm" status="active" className="ring-0" /><span>{task.assignee.name}</span></div> : <span className="text-ink-400">Unassigned</span>}</td>
                   <td className="px-4 py-3"><span className="font-medium text-danger-600">{dateLabel(task.dueDate)}</span></td>
                   <td className="px-4 py-3"><Badge tone={statusTones[task.status]}>{statusLabels[task.status]}</Badge></td>

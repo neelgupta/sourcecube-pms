@@ -25,7 +25,7 @@ export function DropdownMenu({
   align?: "left" | "right";
 }) {
   const [open, setOpen] = useState(false);
-  const [coords, setCoords] = useState<{ top: number; left: number } | null>(null);
+  const [coords, setCoords] = useState<{ top: number; left: number; placement: "top" | "bottom" } | null>(null);
   const triggerRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -34,9 +34,15 @@ export function DropdownMenu({
     function updatePosition() {
       const rect = triggerRef.current?.getBoundingClientRect();
       if (!rect) return;
+      const viewportPadding = 12;
+      const estimatedHeight = 40 + items.length * 38;
+      const spaceBelow = window.innerHeight - rect.bottom - viewportPadding;
+      const spaceAbove = rect.top - viewportPadding;
+      const placement = spaceBelow < estimatedHeight && spaceAbove > spaceBelow ? "top" : "bottom";
       setCoords({
-        top: rect.bottom + window.scrollY + 6,
-        left: align === "right" ? rect.right + window.scrollX : rect.left + window.scrollX,
+        top: placement === "top" ? rect.top - 6 : rect.bottom + 6,
+        left: align === "right" ? rect.right : rect.left,
+        placement,
       });
     }
     updatePosition();
@@ -64,13 +70,15 @@ export function DropdownMenu({
       {open && coords && createPortal(
         <div
           ref={menuRef}
+          data-portal-panel
           style={{
-            position: "absolute",
+            position: "fixed",
             top: coords.top,
             left: align === "right" ? undefined : coords.left,
             right: align === "right" ? window.innerWidth - coords.left : undefined,
+            transform: coords.placement === "top" ? "translateY(-100%)" : undefined,
           }}
-          className="z-50 min-w-52 overflow-hidden rounded-lg border border-ink-200 bg-white py-1 shadow-popover"
+          className="z-[200] min-w-52 overflow-hidden rounded-lg border border-ink-200 bg-white py-1 shadow-popover"
         >
           {items.map((item) => (
             <button
@@ -113,6 +121,7 @@ export function FilterSelect({
   trailingIcon,
   className,
   closeSignal,
+  disabled,
 }: {
   value: string;
   options: SelectOption[];
@@ -122,9 +131,10 @@ export function FilterSelect({
   trailingIcon?: ReactNode;
   className?: string;
   closeSignal?: unknown;
+  disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const [coords, setCoords] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [coords, setCoords] = useState<{ top: number; left: number; width: number; placement: "top" | "bottom" } | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const selected = options.find((o) => o.value === value);
@@ -136,7 +146,13 @@ export function FilterSelect({
     function updatePosition() {
       const rect = triggerRef.current?.getBoundingClientRect();
       if (!rect) return;
-      setCoords({ top: rect.bottom + 6, left: rect.left, width: rect.width });
+      const gap = 6;
+      const viewportPadding = 12;
+      const estimatedHeight = Math.min(300, 40 + options.length * 36);
+      const spaceBelow = window.innerHeight - rect.bottom - viewportPadding;
+      const spaceAbove = rect.top - viewportPadding;
+      const placement = spaceBelow < estimatedHeight && spaceAbove > spaceBelow ? "top" : "bottom";
+      setCoords({ top: placement === "top" ? rect.top - gap : rect.bottom + gap, left: rect.left, width: rect.width, placement });
     }
     updatePosition();
     function handleOutside(event: MouseEvent) {
@@ -159,10 +175,13 @@ export function FilterSelect({
     <div className={cn("relative", className)}>
       <button
         ref={triggerRef}
+        type="button"
+        disabled={disabled}
         onClick={() => setOpen((v) => !v)}
         className={cn(
           "flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-ink-200 bg-white px-3 text-sm font-medium text-ink-700 transition-colors hover:bg-ink-100",
           open && "border-brand-500 ring-2 ring-brand-500/20",
+          disabled && "cursor-not-allowed opacity-50 hover:bg-white",
         )}
       >
         <span className="flex items-center gap-2 truncate">
@@ -179,8 +198,9 @@ export function FilterSelect({
       {open && coords && createPortal(
         <div
           ref={panelRef}
-          style={{ position: "fixed", top: coords.top, left: coords.left, minWidth: coords.width }}
-          className="z-50 w-max max-w-xs overflow-hidden rounded-lg border border-ink-200 bg-white py-1 shadow-popover"
+          data-portal-panel
+          style={{ position: "fixed", top: coords.top, left: coords.left, minWidth: coords.width, transform: coords.placement === "top" ? "translateY(-100%)" : undefined }}
+          className="z-[200] w-max max-w-xs overflow-hidden rounded-lg border border-ink-200 bg-white py-1 shadow-popover"
         >
           {options.map((opt) => (
             <button

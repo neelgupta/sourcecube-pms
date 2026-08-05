@@ -39,6 +39,8 @@ import type {
   ProjectTaskFilterOptions,
   ResourcePlannerResponse,
   ResourcePlannerDayDetail,
+  TaskDailyAllocationEntry,
+  TaskOverdueReview,
   TeamProductivityReport,
   TeamMemberProductivityReport,
   ProjectPerformanceReport,
@@ -117,7 +119,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   const body = await res.json().catch(() => undefined);
   if (!res.ok) {
-    if (isAuthFailureStatus(res.status)) notifyAuthFailure();
+    if (isAuthFailureStatus(res.status) && path === "/auth/me") notifyAuthFailure();
     throw new ApiError((body as { error?: string })?.error ?? "Request failed", res.status, body);
   }
   return body as T;
@@ -190,6 +192,17 @@ export const api = {
   },
   getResourcePlannerDay: (employeeId: string, date: string) =>
     request<ResourcePlannerDayDetail>(`/resources/planner/${employeeId}/day?date=${encodeURIComponent(date)}`),
+  getResourcePlannerAllocations: (employeeId: string, start: string, end: string) =>
+    request<{ allocations: TaskDailyAllocationEntry[] }>(`/resources/planner/${employeeId}/allocations?start=${start}&end=${end}`),
+  saveResourcePlannerDayAllocations: (employeeId: string, date: string, allocations: Array<{ taskId: string; plannedMinutes: number; note?: string | null }>) =>
+    request<ResourcePlannerDayDetail>(`/resources/planner/${employeeId}/day/${date}/allocations`, { method: "PUT", body: JSON.stringify({ allocations }) }),
+  getWorkingHours: () =>
+    request<{ startTime: string; endTime: string; breakStartTime: string; breakEndTime: string }>("/resources/working-hours"),
+  submitOverdueReason: (taskId: string, reason: string) =>
+    request<{ review: TaskOverdueReview }>(`/resources/tasks/${taskId}/overdue-reason`, { method: "POST", body: JSON.stringify({ reason }) }),
+  listOverdueReviews: () => request<{ reviews: TaskOverdueReview[] }>("/resources/overdue-reviews"),
+  resolveOverdueReview: (reviewId: string, input: { newEstimatedMinutes?: number; newDueDate?: string; newAssigneeId?: string }) =>
+    request<{ review: TaskOverdueReview }>(`/resources/overdue-reviews/${reviewId}/resolve`, { method: "POST", body: JSON.stringify(input) }),
   getTeamProductivityReport: (input: { start: string; end: string; teamId?: string; search?: string }) => {
     const params = new URLSearchParams();
     Object.entries(input).forEach(([key, value]) => { if (value) params.set(key, value); });
@@ -210,7 +223,7 @@ export const api = {
     Object.entries(input).forEach(([key, value]) => { if (value) params.set(key, value); });
     return request<TimeUtilisationReport>(`/reports/time-utilisation?${params.toString()}`);
   },
-  saveSchedule: (input: { name?: string; workingDays: number[]; startTime: string; endTime: string; breakMinutes: number }) =>
+  saveSchedule: (input: { name?: string; workingDays: number[]; startTime: string; endTime: string; breakMinutes: number; breakStartTime?: string; breakEndTime?: string }) =>
     request<{ schedule: WorkingSchedule }>("/onboarding/schedules", { method: "POST", body: JSON.stringify(input) }),
 
   listDepartments: () => request<{ departments: Department[] }>("/onboarding/departments"),
@@ -521,7 +534,7 @@ export const api = {
   logTaskTime: (
     projectId: string,
     taskId: string,
-    input: { date: string; durationMinutes: number; activityType: string; billable: boolean; note: string },
+    input: { date: string; durationMinutes: number; startTime?: string; activityType: string; billable: boolean; note: string },
   ) =>
     request<{ entry: TaskTimeEntry; taskTrackedSeconds: number; projectTrackedSeconds: number }>(
       `/projects/${projectId}/tasks/${taskId}/timer/log`,
@@ -546,6 +559,7 @@ export const api = {
     input: {
       body?: string;
       parentMessageId?: string;
+      replyToMessageId?: string;
       isAnnouncement?: boolean;
       attachmentType?: "file" | "voice_note";
       attachmentUrl?: string;
@@ -574,7 +588,6 @@ export const api = {
     const res = await fetch(`${API_BASE}/chat/upload`, { method: "POST", credentials: "include", body: formData });
     const body = await res.json().catch(() => undefined);
     if (!res.ok) {
-      if (isAuthFailureStatus(res.status)) notifyAuthFailure();
       throw new ApiError((body as { error?: string })?.error ?? "Upload failed", res.status, body);
     }
     return body as { url: string; name: string; size: number };

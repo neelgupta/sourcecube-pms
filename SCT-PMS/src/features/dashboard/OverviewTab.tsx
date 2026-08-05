@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertCircle, CheckCircle2, ChevronRight, Clock, FolderOpen, ListChecks, Trophy } from "lucide-react";
-import { Card, CardBody, CardHeader, EmptyState, MemberAvatar } from "@/components/common";
+import { Card, CardBody, CardHeader, EmptyState, FilterSelect, MemberAvatar } from "@/components/common";
 import { cn } from "@/lib/cn";
 import { useSession } from "@/lib/session";
 import { formatHoursMinutes, isOverdue, useDashboardData } from "./useDashboardData";
@@ -86,18 +86,22 @@ export function OverviewTab() {
     [myTasks],
   );
 
+  const currentUserId = session?.user.kind === "company" ? session.user.id : undefined;
   const trackedToday = useMemo(() => {
     const today = new Date();
     return myTasks
       .map((task) => {
+        // A task's timeEntries include every collaborator's logged time, not just the current
+        // user's — "Today's Tracked Tasks" must only reflect what this specific person tracked,
+        // otherwise a shared task would double-count a teammate's hours onto this widget.
         const seconds = task.timeEntries
-          .filter((entry) => new Date(entry.startedAt).toDateString() === today.toDateString())
+          .filter((entry) => entry.userId === currentUserId && new Date(entry.startedAt).toDateString() === today.toDateString())
           .reduce((sum, entry) => sum + entry.durationSeconds, 0);
         return { task, seconds };
       })
       .filter((row) => row.seconds > 0)
       .sort((a, b) => b.seconds - a.seconds);
-  }, [myTasks]);
+  }, [myTasks, currentUserId]);
 
   const leaderboardRange = useMemo(() => presetRange(leaderboardPreset), [leaderboardPreset]);
   const activityRange = useMemo(() => presetRange(activityPreset), [activityPreset]);
@@ -166,15 +170,12 @@ export function OverviewTab() {
             <CardHeader
               title="Leaderboard"
               action={
-                <select
+                <FilterSelect
                   value={leaderboardPreset}
-                  onChange={(event) => setLeaderboardPreset(event.target.value as RangePreset)}
-                  className="h-9 rounded-lg border border-ink-200 bg-white px-2.5 text-xs font-medium text-ink-700"
-                >
-                  {rangePresetOptions.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label}</option>
-                  ))}
-                </select>
+                  onChange={(value) => setLeaderboardPreset(value as RangePreset)}
+                  options={rangePresetOptions}
+                  className="w-36"
+                />
               }
             />
             <CardBody className="pt-0">

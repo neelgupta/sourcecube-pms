@@ -23,6 +23,12 @@ const messageInclude = {
   reactions: { include: { user: { select: chatUserSelect } } },
   mentions: { select: { userId: true } },
   _count: { select: { replies: true } },
+  // Just enough of the quoted message to render an inline preview above the reply — not the
+  // full messageInclude shape (would recurse), and isDeleted/body together let the client show
+  // "Original message deleted" without a second round trip when the quoted message is gone.
+  replyToMessage: {
+    select: { id: true, body: true, isDeleted: true, authorId: true, author: { select: chatUserSelect } },
+  },
 } as const;
 
 async function activeAnnouncementMembers(tid: string, channelId: string) {
@@ -389,6 +395,7 @@ chatRouter.get("/channels/:id/messages", requirePermission("chat", "view"), asyn
 const createMessageSchema = z.object({
   body: z.string().trim().max(24000).optional(),
   parentMessageId: z.string().optional(),
+  replyToMessageId: z.string().optional(),
   isAnnouncement: z.boolean().optional(),
   attachmentType: z.enum(["file", "voice_note"]).optional(),
   attachmentUrl: z.string().optional(),
@@ -426,14 +433,28 @@ chatRouter.post("/channels/:id/messages", requirePermission("chat", "create"), a
     res.status(403).json({ error: "Not a member of this channel" });
     return;
   }
+  if (data.replyToMessageId) {
+    const replyTarget = await prisma.chatMessage.findFirst({ where: { id: data.replyToMessageId, channelId, tenantId: tid } });
+    if (!replyTarget) {
+      res.status(400).json({ error: "The message being replied to could not be found in this channel" });
+      return;
+    }
+  }
 
-  const mentionIds = data.body ? extractMentionIds(data.body) : [];
+  const channelRecipients = channel.type === "announcement"
+    ? []
+    : await prisma.chatChannelMember.findMany({ where: { channelId, userId: { not: uid } }, select: { userId: true } });
+  const channelRecipientIds = channelRecipients.map((recipient) => recipient.userId);
+  const wantsEveryoneMention = Boolean(data.body && /(^|\s)@everyone\b/i.test(data.body) && (channel.type === "group" || channel.type === "project"));
+  const directMentionIds = data.body ? extractMentionIds(data.body).filter((mentionUserId) => mentionUserId !== uid && (channel.type === "announcement" || channelRecipientIds.includes(mentionUserId))) : [];
+  const mentionIds = [...new Set(wantsEveryoneMention ? [...directMentionIds, ...channelRecipientIds] : directMentionIds)];
   const message = await prisma.chatMessage.create({
     data: {
       tenantId: tid,
       channelId,
       authorId: uid,
       parentMessageId: data.parentMessageId ?? null,
+      replyToMessageId: data.replyToMessageId ?? null,
       body: data.body?.trim() || null,
       attachmentType: data.attachmentType ?? null,
       attachmentUrl: data.attachmentUrl ?? null,
@@ -455,6 +476,18 @@ chatRouter.post("/channels/:id/messages", requirePermission("chat", "create"), a
 
   const io = getChatIO();
   io?.to(`channel:${channelId}`).emit("message:new", message);
+  // Also notify each recipient's personal room with a lighter event, not just the channel room —
+  // a client only joins a channel's socket room while that specific chat is open (see
+  // MessageThread's channel:join), so anyone with a different channel open (or no chat page open
+  // at all) would otherwise never learn a new message arrived, leaving the sidebar unread badge
+  // stale until a reload. Deliberately a distinct event (not another message:new) so a client
+  // that's in both rooms — i.e. has this exact channel open — doesn't double-count/double-render.
+  const unreadEventRecipientIds = channel.type === "announcement"
+    ? (await prisma.companyUser.findMany({ where: { tenantId: tid, accountStatus: "active", id: { not: uid } }, select: { id: true } })).map((u) => u.id)
+    : channelRecipientIds;
+  for (const recipientId of unreadEventRecipientIds) {
+    io?.to(`user:${recipientId}`).emit("channel:unread", { channelId });
+  }
 
   const notificationBody = data.body ? plainTextBody(data.body).slice(0, 140) : undefined;
 
@@ -475,8 +508,7 @@ chatRouter.post("/channels/:id/messages", requirePermission("chat", "create"), a
       await createNotification({ tenantId: tid, userId: target.id, type: "announcement", title: `${senderName} in ${channelContext}`, body: notificationBody, channelId, messageId: message.id, actorId: uid });
     }
   } else {
-    const recipients = await prisma.chatChannelMember.findMany({ where: { channelId, userId: { not: uid } }, select: { userId: true } });
-    for (const recipient of recipients) {
+    for (const recipient of channelRecipients) {
       if (mentionIds.includes(recipient.userId)) continue;
       await createNotification({ tenantId: tid, userId: recipient.userId, type: "message", title: messageTitle, body: notificationBody, channelId, messageId: message.id, actorId: uid });
     }
@@ -538,8 +570,7 @@ chatRouter.delete("/messages/:id", requirePermission("chat", "create"), async (r
     res.status(404).json({ error: "Message not found" });
     return;
   }
-  const roles = await getCompanyUserRoles(tid, uid);
-  if (message.authorId !== uid && !roles.includes("company_super_admin")) {
+  if (message.authorId !== uid) {
     res.status(403).json({ error: "You can only delete your own messages" });
     return;
   }
@@ -549,8 +580,9 @@ chatRouter.delete("/messages/:id", requirePermission("chat", "create"), async (r
   res.status(204).end();
 });
 
-chatRouter.patch("/messages/:id/pin", requirePermission("chat", "manage"), async (req, res) => {
+chatRouter.patch("/messages/:id/pin", requirePermission("chat", "create"), async (req, res) => {
   const tid = tenantId(req);
+  const uid = userId(req);
   const messageId = req.params.id as string;
   const parsed = z.object({ isPinned: z.boolean() }).safeParse(req.body);
   if (!parsed.success) {
@@ -560,6 +592,10 @@ chatRouter.patch("/messages/:id/pin", requirePermission("chat", "manage"), async
   const message = await prisma.chatMessage.findFirst({ where: { id: messageId, tenantId: tid } });
   if (!message) {
     res.status(404).json({ error: "Message not found" });
+    return;
+  }
+  if (!(await isChannelMember(tid, message.channelId, uid))) {
+    res.status(403).json({ error: "Not a member of this channel" });
     return;
   }
   const updated = await prisma.chatMessage.update({ where: { id: messageId }, data: { isPinned: parsed.data.isPinned }, include: messageInclude });

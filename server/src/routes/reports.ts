@@ -32,11 +32,34 @@ function localDateKey(value: Date, timezone: string) {
     return `${get("year")}-${get("month")}-${get("day")}`;
   } catch { return value.toISOString().slice(0, 10); }
 }
+/** A timer left running (endedAt still null — abandoned rather than stopped) counts elapsed
+ *  time up to "now," which can be days or weeks after startedAt if nobody ever closed it. Left
+ *  unclamped, a single forgotten timer balloons a report's trackedSeconds far past what was
+ *  actually worked, which is how utilisation ends up reading 300%+ for one person. Capping the
+ *  live elapsed time at 24h caps the damage from any one stale entry to "a full day," which is
+ *  still generous but no longer distorts the report by orders of magnitude. */
+const MAX_RUNNING_TIMER_SECONDS = 24 * 60 * 60;
 function effectiveDuration(entry: { durationSeconds: number; startedAt: Date; endedAt: Date | null }) {
-  return entry.endedAt ? entry.durationSeconds : Math.max(entry.durationSeconds, Math.floor((Date.now() - entry.startedAt.getTime()) / 1000));
+  if (entry.endedAt) return entry.durationSeconds;
+  const elapsed = Math.floor((Date.now() - entry.startedAt.getTime()) / 1000);
+  return Math.max(entry.durationSeconds, Math.min(elapsed, MAX_RUNNING_TIMER_SECONDS));
 }
-function averageProgress(tasks: Array<{ progress: number }>) {
-  return tasks.length ? Math.round(tasks.reduce((sum, task) => sum + task.progress, 0) / tasks.length) : 0;
+/** A plain average of task.progress treats a 5-minute task and a 3-week epic as equally
+ *  significant, so whichever tasks happen to overlap a given day/range swings the number
+ *  around even when no real work changed. Weighting by estimatedMinutes fixes that; tasks
+ *  with no estimate (0) fall back to a 1-minute floor so they're still counted, just lightly. */
+function weightedProgress(tasks: Array<{ progress: number; estimatedMinutes: number }>) {
+  if (!tasks.length) return 0;
+  const totalWeight = tasks.reduce((sum, task) => sum + Math.max(1, task.estimatedMinutes), 0);
+  const weighted = tasks.reduce((sum, task) => sum + task.progress * Math.max(1, task.estimatedMinutes), 0);
+  return Math.round(weighted / totalWeight);
+}
+/** A task with no startDate falls back to createdAt as its "start," but with no dueDate it has
+ *  no defined end — treating that as "active every day until done" inflates allocatedTasks and
+ *  skews productivity on days nobody touched it. A task only gets a real multi-day window once
+ *  it has both dates; otherwise it's a single-day event on its start (or completion) day only. */
+function hasDateWindow(task: { startDate: Date | null; dueDate: Date | null }) {
+  return Boolean(task.startDate && task.dueDate);
 }
 function minutesBetween(startTime: string, endTime: string, breakMinutes: number) {
   const toMinutes = (value: string) => { const [hours, minutes] = value.split(":").map(Number); return hours * 60 + minutes; };
@@ -102,10 +125,14 @@ reportsRouter.get("/team-productivity", requirePermission("resources", "view"), 
   });
 
   const inRange = allTasks.filter((task) => {
-    const startKey = localDateKey(task.startDate ?? task.createdAt, company.timezone);
-    const endKey = task.completedAt ? localDateKey(task.completedAt, company.timezone) : input.end;
-    const completedInRange = task.completedAt && localDateKey(task.completedAt, company.timezone) >= input.start && localDateKey(task.completedAt, company.timezone) <= input.end;
-    return Boolean(completedInRange || (startKey <= input.end && endKey >= input.start));
+    if (task.completedAt) return localDateKey(task.completedAt, company.timezone) >= input.start && localDateKey(task.completedAt, company.timezone) <= input.end;
+    if (hasDateWindow(task)) {
+      const startKey = localDateKey(task.startDate!, company.timezone);
+      const endKey = localDateKey(task.dueDate!, company.timezone);
+      return startKey <= input.end && endKey >= input.start;
+    }
+    const createdKey = localDateKey(task.startDate ?? task.createdAt, company.timezone);
+    return createdKey >= input.start && createdKey <= input.end;
   });
   const visibleTasks = input.search
     ? inRange.filter((task) => `${task.name} ${task.project.name} ${task.project.key} ${task.assignee?.name ?? ""}`.toLowerCase().includes(input.search!.toLowerCase()))
@@ -140,7 +167,7 @@ reportsRouter.get("/team-productivity", requirePermission("resources", "view"), 
       trackedSeconds: logs.reduce((sum, entry) => sum + effectiveDuration(entry), 0),
       billableSeconds: logs.filter((entry) => entry.billable).reduce((sum, entry) => sum + effectiveDuration(entry), 0),
       completionRate: tasks.length ? Math.round((completed / tasks.length) * 100) : 0,
-      productivityPercent: averageProgress(tasks),
+      productivityPercent: weightedProgress(tasks),
     };
   };
 
@@ -168,14 +195,18 @@ reportsRouter.get("/team-productivity", requirePermission("resources", "view"), 
     plannedMinutes: visibleTasks.reduce((sum, task) => sum + task.estimatedMinutes, 0),
     trackedSeconds: rangeEntries.reduce((sum, entry) => sum + effectiveDuration(entry), 0),
     completionRate: visibleTasks.length ? Math.round((overallCompleted / visibleTasks.length) * 100) : 0,
-    productivityPercent: averageProgress(visibleTasks),
+    productivityPercent: weightedProgress(visibleTasks),
   };
 
   const daily = dates.map((date) => {
     const tasks = visibleTasks.filter((task) => {
-      const startKey = localDateKey(task.startDate ?? task.createdAt, company.timezone);
-      const endKey = task.completedAt ? localDateKey(task.completedAt, company.timezone) : input.end;
-      return startKey <= date && endKey >= date;
+      if (task.completedAt) return localDateKey(task.completedAt, company.timezone) === date;
+      if (hasDateWindow(task)) {
+        const startKey = localDateKey(task.startDate!, company.timezone);
+        const endKey = localDateKey(task.dueDate!, company.timezone);
+        return startKey <= date && endKey >= date;
+      }
+      return localDateKey(task.startDate ?? task.createdAt, company.timezone) === date;
     });
     const logs = rangeEntries.filter((entry) => localDateKey(entry.startedAt, company.timezone) === date);
     return {
@@ -184,7 +215,7 @@ reportsRouter.get("/team-productivity", requirePermission("resources", "view"), 
       inProgressTasks: tasks.filter((task) => task.status === "in_progress").length,
       completedTasks: visibleTasks.filter((task) => task.completedAt && localDateKey(task.completedAt, company.timezone) === date).length,
       trackedSeconds: logs.reduce((sum, entry) => sum + effectiveDuration(entry), 0),
-      productivityPercent: averageProgress(tasks),
+      productivityPercent: weightedProgress(tasks),
     };
   });
 
@@ -194,7 +225,7 @@ reportsRouter.get("/team-productivity", requirePermission("resources", "view"), 
     teams: teamRows,
     daily,
     filterOptions: { teams: allowedTeams.map((team) => ({ id: team.id, name: team.name })) },
-    methodology: "Productivity is the average progress percentage of allocated tasks. Multi-team employees contribute to each team they belong to; company totals deduplicate tasks and logs.",
+    methodology: "Productivity is the estimated-hours-weighted average progress of allocated tasks, so larger tasks influence the number more than quick ones. A task only counts on a given day/range if it has both a start and due date overlapping it, or on its creation/completion day otherwise — undated tasks no longer count on every day of the report. Multi-team employees contribute to each team they belong to; company totals deduplicate tasks and logs.",
   });
 });
 reportsRouter.get("/team-productivity/:teamId/members", requirePermission("resources", "view"), async (req, res) => {
@@ -229,9 +260,14 @@ reportsRouter.get("/team-productivity/:teamId/members", requirePermission("resou
     },
   });
   const rangeTasks = allTasks.filter((task) => {
-    const startKey = localDateKey(task.startDate ?? task.createdAt, company.timezone);
-    const endKey = task.completedAt ? localDateKey(task.completedAt, company.timezone) : input.end;
-    return startKey <= input.end && endKey >= input.start;
+    if (task.completedAt) return localDateKey(task.completedAt, company.timezone) >= input.start && localDateKey(task.completedAt, company.timezone) <= input.end;
+    if (hasDateWindow(task)) {
+      const startKey = localDateKey(task.startDate!, company.timezone);
+      const endKey = localDateKey(task.dueDate!, company.timezone);
+      return startKey <= input.end && endKey >= input.start;
+    }
+    const createdKey = localDateKey(task.startDate ?? task.createdAt, company.timezone);
+    return createdKey >= input.start && createdKey <= input.end;
   });
   const accessibleAssigneeIds = new Set(rangeTasks.map((task) => task.assigneeId).filter((id): id is string => Boolean(id)));
   const canSeeWholeTeam = elevated || team.leadUserId === uid;
@@ -273,7 +309,7 @@ reportsRouter.get("/team-productivity/:teamId/members", requirePermission("resou
     const logs = rangeEntries.filter((entry) => entry.userId === membership.userId && logTaskIds.has(entry.taskId));
     const completedTasks = tasks.filter((task) => task.completedAt && localDateKey(task.completedAt, company.timezone) >= input.start && localDateKey(task.completedAt, company.timezone) <= input.end).length;
     const trackedSeconds = logs.reduce((total, entry) => total + effectiveDuration(entry), 0);
-    const productivityPercent = averageProgress(tasks);
+    const productivityPercent = weightedProgress(tasks);
     return {
       id: membership.userId, name: membership.user.name, joinedAt: membership.joinedAt,
       isLead: team.leadUserId === membership.userId,
@@ -320,7 +356,7 @@ reportsRouter.get("/team-productivity/:teamId/members", requirePermission("resou
     },
     ranking,
     members,
-    methodology: "Ranking uses task progress first, then completed tasks, fewer overdue tasks and tracked time. Capacity follows company working days, holidays, shift hours and break policy. Time is counted from saved work logs on tasks allocated to this team.",
+    methodology: "Ranking uses estimated-hours-weighted task progress first, then completed tasks, fewer overdue tasks and tracked time. Capacity follows company working days, holidays, shift hours and break policy. Time is counted from saved work logs on tasks allocated to this team.",
   });
 });
 

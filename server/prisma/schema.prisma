@@ -82,24 +82,25 @@ model Company {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  companyUsers      CompanyUser[]
-  invitations       Invitation[]
-  auditLogs         AuditLog[]
-  departments       Department[]
-  designations      Designation[]
-  holidays          Holiday[]
-  leaveTypes        LeaveType[]
-  workingSchedules  WorkingSchedule[]
-  onboardingState   OnboardingState?
-  teams             Team[]
-  projects          Project[]
-  projectSections   ProjectSection[]
-  projectTasks      ProjectTask[]
-  projectMilestones ProjectMilestone[]
-  projectMembers    ProjectMember[]
-  taskTimeEntries   TaskTimeEntry[]
-  chatChannels      ChatChannel[]
-  smtpEmailSetting  SmtpEmailSetting?
+  companyUsers         CompanyUser[]
+  invitations          Invitation[]
+  auditLogs            AuditLog[]
+  departments          Department[]
+  designations         Designation[]
+  holidays             Holiday[]
+  leaveTypes           LeaveType[]
+  workingSchedules     WorkingSchedule[]
+  onboardingState      OnboardingState?
+  teams                Team[]
+  projects             Project[]
+  projectSections      ProjectSection[]
+  projectTasks         ProjectTask[]
+  projectMilestones    ProjectMilestone[]
+  projectMembers       ProjectMember[]
+  taskTimeEntries      TaskTimeEntry[]
+  chatChannels         ChatChannel[]
+  taskDailyAllocations TaskDailyAllocation[]
+  taskOverdueReviews   TaskOverdueReview[]
 }
 
 
@@ -146,23 +147,24 @@ model CompanyUser {
 
   invitations            Invitation[]
   departmentsHeaded      Department[]
-  teamsLed               Team[]              @relation("TeamLead")
-  teamMemberships        TeamMember[]        @relation("TeamMembership")
-  projectsManaged        Project[]           @relation("ProjectManager")
-  projectsOwned          Project[]           @relation("ProjectOwner")
-  favouriteProjects      ProjectFavourite[]  @relation("ProjectFavourites")
+  teamsLed               Team[]                @relation("TeamLead")
+  teamMemberships        TeamMember[]          @relation("TeamMembership")
+  projectsManaged        Project[]             @relation("ProjectManager")
+  projectsOwned          Project[]             @relation("ProjectOwner")
+  favouriteProjects      ProjectFavourite[]    @relation("ProjectFavourites")
   projectMemberships     ProjectMember[]
-  projectTasksAssigned   ProjectTask[]       @relation("TaskAssignee")
-  projectSectionsOwned   ProjectSection[]    @relation("SectionOwner")
-  projectMilestonesOwned ProjectMilestone[]  @relation("MilestoneOwner")
+  projectTasksAssigned   ProjectTask[]         @relation("TaskAssignee")
+  projectSectionsOwned   ProjectSection[]      @relation("SectionOwner")
+  projectMilestonesOwned ProjectMilestone[]    @relation("MilestoneOwner")
   taskTimeEntries        TaskTimeEntry[]
   taskFollowers          TaskFollower[]
   taskComments           TaskComment[]
   chatChannelMemberships ChatChannelMember[]
-  chatMessages           ChatMessage[]       @relation("ChatMessageAuthor")
+  chatMessages           ChatMessage[]         @relation("ChatMessageAuthor")
   chatReactions          ChatReaction[]
-  chatMentionsReceived   ChatMention[]       @relation("ChatMentionTarget")
-  notifications          Notification[]      @relation("NotificationRecipient")
+  chatMentionsReceived   ChatMention[]         @relation("ChatMentionTarget")
+  notifications          Notification[]        @relation("NotificationRecipient")
+  taskDailyAllocations   TaskDailyAllocation[]
 
   @@unique([tenantId, email])
 }
@@ -275,14 +277,16 @@ model LeaveType {
 }
 
 model WorkingSchedule {
-  id           String  @id @default(cuid())
-  tenantId     String
-  company      Company @relation(fields: [tenantId], references: [id])
-  name         String  @default("Standard")
-  workingDays  Int[]   @default([1, 2, 3, 4, 5]) // 0=Sun .. 6=Sat
-  startTime    String  @default("09:00")
-  endTime      String  @default("18:00")
-  breakMinutes Int     @default(60)
+  id             String  @id @default(cuid())
+  tenantId       String
+  company        Company @relation(fields: [tenantId], references: [id])
+  name           String  @default("Standard")
+  workingDays    Int[]   @default([1, 2, 3, 4, 5]) // 0=Sun .. 6=Sat
+  startTime      String  @default("09:00")
+  endTime        String  @default("18:00")
+  breakMinutes   Int     @default(60)
+  breakStartTime String  @default("14:00")
+  breakEndTime   String  @default("14:30")
 
   createdBy String?
   updatedBy String?
@@ -419,6 +423,44 @@ enum NotificationType {
   announcement
   channel_invite
   message
+  task_overdue_review
+  task_review_resolved
+}
+
+enum OverdueReviewStatus {
+  pending_review
+  resolved
+}
+
+/// A task that blows past its dueDate while still incomplete gets flagged here instead of just
+/// quietly sitting on the resource planner with a stale due date. The assignee explains why,
+/// the explanation routes to an approver (task creator, falling back to the assignee's team
+/// lead, falling back to any company_super_admin), and only once the approver re-estimates the
+/// hours or reschedules the due date does the task become plannable again. Kept as a separate
+/// model (not fields on ProjectTask) so a task that goes overdue -> resolved -> overdue again
+/// keeps a full history instead of overwriting itself.
+model TaskOverdueReview {
+  id                  String              @id @default(cuid())
+  tenantId            String
+  company             Company             @relation(fields: [tenantId], references: [id])
+  taskId              String
+  task                ProjectTask         @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  triggeredAt         DateTime            @default(now())
+  originalDueDate     DateTime
+  reason              String?
+  reasonSubmittedAt   DateTime?
+  reasonSubmittedBy   String?
+  approverId          String
+  status              OverdueReviewStatus @default(pending_review)
+  resolvedAt          DateTime?
+  resolvedBy          String?
+  resolutionAction    String?
+  newEstimatedMinutes Int?
+  newDueDate          DateTime?
+  createdAt           DateTime            @default(now())
+
+  @@index([tenantId, taskId])
+  @@index([tenantId, approverId, status])
 }
 
 model Project {
@@ -522,50 +564,74 @@ model ProjectSection {
 }
 
 model ProjectTask {
-  id               String              @id @default(cuid())
-  tenantId         String
-  company          Company             @relation(fields: [tenantId], references: [id])
-  projectId        String
-  project          Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  sectionId        String
-  section          ProjectSection      @relation(fields: [sectionId], references: [id], onDelete: Cascade)
-  parentTaskId     String?
-  parentTask       ProjectTask?        @relation("TaskHierarchy", fields: [parentTaskId], references: [id], onDelete: Cascade)
-  subtasks         ProjectTask[]       @relation("TaskHierarchy")
-  code             Int
-  name             String
-  description      String?
-  status           TaskStatus          @default(new_request)
-  priority         ProjectPriority     @default(medium)
-  taskType         String?
-  billingType      String              @default("non_billable")
-  tags             String[]            @default([])
-  startDate        DateTime?
-  dueDate          DateTime?
-  estimatedMinutes Int                 @default(0)
-  progress         Int                 @default(0)
-  completedAt      DateTime?
-  trackedMinutes   Int                 @default(0)
-  trackedSeconds   Int                 @default(0)
-  assigneeId       String?
-  assignee         CompanyUser?        @relation("TaskAssignee", fields: [assigneeId], references: [id])
-  milestoneId      String?
-  milestone        ProjectMilestone?   @relation(fields: [milestoneId], references: [id])
-  position         Int
-  createdBy        String?
-  updatedBy        String?
-  createdAt        DateTime            @default(now())
-  updatedAt        DateTime            @updatedAt
-  timeEntries      TaskTimeEntry[]
-  followers        TaskFollower[]
-  comments         TaskComment[]
-  checklistItems   TaskChecklistItem[]
-  attachments      TaskAttachment[]
-  dependencies     TaskDependency[]    @relation("TaskDependencies")
-  dependentTasks   TaskDependency[]    @relation("DependentTasks")
+  id                  String                @id @default(cuid())
+  tenantId            String
+  company             Company               @relation(fields: [tenantId], references: [id])
+  projectId           String
+  project             Project               @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sectionId           String
+  section             ProjectSection        @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  parentTaskId        String?
+  parentTask          ProjectTask?          @relation("TaskHierarchy", fields: [parentTaskId], references: [id], onDelete: Cascade)
+  subtasks            ProjectTask[]         @relation("TaskHierarchy")
+  code                Int
+  name                String
+  description         String?
+  status              TaskStatus            @default(new_request)
+  priority            ProjectPriority       @default(medium)
+  taskType            String?
+  billingType         String                @default("non_billable")
+  tags                String[]              @default([])
+  startDate           DateTime?
+  dueDate             DateTime?
+  estimatedMinutes    Int                   @default(0)
+  progress            Int                   @default(0)
+  completedAt         DateTime?
+  trackedMinutes      Int                   @default(0)
+  trackedSeconds      Int                   @default(0)
+  assigneeId          String?
+  assignee            CompanyUser?          @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  milestoneId         String?
+  milestone           ProjectMilestone?     @relation(fields: [milestoneId], references: [id])
+  position            Int
+  createdBy           String?
+  updatedBy           String?
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
+  timeEntries         TaskTimeEntry[]
+  followers           TaskFollower[]
+  comments            TaskComment[]
+  checklistItems      TaskChecklistItem[]
+  attachments         TaskAttachment[]
+  dependencies        TaskDependency[]      @relation("TaskDependencies")
+  dependentTasks      TaskDependency[]      @relation("DependentTasks")
+  dailyAllocations    TaskDailyAllocation[] @relation("TaskAllocations")
+  overdueReviewStatus OverdueReviewStatus?
+  overdueReviews      TaskOverdueReview[]
 
   @@unique([projectId, code])
   @@index([parentTaskId])
+}
+
+model TaskDailyAllocation {
+  id             String      @id @default(cuid())
+  tenantId       String
+  company        Company     @relation(fields: [tenantId], references: [id])
+  taskId         String
+  task           ProjectTask @relation("TaskAllocations", fields: [taskId], references: [id], onDelete: Cascade)
+  userId         String
+  user           CompanyUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date           DateTime    @db.Date
+  plannedMinutes Int
+  note           String?
+  createdBy      String?
+  updatedBy      String?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  @@unique([taskId, userId, date])
+  @@index([tenantId, userId, date])
+  @@index([tenantId, taskId])
 }
 
 model TaskFollower {
@@ -718,33 +784,41 @@ model ChatChannelMember {
 }
 
 model ChatMessage {
-  id              String              @id @default(cuid())
-  tenantId        String
-  channelId       String
-  channel         ChatChannel         @relation(fields: [channelId], references: [id], onDelete: Cascade)
-  authorId        String
-  author          CompanyUser         @relation("ChatMessageAuthor", fields: [authorId], references: [id])
-  parentMessageId String?
-  parentMessage   ChatMessage?        @relation("MessageThread", fields: [parentMessageId], references: [id], onDelete: Cascade)
-  replies         ChatMessage[]       @relation("MessageThread")
-  body            String?
-  attachmentType  ChatAttachmentType?
-  attachmentUrl   String?
-  attachmentName  String?
-  durationSeconds Int?
-  isAnnouncement  Boolean             @default(false)
-  isSystem        Boolean             @default(false)
-  isPinned        Boolean             @default(false)
-  isDeleted       Boolean             @default(false)
-  editedAt        DateTime?
-  createdAt       DateTime            @default(now())
-  updatedAt       DateTime            @updatedAt
+  id               String              @id @default(cuid())
+  tenantId         String
+  channelId        String
+  channel          ChatChannel         @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  authorId         String
+  author           CompanyUser         @relation("ChatMessageAuthor", fields: [authorId], references: [id])
+  parentMessageId  String?
+  parentMessage    ChatMessage?        @relation("MessageThread", fields: [parentMessageId], references: [id], onDelete: Cascade)
+  replies          ChatMessage[]       @relation("MessageThread")
+  // Inline "reply" (quotes one specific message right where it's sent, in the main flow) —
+  // distinct from parentMessageId's side-panel thread. onDelete: SetNull (not Cascade) because
+  // deleting the quoted message shouldn't cascade-delete every reply that referenced it; the
+  // reply just loses its quote preview and falls back to showing "Original message deleted".
+  replyToMessageId String?
+  replyToMessage   ChatMessage?        @relation("MessageReply", fields: [replyToMessageId], references: [id], onDelete: SetNull)
+  repliedBy        ChatMessage[]       @relation("MessageReply")
+  body             String?
+  attachmentType   ChatAttachmentType?
+  attachmentUrl    String?
+  attachmentName   String?
+  durationSeconds  Int?
+  isAnnouncement   Boolean             @default(false)
+  isSystem         Boolean             @default(false)
+  isPinned         Boolean             @default(false)
+  isDeleted        Boolean             @default(false)
+  editedAt         DateTime?
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
 
   reactions ChatReaction[]
   mentions  ChatMention[]
 
   @@index([tenantId, channelId, createdAt])
   @@index([parentMessageId])
+  @@index([replyToMessageId])
 }
 
 model ChatReaction {
@@ -783,6 +857,8 @@ model Notification {
   body      String?
   channelId String?
   messageId String?
+  taskId    String?
+  projectId String?
   actorId   String?
   readAt    DateTime?
   createdAt DateTime         @default(now())

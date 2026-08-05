@@ -1,6 +1,8 @@
 import { CalendarDays, CheckSquare, MoreHorizontal, Star } from "lucide-react";
 import { Avatar, DropdownMenu, ProgressBar, memberColor } from "@/components/common";
 import { cn } from "@/lib/cn";
+import { formatDateOnly } from "@/lib/formatDate";
+import { useCompanyTimezone } from "@/lib/session";
 import type { RealProject, RealProjectStatus } from "@/types/tenant";
 
 const statusLabel: Record<RealProjectStatus, string> = {
@@ -49,6 +51,7 @@ export function RealProjectCard({
   canArchiveOrDelete,
 }: Props) {
   const progress = project.completionPercent;
+  const timezone = useCompanyTimezone();
   const openProject = () => onOpen(project);
 
 
@@ -139,7 +142,7 @@ export function RealProjectCard({
           )}
         >
           <CalendarDays size={13} />
-          {project.dueDate ? `Due: ${new Date(project.dueDate).toLocaleDateString()}` : "No due date"}
+          {project.dueDate ? `Due: ${formatDateOnly(project.dueDate, timezone)}` : "No due date"}
         </span>
         {project.manager ? (
           <span className="flex items-center gap-1.5 rounded-full border border-success-500/30 bg-success-50 py-0.5 pl-2.5 pr-0.5 text-xs font-semibold text-success-600">

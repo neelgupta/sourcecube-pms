@@ -44,11 +44,13 @@ export async function ensureProjectChatMembers(tenantId: string, projectId: stri
 export async function createNotification(params: {
   tenantId: string;
   userId: string;
-  type: "mention" | "announcement" | "channel_invite" | "message";
+  type: "mention" | "announcement" | "channel_invite" | "message" | "task_overdue_review" | "task_review_resolved";
   title: string;
   body?: string;
   channelId?: string;
   messageId?: string;
+  taskId?: string;
+  projectId?: string;
   actorId?: string;
 }) {
   const notification = await prisma.notification.create({
@@ -60,6 +62,8 @@ export async function createNotification(params: {
       body: params.body,
       channelId: params.channelId,
       messageId: params.messageId,
+      taskId: params.taskId,
+      projectId: params.projectId,
       actorId: params.actorId,
     },
   });

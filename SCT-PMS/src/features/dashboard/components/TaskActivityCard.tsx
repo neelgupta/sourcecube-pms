@@ -1,6 +1,6 @@
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { CalendarDays } from "lucide-react";
-import { Card, CardBody, CardHeader } from "@/components/common";
+import { Card, CardBody, CardHeader, FilterSelect } from "@/components/common";
 import { ChartTooltip, axisProps, gridProps } from "./chartPrimitives";
 import { rangePresetOptions, type RangePreset } from "../OverviewTab";
 
@@ -18,14 +18,13 @@ export function TaskActivityChart({
       <CardHeader
         title="Task Activity"
         action={
-          <div className="flex items-center gap-1.5 rounded-lg border border-ink-200 bg-white px-2.5 py-1.5 text-xs font-medium text-ink-700">
-            <CalendarDays size={14} className="text-ink-400" />
-            <select value={preset} onChange={(event) => onPresetChange(event.target.value as RangePreset)} className="bg-transparent outline-none">
-              {rangePresetOptions.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
-          </div>
+          <FilterSelect
+            value={preset}
+            onChange={(value) => onPresetChange(value as RangePreset)}
+            options={rangePresetOptions}
+            icon={<CalendarDays size={14} className="text-ink-400" />}
+            className="w-36"
+          />
         }
       />
       <CardBody className="pt-0">

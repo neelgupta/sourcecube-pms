@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Building2 } from "lucide-react";
-import { Button, Drawer, Field, Input, Select } from "@/components/common";
+import { Button, Drawer, Field, FilterSelect, Input } from "@/components/common";
 import { api, ApiError } from "@/lib/api";
 import type { CompanyUser, Department } from "@/types/tenant";
 
@@ -106,25 +106,25 @@ export function DepartmentDrawer({ open, department, departments, companyUsers, 
         </Field>
 
         <Field label="Parent department" hint="Leave unset for a top-level department">
-          <Select value={parentId} onChange={(e) => setParentId(e.target.value)}>
-            <option value="">None (top-level)</option>
-            {eligibleParents.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.name}
-              </option>
-            ))}
-          </Select>
+          <FilterSelect
+            value={parentId}
+            onChange={setParentId}
+            options={[
+              { value: "", label: "None (top-level)" },
+              ...eligibleParents.map((d) => ({ value: d.id, label: d.name })),
+            ]}
+          />
         </Field>
 
         <Field label="Department head">
-          <Select value={headUserId} onChange={(e) => setHeadUserId(e.target.value)}>
-            <option value="">Unassigned</option>
-            {companyUsers.map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.name} ({u.email})
-              </option>
-            ))}
-          </Select>
+          <FilterSelect
+            value={headUserId}
+            onChange={setHeadUserId}
+            options={[
+              { value: "", label: "Unassigned" },
+              ...companyUsers.map((u) => ({ value: u.id, label: `${u.name} (${u.email})` })),
+            ]}
+          />
         </Field>
 
         <div className="grid grid-cols-2 gap-4">

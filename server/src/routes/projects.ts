@@ -5,6 +5,7 @@ import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireCompany, requirePermission } from "../middleware/auth.js";
 import { recordAudit } from "../lib/audit.js";
 import { createNotification, ensureProjectChatMembers, extractMentionIds } from "../lib/chat.js";
+import { flagNewlyOverdueTasks } from "../lib/overdueReview.js";
 
 export const projectsRouter = Router();
 projectsRouter.use(requireAuth, requireCompany);
@@ -93,6 +94,41 @@ async function projectAccessLevel(
   });
   return connectedTask ? "view" : null;
 }
+/** Plain employees (role set is exactly ["employee"], not the project's own owner/manager/
+ *  department-head, and not a team lead of the assignee's team) only see tasks assigned to them
+ *  or that they follow — never the full task list, and never other people's unassigned/assigned
+ *  work. This intentionally ignores project-member "edit"/"manage" access for employee-role
+ *  users: a manager granting an employee "edit" membership (e.g. so they can update task details
+ *  on a project they're deeply involved in) must not incidentally expose the whole team's task
+ *  list, mirroring canReassignTasks' role-overrides-membership rule for reassignment. Non-employee
+ *  roles (TL/PM/department-head/admins) with real project access continue to see every task.
+ *  Returns a Prisma filter to AND into a ProjectTask query, or null when no restriction applies. */
+async function taskVisibilityScope(
+  tid: string,
+  uid: string,
+  project: { id: string; ownerId: string | null; managerId: string | null; departmentId: string | null },
+): Promise<Prisma.ProjectTaskWhereInput | null> {
+  const [roles, membership] = await Promise.all([
+    getCompanyUserRoles(tid, uid),
+    prisma.projectMember.findUnique({
+      where: { projectId_userId: { projectId: project.id, userId: uid } },
+      select: { access: true },
+    }),
+  ]);
+  const isEmployeeOnly = roles.every((role) => role === "employee");
+  if (roles.some((role) => elevatedProjectReaders.has(role))) return null;
+  if (project.ownerId === uid || project.managerId === uid) return null;
+  if (!isEmployeeOnly && membership && (membership.access === "edit" || membership.access === "manage")) return null;
+  if (roles.includes("department_head") && project.departmentId) {
+    const headed = await prisma.department.findFirst({ where: { id: project.departmentId, tenantId: tid, headUserId: uid }, select: { id: true } });
+    if (headed) return null;
+  }
+  if (roles.includes("team_lead")) {
+    const leadsTeam = await prisma.team.findFirst({ where: { tenantId: tid, leadUserId: uid }, select: { id: true } });
+    if (leadsTeam) return null;
+  }
+  return { OR: [{ assigneeId: uid }, { followers: { some: { userId: uid } } }] };
+}
 async function requireProjectAccess(tid: string, uid: string, projectId: string, minimum: "view" | "edit" | "manage") {
   const project = await prisma.project.findFirst({
     where: { id: projectId, tenantId: tid },
@@ -159,16 +195,24 @@ projectsRouter.get("/tasks/assigned", requirePermission("tasks", "view"), async 
     return;
   }
   const input = parsed.data;
-  const assignments: Prisma.ProjectTaskWhereInput[] = [
-    { assigneeId: uid },
-    { followers: { some: { userId: uid } } },
-    { project: { ownerId: uid } },
-    { project: { managerId: uid } },
-    { project: { members: { some: { userId: uid, access: { in: ["edit", "manage"] } } } } },
-  ];
-  if (roles.includes("department_head")) assignments.push({ project: { department: { headUserId: uid } } });
-  if (roles.includes("team_lead")) assignments.push({ assignee: { teamMemberships: { some: { team: { leadUserId: uid } } } } });
-  const taskScope: Prisma.ProjectTaskWhereInput = roles.some((role) => elevatedProjectReaders.has(role))
+  // A plain employee (no elevated/managerial role at all) only ever sees their own assigned or
+  // followed tasks here — never another employee's tasks, unassigned tasks, or tasks that merely
+  // belong to a project they're a member of. This mirrors taskVisibilityScope's per-project
+  // policy; without it, "My Tasks"/the dashboard's due-task widgets leaked every task in any
+  // project the employee had edit/manage membership on, even tasks assigned to teammates.
+  const isEmployeeOnly = roles.every((role) => role === "employee");
+  const assignments: Prisma.ProjectTaskWhereInput[] = isEmployeeOnly
+    ? [{ assigneeId: uid }, { followers: { some: { userId: uid } } }]
+    : [
+        { assigneeId: uid },
+        { followers: { some: { userId: uid } } },
+        { project: { ownerId: uid } },
+        { project: { managerId: uid } },
+        { project: { members: { some: { userId: uid, access: { in: ["edit", "manage"] } } } } },
+      ];
+  if (!isEmployeeOnly && roles.includes("department_head")) assignments.push({ project: { department: { headUserId: uid } } });
+  if (!isEmployeeOnly && roles.includes("team_lead")) assignments.push({ assignee: { teamMemberships: { some: { team: { leadUserId: uid } } } } });
+  const taskScope: Prisma.ProjectTaskWhereInput = !isEmployeeOnly && roles.some((role) => elevatedProjectReaders.has(role))
     ? { tenantId: tid }
     : { tenantId: tid, OR: assignments };
 
@@ -222,6 +266,9 @@ projectsRouter.get("/tasks/assigned", requirePermission("tasks", "view"), async 
       take: 1000,
     }),
   ]);
+
+  const company = await prisma.company.findUniqueOrThrow({ where: { id: tid }, select: { timezone: true } });
+  await flagNewlyOverdueTasks(tid, company.timezone, tasks);
 
   const assignerIds = [...new Set(tasks.map((task) => task.createdBy).filter((id): id is string => Boolean(id)))];
   const assigners = assignerIds.length
@@ -727,28 +774,36 @@ projectsRouter.get("/:id/workspace", requirePermission("projects", "view"), asyn
       ...projectInclude,
       favouritedBy: { where: { userId: uid }, select: { id: true } },
       members: { include: { user: { select: userSelect } }, orderBy: { joinedAt: "asc" } },
-      sections: {
-        include: {
-          owner: { select: userSelect },
-          tasks: {
-            include: taskDetailInclude,
-
-            orderBy: { position: "asc" },
-          },
-        },
-        orderBy: { position: "asc" },
-      },
-      milestones: {
-        include: { owner: { select: userSelect }, _count: { select: { tasks: true } } },
-        orderBy: { releaseDate: "asc" },
-      },
     },
   });
   if (!project) {
     res.status(404).json({ error: "Project not found" });
     return;
   }
-  const { favouritedBy, sections, members, milestones, ...projectData } = project;
+  const taskScope = await taskVisibilityScope(tid, uid, project);
+  const [sections, milestones] = await Promise.all([
+    prisma.projectSection.findMany({
+      where: { projectId: id },
+      include: {
+        owner: { select: userSelect },
+        tasks: {
+          where: taskScope ?? undefined,
+          include: taskDetailInclude,
+          orderBy: { position: "asc" },
+        },
+      },
+      orderBy: { position: "asc" },
+    }),
+    prisma.projectMilestone.findMany({
+      where: { projectId: id },
+      include: { owner: { select: userSelect }, _count: { select: { tasks: true } } },
+      orderBy: { releaseDate: "asc" },
+    }),
+  ]);
+  const company = await prisma.company.findUniqueOrThrow({ where: { id: tid }, select: { timezone: true } });
+  await flagNewlyOverdueTasks(tid, company.timezone, sections.flatMap((section) => section.tasks));
+
+  const { favouritedBy, members, ...projectData } = project;
   const activities = await prisma.auditLog.findMany({
     where: {
       tenantId: tid,
@@ -791,14 +846,16 @@ projectsRouter.get("/:id/tasks/query", requirePermission("tasks", "view"), async
   const uid = userId(req);
   const projectId = req.params.id as string;
   const scope = await projectReadScope(tid, uid);
-  const project = await prisma.project.findFirst({ where: { AND: [{ id: projectId }, scope] }, select: { id: true } });
+  const project = await prisma.project.findFirst({ where: { AND: [{ id: projectId }, scope] }, select: { id: true, ownerId: true, managerId: true, departmentId: true } });
   if (!project) {
     res.status(404).json({ error: "Project not found" });
     return;
   }
+  const taskScope = await taskVisibilityScope(tid, uid, project);
 
   const input = parsed.data;
   const filters: Prisma.ProjectTaskWhereInput[] = [];
+  if (taskScope) filters.push(taskScope);
   if (input.search) {
     const searchFilters: Prisma.ProjectTaskWhereInput[] = [
       { name: { contains: input.search, mode: "insensitive" } },
@@ -1041,6 +1098,18 @@ async function canEditTaskForProject(tid: string, uid: string, projectId: string
   return Boolean(teamMember);
 }
 
+/** Reassigning a task (or unassigning it) is a project-management action, not task-editing —
+ *  it must require real project edit access AND a non-"employee-only" company role. Without the
+ *  role check, a manager granting a plain employee "edit" project-member access (e.g. to let them
+ *  update task details on a project they're deeply involved in) would incidentally also hand them
+ *  the ability to reassign anyone's tasks, which is a distinct, higher-trust capability. */
+async function canReassignTasks(tid: string, uid: string, projectId: string): Promise<boolean> {
+  const hasProjectAccess = await requireProjectAccess(tid, uid, projectId, "edit");
+  if (!hasProjectAccess) return false;
+  const roles = await getCompanyUserRoles(tid, uid);
+  return roles.some((role) => role !== "employee");
+}
+
 function taskDatesAreValid(startDate?: string | null, dueDate?: string | null) {
   if (!startDate || !dueDate) return true;
   return new Date(startDate).getTime() <= new Date(dueDate).getTime();
@@ -1071,8 +1140,7 @@ projectsRouter.patch("/:id/tasks/:taskId", requirePermission("tasks", "edit"), a
   // (or unassigning themselves) is a project-management action, not self-editing, so it must
   // require real project edit access even when the actor happens to be the current assignee.
   if (data.assigneeId !== undefined && data.assigneeId !== task.assigneeId) {
-    const hasProjectAccess = await requireProjectAccess(tid, uid, projectId, "edit");
-    if (!hasProjectAccess) {
+    if (!(await canReassignTasks(tid, uid, projectId))) {
       res.status(403).json({ error: "You do not have permission to reassign this task" });
       return;
     }
@@ -1539,7 +1607,7 @@ const timerSchema = z.object({
 const stopTimerSchema = z.object({
   activityType: z.string().trim().min(1, "Activity is required").max(100),
   billable: z.boolean(),
-  note: z.string().trim().min(1, "Description is required").max(500),
+  note: z.string().trim().min(1, "Description is required").max(2000),
   durationSeconds: z.number().int().positive("Duration must be greater than 0").max(7 * 24 * 60 * 60, "Duration cannot exceed 7 days").optional(),
 });
 
@@ -1574,6 +1642,10 @@ projectsRouter.post("/:id/tasks/:taskId/timer/start", requirePermission("tasks",
   }
   if (!(await canEditTaskForProject(tid, uid, id, task.assigneeId))) {
     res.status(403).json({ error: "You do not have access to track time on this task" });
+    return;
+  }
+  if (task.overdueReviewStatus === "pending_review") {
+    res.status(400).json({ error: "This task is overdue and awaiting review — it can't be tracked until it's resolved" });
     return;
   }
   if (!task.estimatedMinutes) {
@@ -1703,12 +1775,95 @@ projectsRouter.post("/:id/tasks/:taskId/timer/stop", requirePermission("tasks", 
     projectTrackedSeconds: project.trackedSeconds,
   });
 });
+/** Resolves "midnight on this calendar date, in this timezone" to the correct UTC instant —
+ *  used for manual work-log entries so a log dated "2026-08-10" for a New York-timezone company
+ *  actually lands on Aug 10 when the resource planner buckets it back by company timezone,
+ *  regardless of what timezone the server process itself happens to be running in. A naive
+ *  `new Date(\`${date}T00:00:00\`)` uses the server's local wall-clock time instead, which only
+ *  coincidentally matches the company's timezone and silently shifts entries to the wrong day
+ *  (often invisible — they just vanish from that day's planner view) whenever it doesn't. */
+function localMidnightUtc(dateKey: string, timezone: string): Date {
+  const naiveUtc = new Date(`${dateKey}T00:00:00.000Z`);
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+    }).formatToParts(naiveUtc);
+    const get = (type: string) => Number(parts.find((part) => part.type === type)?.value ?? 0);
+    // naiveUtc rendered in the target timezone tells us the offset: if the timezone is behind
+    // UTC, this will show an earlier wall-clock time than naiveUtc's own 00:00:00.
+    const shownAsUtc = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second"));
+    const offsetMs = naiveUtc.getTime() - shownAsUtc;
+    return new Date(naiveUtc.getTime() + offsetMs);
+  } catch {
+    return naiveUtc;
+  }
+}
+
+/** Converts "HH:MM" (schedule field format) to minutes since local midnight. */
+function timeToMinutes(value: string): number {
+  const [hours, minutes] = value.split(":").map(Number);
+  return (hours || 0) * 60 + (minutes || 0);
+}
+
+/** Places a manually-logged duration within the company's working hours for that day, instead of
+ *  literally at midnight. If the caller supplies an explicit startMinutes (the person picked a
+ *  start time in the form), that's used as-is — validated by the caller to fall within working
+ *  hours and outside the lunch break before this is ever called. Otherwise falls back to
+ *  auto-placement: starting from the schedule's startTime, stacked after any minutes already
+ *  logged that day (so multiple manual logs the same day queue up one after another rather than
+ *  overlapping), and skipping straight over the break window (e.g. 2:00-2:30 PM) if the slot
+ *  would otherwise fall inside it. Purely a display/bookkeeping placement — the caller derives
+ *  the real durationSeconds from the requested minutes directly, never from this slot, so a log
+ *  that runs past endTime (e.g. a lot of hours logged in one day) just displays later in the
+ *  evening rather than having its recorded time silently shortened. */
+function placeManualLogSlot(
+  dateKey: string,
+  timezone: string,
+  schedule: { startTime: string; breakStartTime: string; breakEndTime: string },
+  minutesAlreadyLoggedToday: number,
+  durationMinutes: number,
+  explicitStartMinutes?: number,
+): { startedAt: Date; endedAt: Date } {
+  const dayStartMinutes = timeToMinutes(schedule.startTime);
+  const breakStartMinutes = timeToMinutes(schedule.breakStartTime);
+  const breakEndMinutes = timeToMinutes(schedule.breakEndTime);
+
+  let slotStart: number;
+  if (explicitStartMinutes !== undefined) {
+    slotStart = explicitStartMinutes;
+  } else {
+    slotStart = dayStartMinutes + minutesAlreadyLoggedToday;
+    // Skip the break: if the slot starts inside it, or would otherwise cross into it, hop to
+    // right after breakEndTime — the already-logged minutes account for real placed time only,
+    // never break time, so this only needs to check the start point once.
+    if (slotStart >= breakStartMinutes && slotStart < breakEndMinutes) {
+      slotStart = breakEndMinutes;
+    } else if (slotStart < breakStartMinutes && slotStart + durationMinutes > breakStartMinutes) {
+      slotStart = breakEndMinutes;
+    }
+  }
+  // Never truncate the logged duration itself — a manual log's minutes are the actual time
+  // worked and must be preserved exactly regardless of how they're displayed. If the slot would
+  // run past endTime, let it spill past on the display side rather than silently shortening what
+  // was recorded (this only affects a day already logged well beyond a normal working day).
+  const slotEnd = slotStart + durationMinutes;
+
+  const dayMidnightUtc = localMidnightUtc(dateKey, timezone);
+  return {
+    startedAt: new Date(dayMidnightUtc.getTime() + slotStart * 60 * 1000),
+    endedAt: new Date(dayMidnightUtc.getTime() + slotEnd * 60 * 1000),
+  };
+}
+
 const manualLogSchema = z.object({
   date: z.string().min(1, "Date is required"),
   durationMinutes: z.number().int().positive("Duration must be greater than 0"),
+  startTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
   activityType: z.string().trim().min(1, "Activity is required").max(100),
   billable: z.boolean(),
-  note: z.string().trim().min(1, "Description is required").max(500),
+  note: z.string().trim().min(1, "Description is required").max(2000),
 });
 
 projectsRouter.post("/:id/tasks/:taskId/timer/log", requirePermission("tasks", "edit"), async (req, res) => {
@@ -1730,13 +1885,66 @@ projectsRouter.post("/:id/tasks/:taskId/timer/log", requirePermission("tasks", "
     res.status(403).json({ error: "You do not have access to log time on this task" });
     return;
   }
-  const startedAt = new Date(`${parsed.data.date}T00:00:00`);
-  if (Number.isNaN(startedAt.getTime())) {
+  if (task.overdueReviewStatus === "pending_review") {
+    res.status(400).json({ error: "This task is overdue and awaiting review — it can't be tracked until it's resolved" });
+    return;
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(parsed.data.date)) {
     res.status(400).json({ error: "Invalid date" });
     return;
   }
+  const [company, schedule] = await Promise.all([
+    prisma.company.findUniqueOrThrow({ where: { id: tid }, select: { timezone: true } }),
+    prisma.workingSchedule.findFirst({ where: { tenantId: tid }, orderBy: { createdAt: "asc" } }),
+  ]);
+  const dayMidnightUtc = localMidnightUtc(parsed.data.date, company.timezone);
+  if (Number.isNaN(dayMidnightUtc.getTime())) {
+    res.status(400).json({ error: "Invalid date" });
+    return;
+  }
+  const nextDayUtc = new Date(dayMidnightUtc.getTime() + 24 * 60 * 60 * 1000);
+  const priorEntriesToday = await prisma.taskTimeEntry.findMany({
+    where: { tenantId: tid, userId: uid, startedAt: { gte: dayMidnightUtc, lt: nextDayUtc } },
+    select: { durationSeconds: true },
+  });
+  const minutesAlreadyLoggedToday = Math.round(priorEntriesToday.reduce((total, entry) => total + entry.durationSeconds, 0) / 60);
   const durationSeconds = parsed.data.durationMinutes * 60;
-  const endedAt = new Date(startedAt.getTime() + durationSeconds * 1000);
+  const scheduleTimes = {
+    startTime: schedule?.startTime ?? "09:00",
+    endTime: schedule?.endTime ?? "18:00",
+    breakStartTime: schedule?.breakStartTime ?? "14:00",
+    breakEndTime: schedule?.breakEndTime ?? "14:30",
+  };
+
+  let explicitStartMinutes: number | undefined;
+  if (parsed.data.startTime) {
+    explicitStartMinutes = timeToMinutes(parsed.data.startTime);
+    const dayStartMinutes = timeToMinutes(scheduleTimes.startTime);
+    const dayEndMinutes = timeToMinutes(scheduleTimes.endTime);
+    const breakStartMinutes = timeToMinutes(scheduleTimes.breakStartTime);
+    const breakEndMinutes = timeToMinutes(scheduleTimes.breakEndTime);
+    if (explicitStartMinutes < dayStartMinutes || explicitStartMinutes >= dayEndMinutes) {
+      res.status(400).json({ error: "Start time must fall within working hours" });
+      return;
+    }
+    if (explicitStartMinutes >= breakStartMinutes && explicitStartMinutes < breakEndMinutes) {
+      res.status(400).json({ error: "Start time cannot fall within the lunch break" });
+      return;
+    }
+    if (explicitStartMinutes < breakStartMinutes && explicitStartMinutes + parsed.data.durationMinutes > breakStartMinutes) {
+      res.status(400).json({ error: "This duration would run into the lunch break — choose a shorter duration or a start time after the break" });
+      return;
+    }
+  }
+
+  const { startedAt, endedAt } = placeManualLogSlot(
+    parsed.data.date,
+    company.timezone,
+    scheduleTimes,
+    minutesAlreadyLoggedToday,
+    parsed.data.durationMinutes,
+    explicitStartMinutes,
+  );
 
   const [entry, updatedTask, updatedProject] = await prisma.$transaction([
     prisma.taskTimeEntry.create({

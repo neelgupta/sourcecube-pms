@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { getChatSocket } from "@/lib/chatSocket";
 import { useSession } from "@/lib/session";
-import type { ChatMessage } from "@/types/tenant";
 
 /** Tracks the total unread-channel count app-wide (sidebar badge), independent of whether
  *  ChatPage/useChatData is mounted — the socket connection is a shared singleton, so this
@@ -25,9 +24,12 @@ export function useUnreadChatCount(enabled: boolean) {
     if (!enabled) return;
     const socket = getChatSocket();
 
-    function onNewMessage(message: ChatMessage) {
-      if (message.authorId === currentUserId || message.parentMessageId) return;
-      setUnreadByChannel((current) => ({ ...current, [message.channelId]: (current[message.channelId] ?? 0) + 1 }));
+    // channel:unread is a dedicated event for this personal-room delivery, distinct from
+    // message:new (channel-room-only) — see server/src/routes/chat.ts's POST /messages handler.
+    // Using the same event here would double-count for a channel the user currently has open,
+    // since that socket sits in both the channel room and its own user room simultaneously.
+    function onChannelUnread({ channelId }: { channelId: string }) {
+      setUnreadByChannel((current) => ({ ...current, [channelId]: (current[channelId] ?? 0) + 1 }));
     }
     function onChannelRead({ channelId, userId }: { channelId: string; userId: string }) {
       if (userId !== currentUserId) return;
@@ -41,11 +43,11 @@ export function useUnreadChatCount(enabled: boolean) {
         .catch(() => undefined);
     }
 
-    socket.on("message:new", onNewMessage);
+    socket.on("channel:unread", onChannelUnread);
     socket.on("channel:read", onChannelRead);
     socket.on("channel:new", onNewChannel);
     return () => {
-      socket.off("message:new", onNewMessage);
+      socket.off("channel:unread", onChannelUnread);
       socket.off("channel:read", onChannelRead);
       socket.off("channel:new", onNewChannel);
     };

@@ -24,7 +24,8 @@ import {
   type Column,
 } from "@/components/common";
 import { api, ApiError } from "@/lib/api";
-import { usePermission } from "@/lib/session";
+import { usePermission, useCompanyTimezone } from "@/lib/session";
+import { formatDateOnly } from "@/lib/formatDate";
 import type { CompanyUser, Department, RealProject, RealProjectStatus } from "@/types/tenant";
 import { RealProjectCard } from "./components/RealProjectCard";
 import { projectWorkspacePath } from "./projectRoutes";
@@ -64,6 +65,7 @@ function initialsOf(name: string) {
 
 export function ProjectsPage() {
   const navigate = useNavigate();
+  const timezone = useCompanyTimezone();
   const [projects, setProjects] = useState<RealProject[]>([]);
   const [companyUsers, setCompanyUsers] = useState<CompanyUser[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
@@ -189,7 +191,7 @@ export function ProjectsPage() {
     {
       key: "due",
       header: "Due Date",
-      render: (p) => <span className="text-xs">{p.dueDate ? new Date(p.dueDate).toLocaleDateString() : "—"}</span>,
+      render: (p) => <span className="text-xs">{p.dueDate ? formatDateOnly(p.dueDate, timezone) : "—"}</span>,
     },
     {
       key: "manager",
@@ -457,13 +459,14 @@ function ProjectGrid({
 }
 
 function ProjectDetails({ project }: { project: RealProject }) {
+  const timezone = useCompanyTimezone();
   const fields = [
     ["Client", project.clientName || "Not set"],
     ["Status", statusLabel[project.status]],
     ["Priority", project.priority[0].toUpperCase() + project.priority.slice(1)],
     ["Project Manager", project.manager?.name || "Unassigned"],
-    ["Start Date", project.startDate ? new Date(project.startDate).toLocaleDateString() : "Not set"],
-    ["Due Date", project.dueDate ? new Date(project.dueDate).toLocaleDateString() : "Not set"],
+    ["Start Date", project.startDate ? formatDateOnly(project.startDate, timezone) : "Not set"],
+    ["Due Date", project.dueDate ? formatDateOnly(project.dueDate, timezone) : "Not set"],
     ["Estimated Hours", project.estimatedHours != null ? String(project.estimatedHours) : "Not set"],
   ];
 

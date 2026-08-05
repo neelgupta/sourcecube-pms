@@ -82,6 +82,7 @@ function displayDate(key: string) {
 export function ResourcesPage() {
   const navigate = useNavigate();
   const canAssign = usePermission("tasks", "manage");
+  const canEditAllocation = usePermission("resources", "edit");
   const [preset, setPreset] = useState<RangePreset>("this_week");
   const [customRange, setCustomRange] = useState<{ start: string; end: string }>(() => presetRange("this_week"));
   const [employeeIds, setEmployeeIds] = useState<string[]>([]);
@@ -143,6 +144,11 @@ export function ResourcesPage() {
       const target = event.target as Node;
       if (filterButtonRef.current?.contains(target) || scheduleButtonRef.current?.contains(target)) return;
       if (filterPopoverRef.current?.contains(target) || schedulePopoverRef.current?.contains(target)) return;
+      // Nested pickers (FilterSelect, EmployeePicker, etc.) render their dropdown panel via a
+      // body portal, so it isn't a DOM descendant of filterPopoverRef even though it's visually
+      // inside the "Resource filters" popover — without this check, clicking a team option here
+      // closes the whole popover on mousedown before the option's own onClick can fire.
+      if (target instanceof Element && target.closest("[data-portal-panel]")) return;
       closeResourcePopovers();
     }
     document.addEventListener("mousedown", handleOutside);
@@ -175,6 +181,11 @@ export function ResourcesPage() {
   function handleTaskAssigned() {
     if (!selectedDay) return;
     api.getResourcePlannerDay(selectedDay.employeeId, selectedDay.date).then(setDetail);
+    setRevision((value) => value + 1);
+  }
+
+  function handleAllocationsSaved(nextDetail: ResourcePlannerDayDetail) {
+    setDetail(nextDetail);
     setRevision((value) => value + 1);
   }
 
@@ -297,11 +308,13 @@ export function ResourcesPage() {
           detail={detail}
           loading={detailLoading}
           canAssign={canAssign}
+          canEditAllocation={canEditAllocation}
           employeeId={selectedDay.employeeId}
           date={selectedDay.date}
           onClose={() => setSelectedDay(null)}
           onOpenTask={(projectId, taskId) => openResourceTask(projectId, taskId)}
           onTaskAssigned={handleTaskAssigned}
+          onAllocationsSaved={handleAllocationsSaved}
         />
       )}
     </div>
@@ -328,20 +341,24 @@ function DayDetailPanel({
   detail,
   loading,
   canAssign,
+  canEditAllocation,
   employeeId,
   date,
   onClose,
   onOpenTask,
   onTaskAssigned,
+  onAllocationsSaved,
 }: {
   detail: ResourcePlannerDayDetail | null;
   loading: boolean;
   canAssign: boolean;
+  canEditAllocation: boolean;
   employeeId: string;
   date: string;
   onClose: () => void;
   onOpenTask: (projectId: string, taskId: string) => void;
   onTaskAssigned: () => void;
+  onAllocationsSaved: (detail: ResourcePlannerDayDetail) => void;
 }) {
   return <div className="fixed inset-0 z-50 flex justify-end bg-ink-900/25" onMouseDown={onClose}><aside className="flex h-full w-full max-w-xl flex-col bg-white shadow-2xl" onMouseDown={(event) => event.stopPropagation()}>
     <header className="flex items-center justify-between border-b border-ink-200 px-5 py-4"><div><p className="font-semibold text-ink-900">{detail?.employee.name ?? "Employee day details"}</p><p className="text-xs text-ink-500">{detail ? displayDate(detail.date) : "Loading…"}</p></div><button onClick={onClose} className="rounded-lg p-2 text-ink-400 hover:bg-ink-100"><X size={18} /></button></header>
@@ -349,10 +366,164 @@ function DayDetailPanel({
       {detail.holiday && <div className="mb-4 rounded-lg bg-info-50 px-3 py-2 text-sm text-info-700">{detail.holiday.name}{detail.holiday.optional ? " (optional holiday)" : ""}</div>}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3"><Metric label="Company capacity" value={`${hoursFromMinutes(detail.capacityMinutes)}h`} /><Metric label="Planned hours" value={`${hoursFromMinutes(detail.plannedMinutes)}h`} /><Metric label="Tracked hours" value={durationLabel(detail.trackedSeconds)} /><Metric label="Planned tracked" value={durationLabel(detail.plannedTrackedSeconds)} /><Metric label="Extra / overrun" value={durationLabel(detail.extraPlannedSeconds)} danger={detail.extraPlannedSeconds > 0} /><Metric label="Remaining plan" value={`${hoursFromMinutes(detail.remainingPlannedMinutes)}h`} /></div>
       {canAssign && <AssignTaskSection employeeId={employeeId} date={date} onAssigned={onTaskAssigned} />}
-      <section className="mt-6"><div className="mb-2 flex items-center gap-2"><ListChecks size={16} className="text-brand-600" /><h3 className="font-semibold text-ink-900">Assigned task progress ({detail.tasks.length})</h3></div>{detail.tasks.length ? <div className="space-y-2">{detail.tasks.map((task) => <button key={task.id} onClick={() => onOpenTask(task.project.id, task.id)} className="w-full rounded-lg border border-ink-200 p-3 text-left hover:border-brand-300 hover:bg-brand-50/30"><div className="flex items-start gap-2"><span className="rounded bg-ink-100 px-1.5 py-0.5 text-[11px]">#{task.code}</span><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium text-ink-900">{task.name}</p><p className="text-xs text-ink-500">{task.project.key} · {task.project.name}</p></div><Badge tone={task.status === "done" ? "green" : task.status === "in_progress" ? "amber" : "blue"}>{task.progress}%</Badge></div><div className="mt-2 flex gap-4 text-[11px] text-ink-500"><span>{hoursFromMinutes(task.plannedMinutes)}h planned today</span><span>{hoursFromMinutes(task.estimatedMinutes)}h estimated</span><span>{durationLabel(task.trackedSeconds)} total tracked</span></div></button>)}</div> : <p className="rounded-lg border border-dashed border-ink-200 p-4 text-sm text-ink-500">No task was scheduled or logged on this date.</p>}</section>
+      <AllocationEditor detail={detail} employeeId={employeeId} date={date} canEdit={canEditAllocation} onOpenTask={onOpenTask} onSaved={onAllocationsSaved} />
       <section className="mt-6"><div className="mb-2 flex items-center gap-2"><Clock3 size={16} className="text-brand-600" /><h3 className="font-semibold text-ink-900">Work logs ({detail.logs.length})</h3></div>{detail.logs.length ? <div className="divide-y divide-ink-100 rounded-lg border border-ink-200">{detail.logs.map((log) => <div key={log.id} className="p-3"><div className="flex items-center gap-2"><CheckCircle2 size={14} className="text-success-500" /><p className="text-sm font-medium text-ink-900">{log.activityType}</p><span className="ml-auto font-mono text-xs text-ink-700">{durationLabel(log.effectiveDurationSeconds)}</span></div><p className="mt-1 text-xs text-ink-500">#{log.task.code} {log.task.name} · {log.project.name}</p><p className="mt-1 text-[11px] text-ink-400">{new Date(log.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} – {log.endedAt ? new Date(log.endedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "Running"} · {log.billable ? "Billable" : "Non-billable"}</p>{log.note && <p className="mt-1 text-xs text-ink-600">{log.note}</p>}</div>)}</div> : <p className="rounded-lg border border-dashed border-ink-200 p-4 text-sm text-ink-500">No tracked work was recorded on this date.</p>}</section>
     </div>}
   </aside></div>;
+}
+
+/** Editable replacement for the old read-only "planned today" list — lets whoever owns this
+ *  day's plan (the employee themselves, or a manager/lead/PM within their existing resource
+ *  scope) type an explicit number of hours per task instead of accepting the system's uniform
+ *  estimate/span split. Inputs are local until Save; a live running total (computed client-side,
+ *  no round trip) shows how the edits compare to the day's capacity before committing. */
+function AllocationEditor({
+  detail,
+  employeeId,
+  date,
+  canEdit,
+  onOpenTask,
+  onSaved,
+}: {
+  detail: ResourcePlannerDayDetail;
+  employeeId: string;
+  date: string;
+  canEdit: boolean;
+  onOpenTask: (projectId: string, taskId: string) => void;
+  onSaved: (detail: ResourcePlannerDayDetail) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [hours, setHours] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [markingDone, setMarkingDone] = useState<string | null>(null);
+
+  async function markDone(task: ResourcePlannerDayDetail["tasks"][number]) {
+    setMarkingDone(task.id);
+    setError(null);
+    try {
+      await api.updateProjectTask(task.project.id, task.id, { status: "done" });
+      const next = await api.getResourcePlannerDay(employeeId, date);
+      onSaved(next);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not mark task done");
+    } finally {
+      setMarkingDone(null);
+    }
+  }
+
+  function startEditing() {
+    setHours(Object.fromEntries(detail.tasks.filter((task) => task.status !== "done").map((task) => [task.id, hoursFromMinutes(task.plannedMinutes)])));
+    setError(null);
+    setEditing(true);
+  }
+
+  const runningTotalMinutes = editing
+    ? detail.tasks.filter((task) => task.status !== "done").reduce((total, task) => total + Math.round((Number(hours[task.id]) || 0) * 60), 0)
+    : detail.plannedMinutes;
+  const load = detail.capacityMinutes ? runningTotalMinutes / detail.capacityMinutes : 0;
+
+  async function save() {
+    setSaving(true);
+    setError(null);
+    try {
+      const allocations = detail.tasks.filter((task) => task.status !== "done").map((task) => ({ taskId: task.id, plannedMinutes: Math.round((Number(hours[task.id]) || 0) * 60) }));
+      const next = await api.saveResourcePlannerDayAllocations(employeeId, date, allocations);
+      onSaved(next);
+      setEditing(false);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not save today's plan");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // Once the day's planned total reaches (or exceeds) the working-day capacity, the day is
+  // considered fully planned and locked from further editing — for everyone, including TL/PM/
+  // admin, not just the employee. Re-plannable again only if planned minutes drop back below
+  // capacity (e.g. after a task is marked done and its allocation cleared).
+  const isFullyPlanned = detail.capacityMinutes > 0 && detail.plannedMinutes >= detail.capacityMinutes;
+
+  return (
+    <section className="mt-6">
+      <div className="mb-2 flex items-center justify-between">
+        <div className="flex items-center gap-2"><ListChecks size={16} className="text-brand-600" /><h3 className="font-semibold text-ink-900">Assigned task progress ({detail.tasks.length})</h3></div>
+        {canEdit && detail.tasks.some((task) => task.status !== "done") && !editing && (
+          isFullyPlanned
+            ? <span className="text-xs font-medium text-ink-400" title="This day is already fully planned">Day fully planned</span>
+            : <button onClick={startEditing} className="text-xs font-semibold text-brand-600 hover:text-brand-700">Edit today's plan</button>
+        )}
+      </div>
+      {editing && (
+        <div className={cn("mb-3 flex items-center justify-between rounded-lg border px-3 py-2 text-sm", load > 1 ? "border-danger-200 bg-danger-50 text-danger-700" : load > 0.85 ? "border-warning-200 bg-warning-50 text-warning-700" : "border-success-200 bg-success-50 text-success-700")}>
+          <span className="font-semibold">{hoursFromMinutes(runningTotalMinutes)}h / {hoursFromMinutes(detail.capacityMinutes)}h planned</span>
+          <span className="text-xs">{load > 1 ? "Over capacity" : "Looks good"}</span>
+        </div>
+      )}
+      {detail.tasks.length ? (
+        <div className="space-y-2">
+          {detail.tasks.map((task) => (
+            <div key={task.id} className={cn("rounded-lg border p-3", editing ? "border-ink-200" : "border-ink-200 hover:border-brand-300 hover:bg-brand-50/30")}>
+              <button onClick={() => onOpenTask(task.project.id, task.id)} className="flex w-full items-start gap-2 text-left">
+                <span className="rounded bg-ink-100 px-1.5 py-0.5 text-[11px]">#{task.code}</span>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium text-ink-900">{task.name}</p>
+                  <p className="text-xs text-ink-500">{task.project.key} · {task.project.name}</p>
+                </div>
+                <Badge tone={task.status === "done" ? "green" : task.status === "in_progress" ? "amber" : "blue"}>{task.progress}%</Badge>
+              </button>
+              {editing && task.status !== "done" ? (
+                <div className="mt-2 flex items-center gap-2" onClick={(event) => event.stopPropagation()}>
+                  <input type="number" min="0" step="0.25" value={hours[task.id] ?? "0"} onChange={(event) => setHours((current) => ({ ...current, [task.id]: event.target.value }))} className="h-8 w-24 rounded-md border border-ink-200 px-2 text-sm outline-none focus:border-brand-500" />
+                  <span className="text-xs text-ink-500">hours planned today</span>
+                  <span className="ml-auto text-[11px] text-ink-400">{hoursFromMinutes(task.remainingMinutes)}h remaining · {hoursFromMinutes(task.estimatedMinutes)}h total estimate</span>
+                </div>
+              ) : task.status === "done" ? (
+                <div className="mt-2 flex flex-wrap items-center gap-4 text-[11px] text-ink-500">
+                  <span className={cn("font-semibold", task.trackedSeconds > task.estimatedMinutes * 60 ? "text-danger-600" : "text-success-700")}>
+                    Task done
+                    {task.trackedSeconds < task.estimatedMinutes * 60 && " — finished earlier than estimated"}
+                    {task.trackedSeconds > task.estimatedMinutes * 60 && ` — took ${durationLabel(task.trackedSeconds - task.estimatedMinutes * 60)} extra to complete`}
+                  </span>
+                  <span>{hoursFromMinutes(task.estimatedMinutes)}h estimated</span>
+                  <span>{durationLabel(task.trackedSeconds)} total tracked</span>
+                </div>
+              ) : (
+                <div className="mt-2 flex flex-wrap items-center gap-4 text-[11px] text-ink-500">
+                  <span>{hoursFromMinutes(task.plannedMinutes)}h planned today{task.hasExplicitAllocation && <span className="ml-1 font-semibold text-brand-600">(set)</span>}</span>
+                  {task.plannedMinutes > 0 && task.todayTrackedSeconds === 0 ? (
+                    <span className="font-medium text-ink-400">Not worked on today</span>
+                  ) : (
+                    <span className={cn("font-medium", task.extraTrackedSeconds > 0 ? "text-warning-600" : "text-ink-700")}>
+                      {durationLabel(task.todayTrackedSeconds)} worked today
+                      {task.extraTrackedSeconds > 0 && <span className="ml-1">(+{durationLabel(task.extraTrackedSeconds)} extra)</span>}
+                    </span>
+                  )}
+                  <span className="font-semibold text-ink-700">{hoursFromMinutes(task.remainingMinutes)}h remaining</span>
+                  <span>{hoursFromMinutes(task.estimatedMinutes)}h total estimate</span>
+                  <span>{durationLabel(task.trackedSeconds)} total tracked</span>
+                  <button
+                    onClick={(event) => { event.stopPropagation(); markDone(task); }}
+                    disabled={markingDone === task.id}
+                    className="ml-auto rounded-md border border-ink-200 px-2 py-1 text-[11px] font-semibold text-ink-600 hover:border-success-300 hover:text-success-700 disabled:opacity-50"
+                  >
+                    {markingDone === task.id ? "Marking done…" : "Mark done"}
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      ) : <p className="rounded-lg border border-dashed border-ink-200 p-4 text-sm text-ink-500">No task was scheduled or logged on this date.</p>}
+      {error && <p className="mt-2 text-xs text-danger-600">{error}</p>}
+      {editing && (
+        <div className="mt-3 flex justify-end gap-2">
+          <Button size="sm" variant="outline" onClick={() => setEditing(false)} disabled={saving}>Cancel</Button>
+          <Button size="sm" onClick={save} disabled={saving}>{saving ? "Saving…" : "Save plan"}</Button>
+        </div>
+      )}
+    </section>
+  );
 }
 
 function AssignTaskSection({ employeeId, date, onAssigned }: { employeeId: string; date: string; onAssigned: () => void }) {

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/api";
-import { getChatSocket } from "@/lib/chatSocket";
+import { getChatSocket, getOnlinePresenceSnapshot } from "@/lib/chatSocket";
 import { useSession } from "@/lib/session";
 import type { ChatChannel, ChatMessage, Notification } from "@/types/tenant";
 
@@ -13,7 +13,7 @@ export function useChatData(activeChannelId?: string | null) {
   const { session } = useSession();
   const [channels, setChannels] = useState<ChatChannel[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
-  const [onlineUserIds, setOnlineUserIds] = useState<Set<string>>(new Set());
+  const [onlineUserIds, setOnlineUserIds] = useState<Set<string>>(() => new Set(getOnlinePresenceSnapshot()));
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const currentUserId = session?.user.kind === "company" ? session.user.id : "";
@@ -37,6 +37,7 @@ export function useChatData(activeChannelId?: string | null) {
 
   useEffect(() => {
     const socket = getChatSocket();
+    setOnlineUserIds(new Set(getOnlinePresenceSnapshot()));
 
     function bumpChannel(message: ChatMessage) {
       // Thread replies (parentMessageId set) never appear in the main scrolling thread —

@@ -9,6 +9,7 @@ import { ProjectsPage } from "@/features/projects/ProjectsPage";
 import { ProjectDetailPage } from "@/features/projects/ProjectDetailPage";
 import { MilestonesPage } from "@/features/projects/MilestonesPage";
 import { ResourcesPage } from "@/features/resources/ResourcesPage";
+import { OverdueReviewsPage } from "@/features/resources/OverdueReviewsPage";
 import { ReportsPage } from "@/features/reports/ReportsPage";
 import { TeamReportDetailPage } from "@/features/reports/TeamReportDetailPage";
 import { AssignedTasksPage } from "@/features/tasks/AssignedTasksPage";
@@ -81,6 +82,10 @@ export const router = createBrowserRouter([
   {
     element: <ProtectedRoute requireKind="company" requiredPermission={{ module: "resources", action: "view" }} />,
     children: [{ element: <AppLayout />, children: [{ path: "/resources", element: <ResourcesPage /> }] }],
+  },
+  {
+    element: <ProtectedRoute requireKind="company" requiredPermission={{ module: "tasks", action: "approve" }} />,
+    children: [{ element: <AppLayout />, children: [{ path: "/overdue-reviews", element: <OverdueReviewsPage /> }] }],
   },
   {
     element: <ProtectedRoute requireKind="company" requiredPermission={{ module: "resources", action: "view" }} />,

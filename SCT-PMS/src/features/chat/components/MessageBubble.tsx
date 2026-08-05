@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Check, CheckCheck, MessageSquare, Pencil, Pin, Smile, Trash2 } from "lucide-react";
+import { Check, CheckCheck, MessageSquare, Pencil, Pin, Reply, Smile, Trash2 } from "lucide-react";
 import { MemberAvatar } from "@/components/common";
 import { cn } from "@/lib/cn";
 import type { ChatMessage, ChatUser } from "@/types/tenant";
@@ -43,25 +43,34 @@ function renderBody(body: string, users: ChatUser[]) {
       const known = users.find((user) => user.id === userId);
       return <span key={index} className="rounded bg-brand-50 px-1 font-medium text-brand-700">@{known?.name ?? name}</span>;
     }
-    const urlParts = part.split(/(\s+)/).filter(Boolean);
+    const everyoneParts = part.split(/(@everyone\b)/gi).filter(Boolean);
     return (
       <span key={index}>
-        {urlParts.map((segment, segIndex) => {
-          if (URL_TEST.test(segment)) {
-            const href = segment.startsWith("www.") ? `https://${segment}` : segment;
-            return (
-              <a key={segIndex} href={href} target="_blank" rel="noreferrer" className="break-all text-brand-600 underline hover:text-brand-700">
-                {segment}
-              </a>
-            );
+        {everyoneParts.map((everyonePart, everyoneIndex) => {
+          if (/^@everyone$/i.test(everyonePart)) {
+            return <span key={everyoneIndex} className="rounded bg-brand-50 px-1 font-medium text-brand-700">@everyone</span>;
           }
-          return <span key={segIndex}>{segment}</span>;
+          const urlParts = everyonePart.split(/(\s+)/).filter(Boolean);
+          return (
+            <span key={everyoneIndex}>
+              {urlParts.map((segment, segIndex) => {
+                if (URL_TEST.test(segment)) {
+                  const href = segment.startsWith("www.") ? `https://${segment}` : segment;
+                  return (
+                    <a key={segIndex} href={href} target="_blank" rel="noreferrer" className="break-all [overflow-wrap:anywhere] text-brand-600 underline hover:text-brand-700">
+                      {segment}
+                    </a>
+                  );
+                }
+                return <span key={segIndex} className="[overflow-wrap:anywhere]">{segment}</span>;
+              })}
+            </span>
+          );
         })}
       </span>
     );
   });
 }
-
 export function MessageBubble({
   message,
   users,
@@ -74,6 +83,7 @@ export function MessageBubble({
   onEdit,
   onPin,
   onOpenThread,
+  onReply,
   showThreadAction = true,
 }: {
   message: ChatMessage;
@@ -87,6 +97,10 @@ export function MessageBubble({
   onEdit?: (body: string) => Promise<void>;
   onPin?: () => void;
   onOpenThread?: () => void;
+  /** Inline "reply" (quotes this message, main flow) — distinct from onOpenThread's side-panel
+   *  thread. Omitted entirely inside the thread panel itself, where replying-to-a-reply isn't
+   *  supported. */
+  onReply?: () => void;
   showThreadAction?: boolean;
 }) {
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
@@ -96,7 +110,7 @@ export function MessageBubble({
   const [editMentions, setEditMentions] = useState<EditMention[]>(initialEditValue.mentions);
   const [saving, setSaving] = useState(false);
   const isMine = message.authorId === currentUserId;
-  const canDelete = isMine || canManage;
+  const canDelete = isMine;
   const canEdit = isMine && Boolean(onEdit);
 
   async function saveEdit() {
@@ -152,15 +166,15 @@ export function MessageBubble({
   }
 
   return (
-    <div className={cn("group flex items-end gap-2 px-4 py-1", isMine ? "flex-row-reverse" : "flex-row")}>
+    <div id={`chat-message-${message.id}`} className={cn("group flex items-end gap-2 px-4 py-1", isMine ? "flex-row-reverse" : "flex-row")}>
       {!isMine && <MemberAvatar id={message.authorId} name={message.author.name} size="sm" className="mb-4 shrink-0 ring-0" />}
 
-      <div className={cn("flex min-w-0 flex-col", isEditing ? "w-[85%] max-w-md" : "max-w-[70%]", isMine ? "items-end" : "items-start")}>
+      <div className={cn("flex min-w-0 max-w-[78%] lg:max-w-[52rem] flex-col", isEditing ? "w-[85%] max-w-md" : "", isMine ? "items-end" : "items-start")}>
         {!isMine && <span className="mb-0.5 px-1 text-xs font-semibold text-ink-500">{message.author.name}</span>}
 
         <div
           className={cn(
-            "relative rounded-2xl px-3.5 py-2 shadow-sm",
+            "relative max-w-full overflow-hidden rounded-2xl px-3.5 py-2 shadow-sm",
             isMine ? "rounded-br-md bg-brand-600 text-white" : "rounded-bl-md border border-ink-200 bg-white text-ink-800",
             message.isPinned && "ring-2 ring-warning-400",
             isEditing && "w-full",
@@ -168,6 +182,19 @@ export function MessageBubble({
         >
           {message.isAnnouncement && (
             <span className="mb-1 inline-block rounded bg-warning-100 px-1.5 py-0.5 text-[10px] font-semibold text-warning-700">Announcement</span>
+          )}
+          {message.replyToMessageId && (
+            <button
+              onClick={() => document.getElementById(`chat-message-${message.replyToMessageId}`)?.scrollIntoView({ behavior: "smooth", block: "center" })}
+              className={cn(
+                "mb-1.5 block w-full max-w-full truncate rounded-lg border-l-2 px-2 py-1 text-left text-xs",
+                isMine ? "border-white/50 bg-white/10 text-brand-50 hover:bg-white/15" : "border-brand-400 bg-surface-subtle text-ink-600 hover:bg-ink-100",
+              )}
+            >
+              <span className="font-semibold">{message.replyToMessage?.author.name ?? "Original message"}</span>
+              {": "}
+              {message.replyToMessage?.isDeleted || !message.replyToMessage ? "Message deleted" : (message.replyToMessage.body || "Attachment")}
+            </button>
           )}
           {isEditing ? (
             <div className="w-full min-w-0">
@@ -194,7 +221,7 @@ export function MessageBubble({
             </div>
           ) : (
             message.body && (
-              <p className={cn("whitespace-pre-wrap break-words text-sm", isMine && "[&_a]:text-white [&_a]:underline")}>
+              <p className={cn("max-w-full whitespace-pre-wrap break-words text-sm leading-5 [overflow-wrap:anywhere]", isMine && "[&_a]:text-white [&_a]:underline")}>
                 {renderBody(message.body, users)}
               </p>
             )
@@ -234,6 +261,11 @@ export function MessageBubble({
         <button onClick={() => setShowEmojiPicker((v) => !v)} title="React" className="rounded-full p-1.5 text-ink-400 hover:bg-ink-100 hover:text-ink-700">
           <Smile size={14} />
         </button>
+        {onReply && (
+          <button onClick={onReply} title="Reply" className="rounded-full p-1.5 text-ink-400 hover:bg-ink-100 hover:text-ink-700">
+            <Reply size={14} />
+          </button>
+        )}
         {showThreadAction && onOpenThread && (
           <button onClick={onOpenThread} title="Reply in thread" className="rounded-full p-1.5 text-ink-400 hover:bg-ink-100 hover:text-ink-700">
             <MessageSquare size={14} />
@@ -244,7 +276,7 @@ export function MessageBubble({
             <Pencil size={14} />
           </button>
         )}
-        {canManage && onPin && (
+        {onPin && (
           <button onClick={onPin} title={message.isPinned ? "Unpin" : "Pin"} className="rounded-full p-1.5 text-ink-400 hover:bg-ink-100 hover:text-ink-700">
             <Pin size={14} />
           </button>

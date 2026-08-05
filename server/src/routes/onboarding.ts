@@ -73,6 +73,8 @@ const scheduleSchema = z.object({
   startTime: z.string().regex(/^\d{2}:\d{2}$/),
   endTime: z.string().regex(/^\d{2}:\d{2}$/),
   breakMinutes: z.number().int().min(0),
+  breakStartTime: z.string().regex(/^\d{2}:\d{2}$/).default("14:00"),
+  breakEndTime: z.string().regex(/^\d{2}:\d{2}$/).default("14:30"),
 });
 
 onboardingRouter.get("/schedules", async (req, res) => {

@@ -59,19 +59,22 @@ import {
   Input,
   Modal,
   ProgressBar,
-  Select,
   Textarea,
 } from "@/components/common";
 import { api, ApiError } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { projectSlug } from "./projectRoutes";
-import { usePermission, useSession } from "@/lib/session";
+import { usePermission, useSession, useCompanyTimezone } from "@/lib/session";
+import { formatDateInZone, formatDateTime, formatTimeOnly } from "@/lib/formatDate";
+import { AddProjectDrawer } from "./components/AddProjectDrawer";
 import type {
   CompanyUser,
+  Department,
   ProjectSection,
   ProjectWorkspace,
   ProjectMilestone,
   ProjectTaskStatus,
+  ProjectPriority,
   ProjectTaskFilters,
   ProjectTaskFilterOptions,
   AuditLogEntry,
@@ -120,8 +123,8 @@ function initialsOf(name: string) {
   return name.split(" ").map((part) => part[0]).slice(0, 2).join("").toUpperCase();
 }
 
-function formatDate(value?: string | null) {
-  return value ? new Date(value).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" }) : "—";
+function formatDate(value?: string | null, timezone?: string) {
+  return value ? formatDateInZone(value, timezone, { day: "2-digit", month: "short", year: "numeric" }) : "—";
 }
 
 function formatMinutes(minutes: number) {
@@ -135,6 +138,45 @@ function formatSeconds(seconds: number) {
   const minutes = Math.floor((seconds % 3600) / 60);
   const secs = seconds % 60;
   return `${String(hours).padStart(2, "0")}H:${String(minutes).padStart(2, "0")}M:${String(secs).padStart(2, "0")}S`;
+}
+
+function timeToMinutesLocal(value: string) {
+  const [hours, minutes] = value.split(":").map(Number);
+  return (hours || 0) * 60 + (minutes || 0);
+}
+function minutesToLabel(totalMinutes: number) {
+  const hours24 = Math.floor(totalMinutes / 60) % 24;
+  const minutes = totalMinutes % 60;
+  const period = hours24 >= 12 ? "PM" : "AM";
+  const hours12 = hours24 % 12 === 0 ? 12 : hours24 % 12;
+  return `${hours12}:${String(minutes).padStart(2, "0")} ${period}`;
+}
+/** Builds the list of selectable start times for a manual work log — 15-minute increments from
+ *  the company's working-hours start up to (but not through) its end, skipping any slot that
+ *  falls inside the lunch break. Excludes durationMinutes' worth of slots at the very end so a
+ *  chosen start time always leaves room for the full duration before endTime, unless that would
+ *  leave no options at all (a duration longer than the whole working day), in which case the
+ *  duration constraint is dropped rather than showing an empty list. */
+function buildLogTimeOptions(schedule: { startTime: string; endTime: string; breakStartTime: string; breakEndTime: string }, durationMinutes: number) {
+  const startMin = timeToMinutesLocal(schedule.startTime);
+  const endMin = timeToMinutesLocal(schedule.endTime);
+  const breakStart = timeToMinutesLocal(schedule.breakStartTime);
+  const breakEnd = timeToMinutesLocal(schedule.breakEndTime);
+  const step = 15;
+  const build = (respectDuration: boolean) => {
+    const options: { value: string; label: string }[] = [];
+    for (let minute = startMin; minute < endMin; minute += step) {
+      if (minute >= breakStart && minute < breakEnd) continue;
+      if (minute < breakStart && minute + durationMinutes > breakStart) continue;
+      if (respectDuration && minute + durationMinutes > endMin) continue;
+      const hh = String(Math.floor(minute / 60)).padStart(2, "0");
+      const mm = String(minute % 60).padStart(2, "0");
+      options.push({ value: `${hh}:${mm}`, label: minutesToLabel(minute) });
+    }
+    return options;
+  };
+  const withDuration = build(true);
+  return withDuration.length > 0 || durationMinutes <= 0 ? withDuration : build(false);
 }
 const linkPattern = /(https?:\/\/[^\s<>"']+)/g;
 
@@ -202,6 +244,9 @@ export function ProjectDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [memberDrawer, setMemberDrawer] = useState(false);
   const [selectedTask, setSelectedTask] = useState<WorkspaceTask | null>(null);
+  const [editingProjectDrawer, setEditingProjectDrawer] = useState(false);
+  const [departments, setDepartments] = useState<Department[]>([]);
+  const [favouriteBusy, setFavouriteBusy] = useState(false);
   const { session } = useSession();
   const canEditPermission = usePermission("projects", "edit");
   const canManageProjectPermission = usePermission("projects", "manage");
@@ -209,6 +254,23 @@ export function ProjectDetailPage() {
   const canEditTaskPermission = usePermission("tasks", "edit");
   const canExportTaskPermission = usePermission("tasks", "export");
   const canDeleteTaskPermission = usePermission("tasks", "manage");
+  const canViewDepartments = usePermission("company_settings", "view");
+
+  useEffect(() => {
+    if (!canViewDepartments) return;
+    api.listDepartmentsFull().then(({ departments: rows }) => setDepartments(rows)).catch(() => undefined);
+  }, [canViewDepartments]);
+
+  async function toggleFavourite() {
+    if (!workspace || favouriteBusy) return;
+    setFavouriteBusy(true);
+    try {
+      await api.toggleProjectFavourite(workspace.project.id);
+      load();
+    } finally {
+      setFavouriteBusy(false);
+    }
+  }
 
   function load(silent = true) {
     if (!projectId) return;
@@ -239,6 +301,12 @@ export function ProjectDetailPage() {
           : { ...section, tasks: remaining };
       }),
     } : current);
+    // visibleSections prefers serverTasks over workspace.sections whenever a filtered fetch has
+    // run (which is effectively always, once the list/kanban view has mounted) — so updating
+    // workspace alone is invisible until the next debounced refetch lands. Merging the new/changed
+    // task into serverTasks too means a just-created subtask (or any edit) shows immediately
+    // instead of only after that refetch completes or a manual page reload.
+    setServerTasks((current) => current === null ? current : [...current.filter((item) => item.id !== nextTask.id), nextTask]);
     setSelectedTask((current) => current?.id === nextTask.id ? nextTask : current);
     setFilterRevision((value) => value + 1);
   }
@@ -248,6 +316,7 @@ export function ProjectDetailPage() {
       ...current,
       sections: current.sections.map((section) => ({ ...section, tasks: section.tasks.filter((item) => item.id !== taskId) })),
     } : current);
+    setServerTasks((current) => current === null ? current : current.filter((item) => item.id !== taskId));
     setSelectedTask((current) => current?.id === taskId ? null : current);
     setFilterRevision((value) => value + 1);
   }
@@ -359,9 +428,13 @@ export function ProjectDetailPage() {
    *  themselves) is a project-management action, not self-editing — mirrors the backend's
    *  PATCH /:id/tasks/:taskId check in server/src/routes/projects.ts, which independently
    *  requires real project edit access for any assigneeId change. Without this, an employee
-   *  could open their own assigned task and hand it off to anyone else in the company. */
+   *  could open their own assigned task and hand it off to anyone else in the company.
+   *  The "employee"-only role check mirrors canReassignTasks in server/src/routes/projects.ts:
+   *  a plain employee can't reassign tasks even if a manager granted them "edit" project-member
+   *  access for other reasons — reassignment is a distinct, higher-trust capability. */
+  const isEmployeeOnly = session?.user.kind === "company" && session.user.roles.every((role) => role === "employee");
   function canReassignTask(_task: WorkspaceTask): boolean {
-    return canEditTaskPermission && projectHasEditAccess;
+    return canEditTaskPermission && projectHasEditAccess && !isEmployeeOnly;
   }
   const tasks = sections.flatMap((section) => section.tasks);
   const visibleSections = sections.map((section) => ({
@@ -392,8 +465,8 @@ export function ProjectDetailPage() {
             <span className="truncate text-base font-semibold text-ink-900">{project.name}</span>
             <ChevronDown size={15} className="text-ink-400" />
           </button>
-          {canEdit && <button className="rounded-lg p-1.5 text-ink-500 hover:bg-ink-100"><Settings size={16} /></button>}
-          <button className="rounded-lg p-1.5 text-warning-500 hover:bg-ink-100">
+          {canEdit && <button onClick={() => setEditingProjectDrawer(true)} className="rounded-lg p-1.5 text-ink-500 hover:bg-ink-100"><Settings size={16} /></button>}
+          <button onClick={toggleFavourite} disabled={favouriteBusy} className="rounded-lg p-1.5 text-warning-500 hover:bg-ink-100 disabled:opacity-50">
             <Star size={16} className={project.favourite ? "fill-warning-500" : ""} />
           </button>
           <div className="relative mx-auto hidden w-full max-w-md xl:block">
@@ -496,7 +569,6 @@ export function ProjectDetailPage() {
             canReassignTask={canReassignTask}
             employees={companyUsers}
             milestones={milestones}
-            onChanged={load}
             onTaskUpdated={syncWorkspaceTask}
             onProjectTimeChanged={syncProjectTrackedSeconds}
             onSelectTask={setSelectedTask}
@@ -561,6 +633,14 @@ export function ProjectDetailPage() {
         onTaskDeleted={removeWorkspaceTask}
         onProjectTimeChanged={syncProjectTrackedSeconds}
         onClose={() => setSelectedTask(null)}
+      />
+      <AddProjectDrawer
+        open={editingProjectDrawer}
+        companyUsers={companyUsers}
+        departments={departments}
+        editingProject={project}
+        onClose={() => setEditingProjectDrawer(false)}
+        onSaved={() => { setEditingProjectDrawer(false); load(); }}
       />
     </div>
   );
@@ -668,7 +748,6 @@ function TaskListWorkspace({
   canReassignTask,
   employees,
   milestones,
-  onChanged,
   onTaskUpdated,
   onProjectTimeChanged,
   onSelectTask,
@@ -681,7 +760,6 @@ function TaskListWorkspace({
   canReassignTask: (task: WorkspaceTask) => boolean;
   employees: CompanyUser[];
   milestones: ProjectMilestone[];
-  onChanged: () => void;
   onTaskUpdated: (task: WorkspaceTask) => void;
   onProjectTimeChanged: (trackedSeconds: number) => void;
   onSelectTask: (task: WorkspaceTask) => void;
@@ -691,6 +769,7 @@ function TaskListWorkspace({
   const [collapsedTasks, setCollapsedTasks] = useState<Record<string, boolean>>({});
   const [subtaskParent, setSubtaskParent] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [draftPriorities, setDraftPriorities] = useState<Record<string, ProjectPriority>>({});
   const [saving, setSaving] = useState<string | null>(null);
   const [savingField, setSavingField] = useState<string | null>(null);
   const [activeTimer, setActiveTimer] = useState<ActiveTaskTimer | null>(null);
@@ -773,10 +852,17 @@ function TaskListWorkspace({
     if (!name) return;
     setSaving(draftKey);
     try {
-      await api.createProjectTask(projectId, { name, sectionId: section.id, parentTaskId: parentTaskId ?? null });
+      const { task } = await api.createProjectTask(projectId, { name, sectionId: section.id, parentTaskId: parentTaskId ?? null, priority: draftPriorities[draftKey] ?? "medium" });
       setDrafts((current) => ({ ...current, [draftKey]: "" }));
+      setDraftPriorities((current) => ({ ...current, [draftKey]: "medium" }));
       setSubtaskParent(null);
-      onChanged();
+      // Merge the created task straight into local state (same path as onTaskUpdated for edits)
+      // instead of a full onChanged() reload — that reload raced against the debounced
+      // serverTasks refetch (see the effect keyed on filterRevision in ProjectDetailPage),
+      // and whichever response landed last could win, which is why a new subtask sometimes
+      // needed a second manual refresh — or worse, landed without its parentTaskId link — to
+      // actually show up correctly nested under its parent.
+      onTaskUpdated(task);
     } finally {
       setSaving(null);
     }
@@ -920,6 +1006,17 @@ function TaskListWorkspace({
                       <div className="flex max-w-xl items-center gap-2">
                         <span className="text-xs text-ink-400">↳</span>
                         <input autoFocus value={drafts[`sub-${task.id}`] ?? ""} onChange={(event) => setDrafts((value) => ({ ...value, [`sub-${task.id}`]: event.target.value }))} onKeyDown={(event) => { if (event.key === "Enter") addTask(section, task.id); if (event.key === "Escape") setSubtaskParent(null); }} placeholder={`Add subtask under ${task.name}`} className="h-8 flex-1 rounded-md border border-ink-200 bg-white px-3 text-sm outline-none focus:border-brand-500" />
+                        <FilterSelect
+                          value={draftPriorities[`sub-${task.id}`] ?? "medium"}
+                          onChange={(value) => setDraftPriorities((current) => ({ ...current, [`sub-${task.id}`]: value as ProjectPriority }))}
+                          className="w-28 shrink-0 [&_button]:h-8"
+                          options={[
+                            { value: "low", label: "Low" },
+                            { value: "medium", label: "Medium" },
+                            { value: "high", label: "High" },
+                            { value: "critical", label: "Critical" },
+                          ]}
+                        />
                         <Button size="sm" onClick={() => addTask(section, task.id)} disabled={saving === `sub-${task.id}`}>Add Subtask</Button>
                         <button onClick={() => setSubtaskParent(null)} className="p-1 text-ink-400"><X size={14} /></button>
                       </div>
@@ -941,6 +1038,19 @@ function TaskListWorkspace({
                         placeholder="Add Task"
                         className="h-8 flex-1 bg-transparent text-sm outline-none placeholder:text-ink-500"
                       />
+                      {drafts[section.id] && (
+                        <FilterSelect
+                          value={draftPriorities[section.id] ?? "medium"}
+                          onChange={(value) => setDraftPriorities((current) => ({ ...current, [section.id]: value as ProjectPriority }))}
+                          className="w-28 shrink-0 [&_button]:h-8"
+                          options={[
+                            { value: "low", label: "Low" },
+                            { value: "medium", label: "Medium" },
+                            { value: "high", label: "High" },
+                            { value: "critical", label: "Critical" },
+                          ]}
+                        />
+                      )}
                       {drafts[section.id] && <Button size="sm" onClick={() => addTask(section)} disabled={saving === section.id}>Add</Button>}
                     </div>
                   </td>
@@ -1025,9 +1135,10 @@ function DueDateCell({
   saving: boolean;
   onChange: (dueDate: string | null) => void;
 }) {
+  const timezone = useCompanyTimezone();
   const display = (
     <span className={cn("inline-flex items-center gap-1 font-medium", task.dueDate && new Date(task.dueDate) < new Date() ? "text-danger-600" : "text-ink-600")}>
-      {formatDate(task.dueDate)}
+      {formatDate(task.dueDate, timezone)}
     </span>
   );
   if (!canEdit) return <div className="text-xs">{display}</div>;
@@ -1110,7 +1221,9 @@ function TaskStatusCell({
   onChange: (status: ProjectTaskStatus) => void;
 }) {
   const display = <Badge tone={task.status === "done" ? "green" : task.status === "in_progress" ? "amber" : "blue"}>{task.status.replace("_", " ")}</Badge>;
-  if (!canEdit) return <div className="text-xs">{display}</div>;
+  // Once a task is marked done, its status is final from this cell — no dropdown, just the
+  // badge. Reopening a completed task isn't something this inline control supports.
+  if (!canEdit || task.status === "done") return <div className="text-xs">{display}</div>;
   return (
     <FilterSelect
       value={task.status}
@@ -1280,10 +1393,12 @@ function KanbanWorkspace({
   onSelectTask: (task: WorkspaceTask) => void;
   collapseSubtasks: boolean;
 }) {
+  const timezone = useCompanyTimezone();
   const [draggingTask, setDraggingTask] = useState<WorkspaceTask | null>(null);
   const [dragOverSection, setDragOverSection] = useState<string | null>(null);
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
   const [draft, setDraft] = useState<Record<string, string>>({});
+  const [draftPriority, setDraftPriority] = useState<Record<string, ProjectPriority>>({});
   const [adding, setAdding] = useState<string | null>(null);
   const [savingField, setSavingField] = useState<string | null>(null);
   const [addingSection, setAddingSection] = useState(false);
@@ -1319,9 +1434,10 @@ function KanbanWorkspace({
     if (!name) return;
     setAdding(section.id);
     try {
-      await api.createProjectTask(projectId, { name, sectionId: section.id });
+      const { task } = await api.createProjectTask(projectId, { name, sectionId: section.id, priority: draftPriority[section.id] ?? "medium" });
       setDraft((current) => ({ ...current, [section.id]: "" }));
-      onChanged();
+      setDraftPriority((current) => ({ ...current, [section.id]: "medium" }));
+      onTaskUpdated(task);
     } finally {
       setAdding(null);
     }
@@ -1432,20 +1548,28 @@ function KanbanWorkspace({
           <button onClick={() => setTimerError(null)} className="text-danger-500 hover:text-danger-700">×</button>
         </div>
       )}
-    <div className="flex min-w-max flex-1 gap-2.5 p-3">
-      {sections.map((section) => {
+    <div className="flex min-w-max flex-1 flex-col gap-2.5 p-3">
+      {sections.some((section) => collapsedSections[section.id]) && (
+        <div className="flex flex-wrap gap-2">
+          {sections.filter((section) => collapsedSections[section.id]).map((section) => (
+            <button
+              key={section.id}
+              onClick={() => setCollapsedSections((value) => ({ ...value, [section.id]: false }))}
+              className="flex items-center gap-2 rounded-xl border border-ink-200 bg-surface-muted px-3 py-2 text-ink-600 hover:text-brand-600"
+              title="Expand section"
+            >
+              <ChevronDown size={14} />
+              <span className="text-sm font-semibold text-ink-800">{section.name}</span>
+              <span className="text-xs font-semibold text-brand-600">({section.tasks.length})</span>
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="flex min-w-max flex-1 gap-2.5">
+      {sections.filter((section) => !collapsedSections[section.id]).map((section) => {
         const cards = collapseSubtasks
           ? section.tasks.filter((task) => !task.parentTaskId || !section.tasks.some((candidate) => candidate.id === task.parentTaskId))
           : section.tasks;
-        if (collapsedSections[section.id]) {
-          return (
-            <section key={section.id} className="flex h-full w-12 shrink-0 flex-col items-center rounded-xl border border-ink-200 bg-surface-muted py-3">
-              <button onClick={() => setCollapsedSections((value) => ({ ...value, [section.id]: false }))} className="rounded-full border border-ink-200 bg-white p-1 text-ink-500 hover:text-brand-600"><ChevronRight size={14} /></button>
-              <span className="mt-3 text-xs font-semibold text-brand-600">{section.tasks.length}</span>
-              <span className="mt-3 [writing-mode:vertical-rl] text-sm font-semibold text-ink-800">{section.name}</span>
-            </section>
-          );
-        }
         return (
           <section
             key={section.id}
@@ -1501,7 +1625,7 @@ function KanbanWorkspace({
                         { id: "unassigned", label: "Unassigned", icon: <Users size={14} />, onSelect: () => reassign(task, null) },
                         ...employees.map((user) => ({ id: user.id, label: user.name, icon: <MemberAvatar id={user.id} name={user.name} size="xs" status={user.accountStatus === "active" ? "active" : "inactive"} />, onSelect: () => reassign(task, user.id) })),
                       ]} /> : task.assignee ? <MemberAvatar id={task.assignee.id} name={task.assignee.name} size="xs" status={task.assignee.accountStatus === "active" ? "active" : "inactive"} /> : <Users size={15} className="text-ink-400" />}
-                      <span className={cn("text-xs", overdue ? "font-medium text-danger-500" : "text-ink-500")}>{formatDate(task.dueDate)}</span>
+                      <span className={cn("text-xs", overdue ? "font-medium text-danger-500" : "text-ink-500")}>{formatDate(task.dueDate, timezone)}</span>
                       <div className="ml-auto flex items-center gap-2 text-[11px] text-ink-500">
                         {canEditTask(task) && <button disabled={timerBusy === task.id} onClick={() => toggleTimer(task)} title={isRunning ? "Stop timer" : "Start timer"} className={cn("flex items-center gap-1 rounded px-1.5 py-1", isRunning ? "bg-danger-50 text-danger-600" : "hover:bg-success-50 hover:text-success-600")}>
                           {isRunning ? <span className="h-2.5 w-2.5 rounded-sm bg-danger-500" /> : <Play size={12} className="fill-current" />}
@@ -1518,9 +1642,24 @@ function KanbanWorkspace({
               })}
 
               {adding === section.id && (
-                <div className="flex items-center gap-2 rounded-xl border border-brand-300 bg-white p-2">
-                  <input autoFocus value={draft[section.id] ?? ""} onChange={(event) => setDraft((current) => ({ ...current, [section.id]: event.target.value }))} onKeyDown={(event) => { if (event.key === "Enter") addTask(section); if (event.key === "Escape") setAdding(null); }} onBlur={() => { if (!draft[section.id]?.trim()) setAdding(null); }} placeholder="Task name" className="h-8 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-ink-400" />
-                  <Button size="sm" disabled={!draft[section.id]?.trim()} onClick={() => addTask(section)}>Add</Button>
+                <div className="rounded-xl border border-brand-300 bg-white p-2">
+                  <input autoFocus value={draft[section.id] ?? ""} onChange={(event) => setDraft((current) => ({ ...current, [section.id]: event.target.value }))} onKeyDown={(event) => { if (event.key === "Enter") addTask(section); if (event.key === "Escape") setAdding(null); }} onBlur={(event) => { if (!draft[section.id]?.trim() && !event.relatedTarget?.closest("[data-add-task-priority], [data-portal-panel]")) setAdding(null); }} placeholder="Task name" className="h-8 w-full bg-transparent text-sm outline-none placeholder:text-ink-400" />
+                  <div className="mt-1.5 flex items-center gap-2">
+                    <div data-add-task-priority className="flex-1">
+                      <FilterSelect
+                        value={draftPriority[section.id] ?? "medium"}
+                        onChange={(value) => setDraftPriority((current) => ({ ...current, [section.id]: value as ProjectPriority }))}
+                        className="[&_button]:h-8"
+                        options={[
+                          { value: "low", label: "Low" },
+                          { value: "medium", label: "Medium" },
+                          { value: "high", label: "High" },
+                          { value: "critical", label: "Critical" },
+                        ]}
+                      />
+                    </div>
+                    <Button size="sm" disabled={!draft[section.id]?.trim()} onClick={() => addTask(section)}>Add</Button>
+                  </div>
                 </div>
               )}
             </div>
@@ -1537,11 +1676,13 @@ function KanbanWorkspace({
       </div> : <button onClick={() => setAddingSection(true)} className="flex h-11 w-full items-center gap-2 rounded-xl border border-dashed border-ink-300 px-3 text-sm font-medium text-ink-500 hover:border-brand-400 hover:text-brand-600"><Plus size={16} />Add Section</button>}</div>}
     </div>
     </div>
+    </div>
     <TimerStopDialog target={stopTarget} busy={timerBusy !== null} onCancel={() => setStopTarget(null)} onSave={saveTimerLog} onDiscard={discardTimer} />
     </>
   );
 }
 function ProjectDashboard({ workspace }: { workspace: ProjectWorkspace }) {
+  const timezone = useCompanyTimezone();
   const { project, sections, milestones, members } = workspace;
   const tasks = sections.flatMap((section) => section.tasks);
   const overdue = tasks.filter((task) => task.dueDate && new Date(task.dueDate) < new Date() && task.status !== "done").length;
@@ -1562,7 +1703,7 @@ function ProjectDashboard({ workspace }: { workspace: ProjectWorkspace }) {
         <Card className="p-5 lg:col-span-2">
           <h3 className="font-semibold text-ink-900">Project progress</h3>
           <ProgressBar value={project.completionPercent} className="mt-5 h-2" />
-          <div className="mt-5 grid grid-cols-3 gap-4 text-sm"><Summary label="Planned start" value={formatDate(project.startDate)} /><Summary label="Planned end" value={formatDate(project.dueDate)} /><Summary label="Methodology" value={project.methodology} /></div>
+          <div className="mt-5 grid grid-cols-3 gap-4 text-sm"><Summary label="Planned start" value={formatDate(project.startDate, timezone)} /><Summary label="Planned end" value={formatDate(project.dueDate, timezone)} /><Summary label="Methodology" value={project.methodology} /></div>
         </Card>
         <Card className="p-5">
           <h3 className="font-semibold text-ink-900">Budget</h3>
@@ -1587,6 +1728,7 @@ function MilestoneWorkspace({
   canEdit: boolean;
   onChanged: () => void;
 }) {
+  const timezone = useCompanyTimezone();
   const [name, setName] = useState("");
   const [ownerId, setOwnerId] = useState("");
   const [editingMilestone, setEditingMilestone] = useState<ProjectMilestone | null>(null);
@@ -1617,11 +1759,11 @@ function MilestoneWorkspace({
 
   return (
     <div className="bg-white">
-      <div className="flex items-center justify-between border-b border-ink-200 px-4 py-3"><p className="font-semibold text-ink-900">{milestones.length} Milestones</p>{canEdit && <div className="flex gap-2"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Milestone name" className="w-52" /><Select value={ownerId} onChange={(e) => setOwnerId(e.target.value)} className="w-44"><option value="">No owner</option>{companyUsers.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}</Select><Button onClick={add}>Add</Button></div>}</div>
+      <div className="flex items-center justify-between border-b border-ink-200 px-4 py-3"><p className="font-semibold text-ink-900">{milestones.length} Milestones</p>{canEdit && <div className="flex gap-2"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Milestone name" className="w-52" /><FilterSelect value={ownerId} onChange={setOwnerId} className="w-44" options={[{ value: "", label: "No owner" }, ...companyUsers.map((user) => ({ value: user.id, label: user.name }))]} /><Button onClick={add}>Add</Button></div>}</div>
       {error && <div className="m-3 rounded-lg border border-danger-200 bg-danger-50 px-3.5 py-2.5 text-sm text-danger-700">{error}</div>}
       <table className="w-full min-w-[900px] text-sm">
         <thead><tr className="border-b border-ink-200 bg-surface-subtle">{["Milestone Name", "Owner", "Start Date", "Release Date", "Progress", "Total Tasks", "Tags", "Description", ""].map((header) => <th key={header} className="px-4 py-3 text-left text-xs font-semibold text-ink-600">{header}</th>)}</tr></thead>
-        <tbody>{milestones.map((milestone) => <tr key={milestone.id} className="border-b border-ink-100"><td className="px-4 py-3 font-medium text-ink-900">{milestone.name}</td><td className="px-4 py-3">{milestone.owner?.name ?? "—"}</td><td className="px-4 py-3">{formatDate(milestone.startDate)}</td><td className="px-4 py-3">{formatDate(milestone.releaseDate)}</td><td className="px-4 py-3"><span className="inline-flex h-9 w-9 items-center justify-center rounded-full border-2 border-brand-500 text-[10px] font-semibold">{milestone.progress}%</span></td><td className="px-4 py-3">{milestone._count?.tasks ?? 0}</td><td className="px-4 py-3">{milestone.tags.join(", ") || "—"}</td><td className="px-4 py-3 text-ink-500">{milestone.description ?? "—"}</td><td className="px-4 py-3">{canEdit && <div className="flex items-center gap-0.5"><button onClick={() => setEditingMilestone(milestone)} title="Edit milestone" className="rounded p-1.5 text-ink-400 hover:bg-ink-100 hover:text-ink-900"><Pencil size={14} /></button><button onClick={() => setDeletingMilestone(milestone)} title="Delete milestone" className="rounded p-1.5 text-ink-400 hover:bg-danger-50 hover:text-danger-600"><Trash2 size={14} /></button></div>}</td></tr>)}</tbody>
+        <tbody>{milestones.map((milestone) => <tr key={milestone.id} className="border-b border-ink-100"><td className="px-4 py-3 font-medium text-ink-900">{milestone.name}</td><td className="px-4 py-3">{milestone.owner?.name ?? "—"}</td><td className="px-4 py-3">{formatDate(milestone.startDate, timezone)}</td><td className="px-4 py-3">{formatDate(milestone.releaseDate, timezone)}</td><td className="px-4 py-3"><span className="inline-flex h-9 w-9 items-center justify-center rounded-full border-2 border-brand-500 text-[10px] font-semibold">{milestone.progress}%</span></td><td className="px-4 py-3">{milestone._count?.tasks ?? 0}</td><td className="px-4 py-3">{milestone.tags.join(", ") || "—"}</td><td className="px-4 py-3 text-ink-500">{milestone.description ?? "—"}</td><td className="px-4 py-3">{canEdit && <div className="flex items-center gap-0.5"><button onClick={() => setEditingMilestone(milestone)} title="Edit milestone" className="rounded p-1.5 text-ink-400 hover:bg-ink-100 hover:text-ink-900"><Pencil size={14} /></button><button onClick={() => setDeletingMilestone(milestone)} title="Delete milestone" className="rounded p-1.5 text-ink-400 hover:bg-danger-50 hover:text-danger-600"><Trash2 size={14} /></button></div>}</td></tr>)}</tbody>
       </table>
 
       <ProjectMilestoneEditModal
@@ -1722,10 +1864,11 @@ function ProjectMilestoneEditModal({
       <div className="space-y-4">
         <Field label="Milestone name"><Input value={name} onChange={(event) => setName(event.target.value)} /></Field>
         <Field label="Owner">
-          <Select value={ownerId} onChange={(event) => setOwnerId(event.target.value)}>
-            <option value="">No owner</option>
-            {companyUsers.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}
-          </Select>
+          <FilterSelect
+            value={ownerId}
+            onChange={setOwnerId}
+            options={[{ value: "", label: "No owner" }, ...companyUsers.map((user) => ({ value: user.id, label: user.name }))]}
+          />
         </Field>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Start date"><DatePicker value={startDate} onChange={(value) => setStartDate(value ?? "")} max={releaseDate || null} /></Field>
@@ -1743,7 +1886,7 @@ function GanttWorkspace({ sections }: { sections: ProjectSection[] }) {
   const tasks = sections.flatMap((section) => section.tasks);
   const days = Array.from({ length: 31 }, (_, index) => index + 1);
   return <div className="min-w-[1250px] bg-white">
-    <div className="flex items-center gap-2 border-b border-ink-200 px-4 py-3"><span className="text-sm text-ink-600">Group by:</span><Select className="w-36"><option>Tasks</option><option>Sections</option></Select><Button variant="outline" size="icon"><Maximize2 size={15} /></Button><div className="ml-auto flex gap-2"><Button variant="outline" size="sm">Incomplete Tasks</Button><Button variant="outline" size="sm">Due Date</Button><Button variant="outline" size="sm">All Users</Button></div></div>
+    <div className="flex items-center gap-2 border-b border-ink-200 px-4 py-3"><span className="text-sm text-ink-600">Group by:</span><FilterSelect className="w-36" value="Tasks" onChange={() => {}} options={[{ value: "Tasks", label: "Tasks" }, { value: "Sections", label: "Sections" }]} /><Button variant="outline" size="icon"><Maximize2 size={15} /></Button><div className="ml-auto flex gap-2"><Button variant="outline" size="sm">Incomplete Tasks</Button><Button variant="outline" size="sm">Due Date</Button><Button variant="outline" size="sm">All Users</Button></div></div>
     <div className="grid grid-cols-[340px_1fr] border-b border-ink-200"><div className="px-4 py-4 font-semibold">Tasks</div><div><div className="border-b border-ink-200 py-1 text-center text-xs font-semibold">July 2026</div><div className="grid" style={{ gridTemplateColumns: "repeat(31, minmax(28px, 1fr))" }}>{days.map((day) => <div key={day} className="border-r border-ink-100 py-2 text-center text-[10px]">{day}</div>)}</div></div></div>
     {tasks.length === 0 ? <EmptyWorkspace label="No data to display" /> : tasks.map((task) => {
       const start = task.startDate ? new Date(task.startDate).getDate() : 1;
@@ -1760,11 +1903,12 @@ function CalendarWorkspace({ sections, onSelectTask }: { sections: ProjectSectio
   const offset = new Date(year, month, 1).getDay();
   const count = new Date(year, month + 1, 0).getDate();
   const cells = Array.from({ length: 42 }, (_, index) => index - offset + 1);
-  return <div className="bg-white"><div className="flex items-center gap-2 border-b border-ink-200 p-3"><Button variant="outline" size="icon" onClick={() => setCursor(new Date(year, month - 1, 1))}><ChevronLeft size={15} /></Button><b>{cursor.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</b><Button variant="outline" size="icon" onClick={() => setCursor(new Date(year, month + 1, 1))}><ChevronRight size={15} /></Button><Select className="ml-3 w-36"><option>Month</option><option>Week</option></Select><div className="ml-auto"><Button variant="outline" size="sm">View for: Task</Button></div></div><div className="grid grid-cols-7">{["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map((day) => <div key={day} className="border-b border-r border-ink-200 py-3 text-center text-xs font-semibold">{day}</div>)}{cells.map((day, index) => <div key={index} className="min-h-32 border-b border-r border-ink-200 p-2"><span className={cn("float-right text-xs font-semibold", day < 1 || day > count ? "text-ink-300" : "text-ink-800")}>{day < 1 ? new Date(year, month, day).getDate() : day > count ? day - count : day}</span>{day > 0 && day <= count && tasks.filter((task) => task.dueDate && new Date(task.dueDate).getFullYear() === year && new Date(task.dueDate).getMonth() === month && new Date(task.dueDate).getDate() === day).map((task) => <button key={task.id} onClick={() => onSelectTask(task)} className="mt-6 block w-full truncate rounded bg-brand-50 px-2 py-1 text-left text-xs text-brand-700">{task.name}</button>)}</div>)}</div></div>;
+  return <div className="bg-white"><div className="flex items-center gap-2 border-b border-ink-200 p-3"><Button variant="outline" size="icon" onClick={() => setCursor(new Date(year, month - 1, 1))}><ChevronLeft size={15} /></Button><b>{cursor.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</b><Button variant="outline" size="icon" onClick={() => setCursor(new Date(year, month + 1, 1))}><ChevronRight size={15} /></Button><FilterSelect className="ml-3 w-36" value="Month" onChange={() => {}} options={[{ value: "Month", label: "Month" }, { value: "Week", label: "Week" }]} /><div className="ml-auto"><Button variant="outline" size="sm">View for: Task</Button></div></div><div className="grid grid-cols-7">{["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map((day) => <div key={day} className="border-b border-r border-ink-200 py-3 text-center text-xs font-semibold">{day}</div>)}{cells.map((day, index) => <div key={index} className="min-h-32 border-b border-r border-ink-200 p-2"><span className={cn("float-right text-xs font-semibold", day < 1 || day > count ? "text-ink-300" : "text-ink-800")}>{day < 1 ? new Date(year, month, day).getDate() : day > count ? day - count : day}</span>{day > 0 && day <= count && tasks.filter((task) => task.dueDate && new Date(task.dueDate).getFullYear() === year && new Date(task.dueDate).getMonth() === month && new Date(task.dueDate).getDate() === day).map((task) => <button key={task.id} onClick={() => onSelectTask(task)} className="mt-6 block w-full truncate rounded bg-brand-50 px-2 py-1 text-left text-xs text-brand-700">{task.name}</button>)}</div>)}</div></div>;
 }
 
 function ActivityWorkspace({ workspace, users }: { workspace: ProjectWorkspace; users: CompanyUser[] }) {
-  return <div className="bg-white"><div className="flex items-center border-b border-ink-200 px-4 py-3"><h3 className="font-semibold">Activities</h3><div className="ml-auto flex gap-2"><Button variant="outline" size="sm">Activities Date</Button><Button variant="outline" size="sm">All Types</Button><Button variant="outline" size="sm">All Employees</Button></div></div>{workspace.activities.length === 0 ? <EmptyWorkspace label="No activities yet" /> : workspace.activities.map((activity) => { const actor = users.find((user) => user.id === activity.actorId); return <div key={activity.id} className="flex items-center gap-3 border-b border-ink-100 px-5 py-3">{actor ? <MemberAvatar id={actor.id} name={actor.name} size="sm" status={actor.accountStatus === "active" ? "active" : "inactive"} className="ring-0" /> : <Avatar initials="S" color="bg-ink-400" size="sm" />}<p className="text-sm"><b>{actor?.name ?? "System"}</b> {activity.action.replaceAll(".", " ")}.</p><span className="ml-auto text-xs text-ink-500">{new Date(activity.createdAt).toLocaleString()}</span></div>; })}</div>;
+  const timezone = useCompanyTimezone();
+  return <div className="bg-white"><div className="flex items-center border-b border-ink-200 px-4 py-3"><h3 className="font-semibold">Activities</h3><div className="ml-auto flex gap-2"><Button variant="outline" size="sm">Activities Date</Button><Button variant="outline" size="sm">All Types</Button><Button variant="outline" size="sm">All Employees</Button></div></div>{workspace.activities.length === 0 ? <EmptyWorkspace label="No activities yet" /> : workspace.activities.map((activity) => { const actor = users.find((user) => user.id === activity.actorId); return <div key={activity.id} className="flex items-center gap-3 border-b border-ink-100 px-5 py-3">{actor ? <MemberAvatar id={actor.id} name={actor.name} size="sm" status={actor.accountStatus === "active" ? "active" : "inactive"} className="ring-0" /> : <Avatar initials="S" color="bg-ink-400" size="sm" />}<p className="text-sm"><b>{actor?.name ?? "System"}</b> {activity.action.replaceAll(".", " ")}.</p><span className="ml-auto text-xs text-ink-500">{formatDateTime(activity.createdAt, timezone)}</span></div>; })}</div>;
 }
 
 function DocumentWorkspace({ canEdit }: { canEdit: boolean }) {
@@ -1815,8 +1959,8 @@ function MemberDrawer({
     <Drawer open={open} onClose={onClose} title="Project team and access" width="max-w-2xl" footer={<><Button variant="outline" onClick={onClose}>Cancel</Button><Button onClick={add} disabled={!userId}>Add Member</Button></>}>
       <div className="space-y-5">
         <div className="flex gap-5 border-b border-ink-200"><span className="border-b-2 border-brand-600 px-1 pb-3 text-sm font-semibold text-brand-600">Active Members</span><span className="px-1 pb-3 text-sm text-ink-500">Inactive Members</span><span className="px-1 pb-3 text-sm text-ink-500">Default Project Access</span></div>
-        <Field label="Organization member"><Select value={userId} onChange={(e) => setUserId(e.target.value)}><option value="">Select a person</option>{available.map((user) => <option key={user.id} value={user.id}>{user.name} · {user.email}</option>)}</Select></Field>
-        <Field label="Project permission"><Select value={access} onChange={(e) => setAccess(e.target.value as typeof access)}><option value="view">Can view</option><option value="edit">Can edit</option><option value="manage">Can manage</option></Select></Field>
+        <Field label="Organization member"><FilterSelect value={userId} onChange={setUserId} options={[{ value: "", label: "Select a person" }, ...available.map((user) => ({ value: user.id, label: `${user.name} · ${user.email}` }))]} /></Field>
+        <Field label="Project permission"><FilterSelect value={access} onChange={(value) => setAccess(value as typeof access)} options={[{ value: "view", label: "Can view" }, { value: "edit", label: "Can edit" }, { value: "manage", label: "Can manage" }]} /></Field>
       </div>
     </Drawer>
   );
@@ -1878,6 +2022,7 @@ function ActivityTimeline({
   currentUserId: string;
   onRemoveComment: (commentId: string) => void;
 }) {
+  const timezone = useCompanyTimezone();
   type TimelineEntry =
     | { kind: "activity"; id: string; createdAt: string; activity: AuditLogEntry }
     | { kind: "comment"; id: string; createdAt: string; comment: TaskComment };
@@ -1902,7 +2047,7 @@ function ActivityTimeline({
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <b className="text-ink-900">{comment.author.name}</b>
-                  <span className="text-xs text-ink-400">{new Date(comment.createdAt).toLocaleString()}</span>
+                  <span className="text-xs text-ink-400">{formatDateTime(comment.createdAt, timezone)}</span>
                   {canEdit && comment.authorId === currentUserId && (
                     <button className="ml-auto text-ink-400 hover:text-danger-600" onClick={() => onRemoveComment(comment.id)}><Trash2 size={13} /></button>
                   )}
@@ -1919,11 +2064,55 @@ function ActivityTimeline({
             {actor ? <MemberAvatar id={actor.id} name={actor.name} size="sm" status={actor.accountStatus === "active" ? "active" : "inactive"} className="ring-0" /> : <Avatar initials="S" color="bg-ink-400" size="sm" />}
             <div>
               <p><b className="text-ink-900">{actor?.name ?? "Project system"}</b> {describeActivity(activity)}</p>
-              <p className="mt-0.5 text-xs text-ink-400">{new Date(activity.createdAt).toLocaleString()}</p>
+              <p className="mt-0.5 text-xs text-ink-400">{formatDateTime(activity.createdAt, timezone)}</p>
             </div>
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/** Shown to the assignee on an overdue task pending review, until they submit an explanation —
+ *  once submitted the backend rejects a second submission for the same review, so this just
+ *  optimistically hides itself rather than re-checking review state from the server. */
+function OverdueReasonBanner({ taskId }: { taskId: string }) {
+  const [reason, setReason] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit() {
+    if (!reason.trim()) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await api.submitOverdueReason(taskId, reason.trim());
+      setSubmitted(true);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not submit the reason");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (submitted) {
+    return (
+      <div className="m-4 rounded-lg border border-success-200 bg-success-50 px-3 py-2 text-sm text-success-700">
+        Thanks — your reason was sent for review.
+      </div>
+    );
+  }
+
+  return (
+    <div className="m-4 rounded-lg border border-warning-200 bg-warning-50 p-3">
+      <p className="text-sm font-semibold text-warning-800">This task is overdue and needs an explanation</p>
+      <p className="mt-0.5 text-xs text-warning-700">It won't show up on the resource planner again until this is reviewed.</p>
+      <Textarea value={reason} onChange={(event) => setReason(event.target.value)} rows={2} placeholder="What happened?" className="mt-2" />
+      {error && <p className="mt-1.5 text-xs text-danger-600">{error}</p>}
+      <div className="mt-2 flex justify-end">
+        <Button size="sm" onClick={submit} disabled={submitting || !reason.trim()}>{submitting ? "Submitting…" : "Submit reason"}</Button>
+      </div>
     </div>
   );
 }
@@ -1961,6 +2150,7 @@ export function TaskWorkspaceDrawer({
   onProjectTimeChanged: (trackedSeconds: number) => void;
   onClose: () => void;
 }) {
+  const timezone = useCompanyTimezone();
   const [localTask, setLocalTask] = useState<WorkspaceTask | null>(task);
   const [panel, setPanel] = useState<"activities" | "worklog" | "approval" | "planner">("activities");
   const [lowerTab, setLowerTab] = useState<"subtasks" | "checklist">("subtasks");
@@ -1988,11 +2178,18 @@ export function TaskWorkspaceDrawer({
   const [logDate, setLogDate] = useState("");
   const [logHours, setLogHours] = useState("");
   const [logMinutes, setLogMinutes] = useState("");
+  const [logStartTime, setLogStartTime] = useState("");
   const [logActivity, setLogActivity] = useState("");
   const [logBillable, setLogBillable] = useState(false);
   const [logNote, setLogNote] = useState("");
   const [logSaving, setLogSaving] = useState(false);
   const [logError, setLogError] = useState<string | null>(null);
+  const [workingHours, setWorkingHours] = useState<{ startTime: string; endTime: string; breakStartTime: string; breakEndTime: string } | null>(null);
+
+  useEffect(() => {
+    if (!showLogForm || workingHours) return;
+    api.getWorkingHours().then(setWorkingHours).catch(() => undefined);
+  }, [showLogForm, workingHours]);
 
   useEffect(() => {
     setLocalTask(task);
@@ -2104,6 +2301,7 @@ export function TaskWorkspaceDrawer({
     const durationMinutes = hours * 60 + minutes;
     if (!logDate) { setLogError("Please choose a date"); return; }
     if (durationMinutes <= 0) { setLogError("Duration must be greater than 0"); return; }
+    if (!logStartTime) { setLogError("Please choose a start time"); return; }
     if (!logActivity) { setLogError("Please select an activity"); return; }
     if (!logNote.trim()) { setLogError("Please add a description"); return; }
     setLogSaving(true);
@@ -2112,6 +2310,7 @@ export function TaskWorkspaceDrawer({
       const result = await api.logTaskTime(projectId, taskId, {
         date: logDate,
         durationMinutes,
+        startTime: logStartTime,
         activityType: logActivity,
         billable: logBillable,
         note: logNote.trim(),
@@ -2120,7 +2319,7 @@ export function TaskWorkspaceDrawer({
       setTrackedSeconds(result.taskTrackedSeconds);
       if (result.entry.projectId === projectId) onProjectTimeChanged(result.projectTrackedSeconds);
       setShowLogForm(false);
-      setLogDate(""); setLogHours(""); setLogMinutes(""); setLogActivity(""); setLogBillable(false); setLogNote("");
+      setLogDate(""); setLogHours(""); setLogMinutes(""); setLogStartTime(""); setLogActivity(""); setLogBillable(false); setLogNote("");
     } catch (err) {
       setLogError(err instanceof ApiError ? err.message : "Time log could not be saved");
     } finally {
@@ -2284,27 +2483,56 @@ export function TaskWorkspaceDrawer({
         <div className="min-w-0 border-r border-ink-200">
           <div className="flex flex-wrap items-center gap-2 border-b border-ink-200 bg-surface-subtle px-4 py-3">
             <div className="w-40 shrink-0">
-              <Select value={localTask.status} onChange={(event) => updateTask({ status: event.target.value as WorkspaceTask["status"] })} disabled={!canEdit || saving}>
-                <option value="new_request">New Request</option>
-                <option value="in_progress">In Progress</option>
-                <option value="done">Completed</option>
-              </Select>
+              {localTask.status === "done" ? (
+                <div className="flex h-9 items-center rounded-lg border border-ink-200 bg-white px-3 text-xs">
+                  <Badge tone="green">Completed</Badge>
+                </div>
+              ) : (
+                <FilterSelect
+                  value={localTask.status}
+                  onChange={(value) => updateTask({ status: value as WorkspaceTask["status"] })}
+                  disabled={!canEdit || saving}
+                  options={[
+                    { value: "new_request", label: "New Request" },
+                    { value: "in_progress", label: "In Progress" },
+                    { value: "done", label: "Completed" },
+                  ]}
+                />
+              )}
             </div>
             <div className="w-32 shrink-0">
-              <Select value={localTask.priority} onChange={(event) => updateTask({ priority: event.target.value as WorkspaceTask["priority"] })} disabled={!canEdit || saving}>
-                <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="critical">Critical</option>
-              </Select>
+              <FilterSelect
+                value={localTask.priority}
+                onChange={(value) => updateTask({ priority: value as WorkspaceTask["priority"] })}
+                disabled={!canEdit || saving}
+                options={[
+                  { value: "low", label: "Low" },
+                  { value: "medium", label: "Medium" },
+                  { value: "high", label: "High" },
+                  { value: "critical", label: "Critical" },
+                ]}
+              />
             </div>
-            <div className="flex shrink-0 items-center gap-2 rounded-lg border border-ink-200 bg-white px-3">
+            <div className="flex shrink-0 items-center gap-2">
               <span className="text-xs font-medium text-ink-500">Progress</span>
-              <Select value={localTask.progress} onChange={(event) => updateTask({ progress: Number(event.target.value) })} disabled={!canEdit || saving} className="h-9 w-20 border-0 px-1 pr-6 shadow-none focus:ring-0">
-                {[0, 10, 25, 50, 75, 90, 100].map((value) => <option key={value} value={value}>{value}%</option>)}
-              </Select>
+              <FilterSelect
+                value={String(localTask.progress)}
+                onChange={(value) => updateTask({ progress: Number(value) })}
+                disabled={!canEdit || saving}
+                className="w-24"
+                options={[0, 10, 25, 50, 75, 90, 100].map((value) => ({ value: String(value), label: `${value}%` }))}
+              />
             </div>
             <div className="ml-auto flex items-center gap-2">
               {activeTimer && activeTimer.taskId !== taskId && <span className="hidden max-w-36 truncate text-[11px] font-medium text-warning-600 xl:inline" title={activeTimer.task?.name ?? "Another task"}>Running: {activeTimer.task ? `#${activeTimer.task.code} ${activeTimer.task.name}` : "another task"}</span>}
               <span className={cn("rounded-md bg-white px-2 py-1 font-mono text-xs", activeTimer && "text-danger-600 ring-1 ring-danger-200")}>{formatSeconds(activeTimer ? runningSeconds : trackedSeconds)}</span>
-              <Button size="sm" onClick={toggleTimer} disabled={!canEdit || timerBusy} className={cn("px-3", activeTimer ? "bg-danger-500 hover:bg-danger-600" : "bg-success-500 hover:bg-success-600")}>
+              <Button
+                size="sm"
+                onClick={toggleTimer}
+                disabled={!canEdit || timerBusy || (!activeTimer && localTask.overdueReviewStatus === "pending_review")}
+                title={!activeTimer && localTask.overdueReviewStatus === "pending_review" ? "This task is overdue and awaiting review — it can't be tracked until it's resolved" : undefined}
+                className={cn("px-3", activeTimer ? "bg-danger-500 hover:bg-danger-600" : "bg-success-500 hover:bg-success-600")}
+              >
                 {activeTimer ? <><span className="mr-1.5 h-3 w-3 rounded-sm bg-white" /> Stop</> : <><Play size={14} className="mr-1.5 fill-white" /> Start</>}
               </Button>
               {canDelete && (
@@ -2316,6 +2544,9 @@ export function TaskWorkspaceDrawer({
           </div>
 
           {error && <div className="m-4 rounded-lg border border-danger-200 bg-danger-50 px-3 py-2 text-sm text-danger-700">{error}</div>}
+          {localTask.overdueReviewStatus === "pending_review" && localTask.assigneeId === currentUserId && (
+            <OverdueReasonBanner taskId={localTask.id} />
+          )}
 
           <div className="p-4">
             <Input
@@ -2349,11 +2580,11 @@ export function TaskWorkspaceDrawer({
                 </div>
               </TaskRow>
               <TaskRow icon={<List size={15} />} label="Task Type"><Input defaultValue={localTask.taskType ?? ""} placeholder="e.g. Development, Bug, Review" onBlur={(event) => updateTask({ taskType: event.target.value.trim() || null })} disabled={!canEdit} /></TaskRow>
-              <TaskRow icon={<WalletCards size={15} />} label="Billing Type"><Select value={localTask.billingType} onChange={(event) => updateTask({ billingType: event.target.value as "billable" | "non_billable" })} disabled={!canEdit}><option value="non_billable">Non-billable</option><option value="billable">Billable</option></Select></TaskRow>
-              <TaskRow icon={<Flag size={15} />} label="Milestone"><Select value={localTask.milestoneId ?? ""} onChange={(event) => updateTask({ milestoneId: event.target.value || null })} disabled={!canEdit}><option value="">Not selected</option>{milestones.map((milestone) => <option key={milestone.id} value={milestone.id}>{milestone.name}</option>)}</Select></TaskRow>
+              <TaskRow icon={<WalletCards size={15} />} label="Billing Type"><FilterSelect value={localTask.billingType} onChange={(value) => updateTask({ billingType: value as "billable" | "non_billable" })} disabled={!canEdit} options={[{ value: "non_billable", label: "Non-billable" }, { value: "billable", label: "Billable" }]} /></TaskRow>
+              <TaskRow icon={<Flag size={15} />} label="Milestone"><FilterSelect value={localTask.milestoneId ?? ""} onChange={(value) => updateTask({ milestoneId: value || null })} disabled={!canEdit} options={[{ value: "", label: "Not selected" }, ...milestones.map((milestone) => ({ value: milestone.id, label: milestone.name }))]} /></TaskRow>
               <TaskRow icon={<Tag size={15} />} label="Tags"><Input value={tagText} onChange={(event) => setTagText(event.target.value)} onBlur={() => updateTask({ tags: tagText.split(",").map((tag) => tag.trim()).filter(Boolean) })} placeholder="Bug, UI, Urgent" disabled={!canEdit} /></TaskRow>
               <TaskRow icon={<GanttChartSquare size={15} />} label="Dependencies">
-                <div className="space-y-2"><div className="flex flex-wrap gap-1.5">{localTask.dependencies.map((dependency) => <span key={dependency.id} className="flex items-center gap-1 rounded-md bg-ink-100 px-2 py-1 text-xs"><Link2 size={11} />#{dependency.dependsOnTask.code} {dependency.dependsOnTask.name}{canEdit && <button onClick={() => updateTask({ dependencyIds: dependencyIds.filter((id) => id !== dependency.dependsOnTaskId) })}><X size={11} /></button>}</span>)}{localTask.dependencies.length === 0 && <span className="text-xs text-ink-400">No dependencies</span>}</div>{canEdit && <Select value="" onChange={(event) => addDependency(event.target.value)}><option value="">+ Add dependency</option>{dependencyOptions.map((candidate) => <option key={candidate.id} value={candidate.id}>#{candidate.code} {candidate.name}</option>)}</Select>}</div>
+                <div className="space-y-2"><div className="flex flex-wrap gap-1.5">{localTask.dependencies.map((dependency) => <span key={dependency.id} className="flex items-center gap-1 rounded-md bg-ink-100 px-2 py-1 text-xs"><Link2 size={11} />#{dependency.dependsOnTask.code} {dependency.dependsOnTask.name}{canEdit && <button onClick={() => updateTask({ dependencyIds: dependencyIds.filter((id) => id !== dependency.dependsOnTaskId) })}><X size={11} /></button>}</span>)}{localTask.dependencies.length === 0 && <span className="text-xs text-ink-400">No dependencies</span>}</div>{canEdit && <FilterSelect value="" onChange={addDependency} options={[{ value: "", label: "+ Add dependency" }, ...dependencyOptions.map((candidate) => ({ value: candidate.id, label: `#${candidate.code} ${candidate.name}` }))]} />}</div>
               </TaskRow>
             </dl>
 
@@ -2390,7 +2621,10 @@ export function TaskWorkspaceDrawer({
             {panel === "activities" && <ActivityTimeline activities={taskActivities} comments={localTask.comments} employees={employees} canEdit={canEdit} currentUserId={currentUserId} onRemoveComment={removeComment} />}
             {panel === "worklog" && (
               <div className="space-y-3">
-                {canEdit && (
+                {localTask.overdueReviewStatus === "pending_review" && (
+                  <p className="rounded-lg border border-warning-200 bg-warning-50 px-3 py-2 text-xs text-warning-700">This task is overdue and awaiting review — time can't be tracked until it's resolved.</p>
+                )}
+                {canEdit && localTask.overdueReviewStatus !== "pending_review" && (
                   showLogForm ? (
                     <Card className="p-3">
                       <p className="mb-3 text-sm font-semibold text-ink-900">Log time</p>
@@ -2408,17 +2642,31 @@ export function TaskWorkspaceDrawer({
                             </label>
                           </div>
                         </Field>
+                        <Field label="Start Time" className="mb-0">
+                          <FilterSelect
+                            value={logStartTime}
+                            onChange={setLogStartTime}
+                            disabled={!workingHours}
+                            options={
+                              workingHours
+                                ? [{ value: "", label: "Select time" }, ...buildLogTimeOptions(workingHours, Math.max(0, Math.floor(Number(logHours || 0))) * 60 + Math.max(0, Math.floor(Number(logMinutes || 0))))]
+                                : [{ value: "", label: "Loading…" }]
+                            }
+                          />
+                        </Field>
                         <Field label="Activity" className="mb-0">
-                          <Select value={logActivity} onChange={(event) => setLogActivity(event.target.value)}>
-                            <option value="">Select activity</option>
-                            {timerActivityOptions.map((activity) => <option key={activity} value={activity}>{activity}</option>)}
-                          </Select>
+                          <FilterSelect
+                            value={logActivity}
+                            onChange={setLogActivity}
+                            options={[{ value: "", label: "Select activity" }, ...timerActivityOptions.map((activity) => ({ value: activity, label: activity }))]}
+                          />
                         </Field>
                         <Field label="Billing" className="mb-0">
-                          <Select value={logBillable ? "billable" : "non_billable"} onChange={(event) => setLogBillable(event.target.value === "billable")}>
-                            <option value="non_billable">Non-billable</option>
-                            <option value="billable">Billable</option>
-                          </Select>
+                          <FilterSelect
+                            value={logBillable ? "billable" : "non_billable"}
+                            onChange={(value) => setLogBillable(value === "billable")}
+                            options={[{ value: "non_billable", label: "Non-billable" }, { value: "billable", label: "Billable" }]}
+                          />
                         </Field>
                       </div>
                       <Field label="Description" className="mb-0 mt-2.5">
@@ -2434,11 +2682,27 @@ export function TaskWorkspaceDrawer({
                     <Button size="sm" variant="outline" onClick={() => setShowLogForm(true)}><Plus size={14} className="mr-1.5" />Add time log</Button>
                   )
                 )}
-                {entries.length === 0 ? <p>No work logs recorded yet.</p> : entries.map((entry) => <Card key={entry.id} className="p-3"><div className="flex justify-between"><b>{entry.user.name}</b><span className="font-mono">{entry.endedAt ? formatSeconds(entry.durationSeconds) : "Running"}</span></div><p className="mt-1 text-xs text-ink-500">{entry.activityType} · {entry.billable ? "Billable" : "Non-billable"} · {new Date(entry.startedAt).toLocaleString()}</p>{entry.note && <p className="mt-2 text-xs">{entry.note}</p>}</Card>)}
+                {entries.length === 0 ? <p>No work logs recorded yet.</p> : entries.map((entry) => <Card key={entry.id} className="p-3"><div className="flex justify-between"><b>{entry.user.name}</b><span className="font-mono">{entry.endedAt ? formatSeconds(entry.durationSeconds) : "Running"}</span></div><p className="mt-1 text-xs text-ink-500">{entry.activityType} · {entry.billable ? "Billable" : "Non-billable"} · {formatDateTime(entry.startedAt, timezone)}{entry.endedAt ? ` – ${formatTimeOnly(entry.endedAt, timezone)}` : ""}</p>{entry.note && <p className="mt-2 text-xs">{entry.note}</p>}</Card>)}
               </div>
             )}
             {panel === "approval" && <div className="rounded-lg border border-dashed border-ink-200 p-6 text-center"><CheckCircle2 className="mx-auto text-ink-300" /><p className="mt-2">No approvals requested for this task.</p></div>}
-            {panel === "planner" && <div className="space-y-3"><Summary label="Assignee" value={localTask.assignee?.name ?? "Unassigned"} /><Summary label="Estimate" value={formatMinutes(localTask.estimatedMinutes)} /><Summary label="Tracked" value={formatSeconds(liveSeconds)} /><Summary label="Due" value={formatDate(localTask.dueDate)} /><Summary label="Followers" value={localTask.followers.map((follower) => follower.user.name).join(", ") || "None"} /></div>}
+            {panel === "planner" && (
+              <div className="space-y-3">
+                <Summary label="Assignee" value={localTask.assignee?.name ?? "Unassigned"} />
+                <Summary label="Estimate" value={formatMinutes(localTask.estimatedMinutes)} />
+                <Summary
+                  label="Tracked"
+                  value={
+                    localTask.estimatedMinutes > 0 && liveSeconds > localTask.estimatedMinutes * 60
+                      ? `${formatSeconds(liveSeconds)} — took ${formatSeconds(liveSeconds - localTask.estimatedMinutes * 60)} extra`
+                      : formatSeconds(liveSeconds)
+                  }
+                  tone={localTask.estimatedMinutes > 0 && liveSeconds > localTask.estimatedMinutes * 60 ? "danger" : "default"}
+                />
+                <Summary label="Due" value={formatDate(localTask.dueDate, timezone)} />
+                <Summary label="Followers" value={localTask.followers.map((follower) => follower.user.name).join(", ") || "None"} />
+              </div>
+            )}
           </div>
           <div className="border-t border-ink-200 p-3"><textarea value={commentText} onChange={(event) => setCommentText(event.target.value)} disabled={!canEdit} placeholder={canEdit ? "Please enter your comment..." : "You do not have permission to comment"} className="min-h-24 w-full rounded-lg border border-ink-200 p-3 text-sm outline-none focus:border-brand-500 disabled:bg-ink-50" /><div className="mt-2 flex items-center justify-between"><span className="text-xs text-ink-400">{commentText.length}/24000</span><Button size="sm" onClick={addComment} disabled={!canEdit || saving || !commentText.trim()}><Send size={14} className="mr-1.5" />Send</Button></div></div>
         </div>
@@ -2468,8 +2732,8 @@ export function TaskWorkspaceDrawer({
 function TaskRow({ icon, label, children }: { icon: React.ReactNode; label: string; children: React.ReactNode }) {
   return <div className="grid grid-cols-[155px_minmax(0,1fr)] items-start gap-4 px-4 py-3 text-sm"><dt className="flex items-center gap-2 pt-2 text-ink-500">{icon}{label}</dt><dd className="min-w-0">{children}</dd></div>;
 }
-function Summary({ label, value }: { label: string; value: string }) {
-  return <div><p className="text-xs text-ink-500">{label}</p><p className="mt-1 font-semibold capitalize text-ink-900">{value}</p></div>;
+function Summary({ label, value, tone = "default" }: { label: string; value: string; tone?: "default" | "danger" }) {
+  return <div><p className="text-xs text-ink-500">{label}</p><p className={cn("mt-1 font-semibold capitalize", tone === "danger" ? "text-danger-600" : "text-ink-900")}>{value}</p></div>;
 }
 const timerActivityOptions = ["Coding", "Meeting", "Learning", "Designing", "Bug fixing", "Testing", "Documentation", "Review", "Support", "Other"];
 
@@ -2561,7 +2825,7 @@ export function TimerStopDialog({
     }
   }
 
-  return <div className="fixed inset-0 z-[120] flex items-center justify-center bg-ink-900/35 p-4" onMouseDown={() => !busy && onCancel()}>
+  return <div className="fixed inset-0 z-[120] flex items-center justify-center bg-ink-900/35 p-4" onMouseDown={(event) => { if (busy) return; if ((event.target as HTMLElement).closest("[data-portal-panel]")) return; onCancel(); }}>
     <div className="w-full max-w-md overflow-hidden rounded-xl border border-ink-200 bg-white shadow-2xl" onMouseDown={(event) => event.stopPropagation()}>
       <header className="flex items-center gap-3 border-b border-ink-200 px-4 py-3">
         <span className="flex h-8 w-8 items-center justify-center rounded-md bg-ink-100 text-sm font-semibold text-ink-700">{target.task?.code ?? target.entry.task?.code ?? ""}</span>
@@ -2571,7 +2835,7 @@ export function TimerStopDialog({
       </header>
       <div className="space-y-3 p-4">
         <div className="grid grid-cols-2 gap-3"><Summary label="Project Name" value={projectName} /><Summary label="Task Name" value={taskName} /></div>
-        <Field label="Select activity" required><Select value={activityType} onChange={(event) => setActivityType(event.target.value)} disabled={busy}><option value="">Select activity</option>{timerActivityOptions.map((activity) => <option key={activity} value={activity}>{activity}</option>)}</Select></Field>
+        <Field label="Select activity" required><FilterSelect value={activityType} onChange={setActivityType} disabled={busy} options={[{ value: "", label: "Select activity" }, ...timerActivityOptions.map((activity) => ({ value: activity, label: activity }))]} /></Field>
         <Field label="Correct work duration" required>
           <div className="flex flex-wrap items-center gap-2">
             <label className="flex h-10 min-w-[96px] flex-1 items-center rounded-lg border border-ink-200 bg-white px-3 focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-100">
@@ -2586,7 +2850,7 @@ export function TimerStopDialog({
           </div>
           <p className="mt-1 text-[11px] text-ink-400">Live timer: {formatSeconds(seconds)}. Adjust this if the timer was left running after actual work ended.</p>
         </Field>
-        <Field label="Description" required><textarea value={note} onChange={(event) => setNote(event.target.value.slice(0, 500))} disabled={busy} placeholder="What did you work on?" className="min-h-28 w-full resize-none rounded-lg border border-ink-200 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/15" /><p className="mt-1 text-right text-[11px] text-ink-400">{note.length}/500</p></Field>
+        <Field label="Description" required><textarea value={note} onChange={(event) => setNote(event.target.value.slice(0, 2000))} disabled={busy} placeholder="What did you work on?" className="min-h-28 w-full resize-none rounded-lg border border-ink-200 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/15" /><p className="mt-1 text-right text-[11px] text-ink-400">{note.length}/2000</p></Field>
         <label className="flex cursor-pointer items-center gap-2 text-sm text-ink-600"><input type="checkbox" checked={billable} onChange={(event) => setBillable(event.target.checked)} disabled={busy} className="h-4 w-4 rounded border-ink-300 text-brand-600" />Billable</label>
         {error && <p className="rounded-lg border border-danger-200 bg-danger-50 px-3 py-2 text-sm text-danger-700">{error}</p>}
       </div>

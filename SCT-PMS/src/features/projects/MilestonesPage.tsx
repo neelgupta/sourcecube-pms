@@ -3,13 +3,10 @@ import { useNavigate } from "react-router-dom";
 import { Flag, Pencil, Trash2 } from "lucide-react";
 import { Badge, Button, Card, DatePicker, Field, Input, MemberAvatar, Modal, Select, Textarea } from "@/components/common";
 import { api, ApiError } from "@/lib/api";
-import { usePermission } from "@/lib/session";
+import { usePermission, useCompanyTimezone } from "@/lib/session";
+import { formatDateOnly } from "@/lib/formatDate";
 import type { AllMilestone, CompanyUser } from "@/types/tenant";
 import { projectWorkspacePath } from "./projectRoutes";
-
-function formatDate(value?: string | null) {
-  return value ? new Date(value).toLocaleDateString() : "—";
-}
 
 function formatHours(minutes: number) {
   const hours = Math.floor(minutes / 60);
@@ -23,6 +20,7 @@ function formatTracked(seconds: number) {
 
 export function MilestonesPage() {
   const navigate = useNavigate();
+  const timezone = useCompanyTimezone();
   const canEdit = usePermission("projects", "edit");
   const [milestones, setMilestones] = useState<AllMilestone[]>([]);
   const [companyUsers, setCompanyUsers] = useState<CompanyUser[]>([]);
@@ -122,8 +120,8 @@ export function MilestonesPage() {
                             <span className="flex items-center gap-2"><MemberAvatar id={milestone.owner.id} name={milestone.owner.name} size="xs" />{milestone.owner.name}</span>
                           ) : "—"}
                         </td>
-                        <td className="px-4 py-3 text-ink-600">{formatDate(milestone.startDate)}</td>
-                        <td className="px-4 py-3 text-ink-600">{formatDate(milestone.releaseDate)}</td>
+                        <td className="px-4 py-3 text-ink-600">{milestone.startDate ? formatDateOnly(milestone.startDate, timezone) : "—"}</td>
+                        <td className="px-4 py-3 text-ink-600">{milestone.releaseDate ? formatDateOnly(milestone.releaseDate, timezone) : "—"}</td>
                         <td className="px-4 py-3">
                           <span className="inline-flex h-9 w-9 items-center justify-center rounded-full border-2 border-brand-500 text-[10px] font-semibold">{milestone.progress}%</span>
                         </td>

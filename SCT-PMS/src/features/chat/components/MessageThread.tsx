@@ -4,7 +4,7 @@ import { Button, EmptyState, MemberAvatar, Modal } from "@/components/common";
 import { api, ApiError } from "@/lib/api";
 import { getChatSocket } from "@/lib/chatSocket";
 import { cn } from "@/lib/cn";
-import type { ChatChannel, ChatMessage, ChatUser } from "@/types/tenant";
+import type { ChatChannel, ChatMessage, ChatUser, TeamMemberSummary } from "@/types/tenant";
 import { AddMembersModal } from "./AddMembersModal";
 import { MessageBubble } from "./MessageBubble";
 import { MessageComposer } from "./MessageComposer";
@@ -34,6 +34,7 @@ export function MessageThread({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeThread, setActiveThread] = useState<ChatMessage | null>(null);
+  const [replyTarget, setReplyTarget] = useState<ChatMessage | null>(null);
   const [readReceipts, setReadReceipts] = useState<Record<string, string>>({});
   const [showAddMembers, setShowAddMembers] = useState(false);
   const [showMemberList, setShowMemberList] = useState(false);
@@ -61,6 +62,7 @@ export function MessageThread({
   useEffect(() => {
     setLoading(true);
     setActiveThread(null);
+    setReplyTarget(null);
     setShowMemberList(false);
     setReadReceipts(Object.fromEntries(
       channel.members
@@ -108,6 +110,13 @@ export function MessageThread({
       }
       if (message.authorId === currentUserId && !message.isSystem) return;
       setMessages((current) => (current.some((item) => item.id === message.id) ? current : [...current, message]));
+      // A message arriving while this thread is already open+focused is immediately visible —
+      // mark it read right away so global unread badges (sidebar nav, useUnreadChatCount) don't
+      // momentarily light up for a channel the user is actively looking at. Without this, the
+      // badge only cleared on the next mount/focus event, not on every live incoming message.
+      if (document.visibilityState === "visible" && document.hasFocus()) {
+        api.markChannelRead(channel.id).then(() => onRead?.(channel.id)).catch(() => undefined);
+      }
     }
     function onUpdated(message: ChatMessage) {
       if (message.channelId !== channel.id) return;
@@ -211,6 +220,8 @@ export function MessageThread({
       return live ? Math.max(base, new Date(live).getTime()) : base;
     });
   const latestOtherRead = otherMembersLastRead.length > 0 ? Math.max(...otherMembersLastRead) : 0;
+  const mentionUsers = channel.members.map((member) => member.user).filter((user) => user.accountStatus === "active");
+  const allowEveryoneMention = channel.type === "group" || channel.type === "project" || channel.type === "announcement";
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1">
@@ -261,6 +272,7 @@ export function MessageThread({
                   onEdit={(body) => editMessage(message.id, body)}
                   onPin={() => togglePin(message)}
                   onOpenThread={() => setActiveThread(message)}
+                  onReply={canPost ? () => setReplyTarget(message) : undefined}
                   />
                 </div>
               ))}
@@ -270,7 +282,13 @@ export function MessageThread({
         </div>
 
         {canPost ? (
-          <MessageComposer users={users} onSend={async (input) => { await sendMessage(input); }} />
+          <MessageComposer
+            users={mentionUsers}
+            allowEveryone={allowEveryoneMention}
+            onSend={async (input) => { await sendMessage(input); }}
+            replyTo={replyTarget}
+            onCancelReply={() => setReplyTarget(null)}
+          />
         ) : (
           <div className="border-t border-ink-200 bg-surface-subtle px-4 py-3 text-center text-xs text-ink-500">
             {channel.type === "announcement" ? "Only a company super admin can post announcements." : "You do not have permission to post here."}
@@ -285,6 +303,8 @@ export function MessageThread({
           channelId={channel.id}
           root={activeThread}
           users={users}
+          mentionUsers={mentionUsers}
+          allowEveryone={allowEveryoneMention}
           currentUserId={currentUserId}
           canManage={canManage}
           canPost={canPost}
@@ -448,6 +468,8 @@ function ThreadPanel({
   channelId,
   root,
   users,
+  mentionUsers,
+  allowEveryone,
   currentUserId,
   canManage,
   canPost,
@@ -457,6 +479,8 @@ function ThreadPanel({
   channelId: string;
   root: ChatMessage;
   users: ChatUser[];
+  mentionUsers: TeamMemberSummary[];
+  allowEveryone: boolean;
   currentUserId: string;
   canManage: boolean;
   canPost: boolean;
@@ -511,7 +535,7 @@ function ThreadPanel({
           ))
         )}
       </div>
-      {canPost && <MessageComposer users={users} onSend={send} placeholder="Reply in thread..." />}
+      {canPost && <MessageComposer users={mentionUsers} allowEveryone={allowEveryone} onSend={send} placeholder="Reply in thread..." />}
     </div>
   );
 }

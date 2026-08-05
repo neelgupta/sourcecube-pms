@@ -168,6 +168,8 @@ export interface WorkingSchedule {
   startTime: string;
   endTime: string;
   breakMinutes: number;
+  breakStartTime: string;
+  breakEndTime: string;
 }
 
 export interface TeamProductivityMetrics {
@@ -394,7 +396,9 @@ export interface ResourcePlannerDayDetail {
   remainingPlannedMinutes: number;
   tasks: Array<{
     id: ID; code: number; name: string; status: ProjectTaskStatus; progress: number; estimatedMinutes: number; trackedSeconds: number;
-    plannedMinutes: number; startDate?: string | null; dueDate?: string | null; completedAt?: string | null;
+    remainingMinutes: number; overdueReviewStatus: "pending_review" | null;
+    plannedMinutes: number; todayTrackedSeconds: number; extraTrackedSeconds: number; startDate?: string | null; dueDate?: string | null; completedAt?: string | null;
+    hasExplicitAllocation: boolean; allocationNote?: string | null;
     project: { id: ID; name: string; key: string };
   }>;
   logs: Array<{
@@ -403,6 +407,36 @@ export interface ResourcePlannerDayDetail {
     task: { id: ID; code: number; name: string; status: ProjectTaskStatus; progress: number };
     project: { id: ID; name: string; key: string };
   }>;
+}
+
+export interface TaskDailyAllocationEntry {
+  taskId: ID;
+  date: string;
+  plannedMinutes: number;
+  note?: string | null;
+}
+
+export interface TaskOverdueReview {
+  id: ID;
+  taskId: ID;
+  triggeredAt: string;
+  originalDueDate: string;
+  reason?: string | null;
+  reasonSubmittedAt?: string | null;
+  reasonSubmittedBy?: ID | null;
+  approverId: ID;
+  status: "pending_review" | "resolved";
+  resolvedAt?: string | null;
+  resolvedBy?: ID | null;
+  resolutionAction?: string | null;
+  newEstimatedMinutes?: number | null;
+  newDueDate?: string | null;
+  createdAt: string;
+  task: {
+    id: ID; code: number; name: string; estimatedMinutes: number; trackedSeconds: number; dueDate?: string | null;
+    assignee?: { id: ID; name: string; email: string } | null;
+    project: { id: ID; name: string; key: string };
+  };
 }
 export interface OnboardingState {
   tenantId: ID;
@@ -575,6 +609,7 @@ export interface WorkspaceTask {
   dependencies: TaskDependency[];
   timeEntries: TaskTimeEntry[];
   createdAt: string;
+  overdueReviewStatus?: "pending_review" | null;
 }
 
 export type ProjectTaskDueFilter = "overdue" | "today" | "this_week" | "no_date";
@@ -681,7 +716,7 @@ export function isCompanyUser(user: PlatformOrCompanyUser): user is CompanyUser 
 
 export type ChatChannelType = "project" | "group" | "dm" | "announcement";
 export type ChatAttachmentType = "file" | "voice_note";
-export type NotificationType = "mention" | "announcement" | "channel_invite" | "message";
+export type NotificationType = "mention" | "announcement" | "channel_invite" | "message" | "task_overdue_review" | "task_review_resolved";
 
 export interface ChatUser {
   id: ID;
@@ -718,6 +753,8 @@ export interface ChatMessage {
   authorId: ID;
   author: TeamMemberSummary;
   parentMessageId?: ID | null;
+  replyToMessageId?: ID | null;
+  replyToMessage?: { id: ID; body?: string | null; isDeleted: boolean; authorId: ID; author: TeamMemberSummary } | null;
   body?: string | null;
   attachmentType?: ChatAttachmentType | null;
   attachmentUrl?: string | null;
@@ -763,6 +800,8 @@ export interface Notification {
   body?: string | null;
   channelId?: ID | null;
   messageId?: ID | null;
+  taskId?: ID | null;
+  projectId?: ID | null;
   actorId?: ID | null;
   readAt?: string | null;
   createdAt: string;
