@@ -1,4 +1,4 @@
-﻿CREATE TABLE "SmtpEmailSetting" (
+CREATE TABLE "SmtpEmailSetting" (
   "tenantId" TEXT NOT NULL,
   "enabled" BOOLEAN NOT NULL DEFAULT false,
   "host" TEXT,
