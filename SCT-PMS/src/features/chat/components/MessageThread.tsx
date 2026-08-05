@@ -34,6 +34,7 @@ export function MessageThread({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeThread, setActiveThread] = useState<ChatMessage | null>(null);
+  const [replyTarget, setReplyTarget] = useState<ChatMessage | null>(null);
   const [readReceipts, setReadReceipts] = useState<Record<string, string>>({});
   const [showAddMembers, setShowAddMembers] = useState(false);
   const [showMemberList, setShowMemberList] = useState(false);
@@ -61,6 +62,7 @@ export function MessageThread({
   useEffect(() => {
     setLoading(true);
     setActiveThread(null);
+    setReplyTarget(null);
     setShowMemberList(false);
     setReadReceipts(Object.fromEntries(
       channel.members
@@ -270,6 +272,7 @@ export function MessageThread({
                   onEdit={(body) => editMessage(message.id, body)}
                   onPin={() => togglePin(message)}
                   onOpenThread={() => setActiveThread(message)}
+                  onReply={canPost ? () => setReplyTarget(message) : undefined}
                   />
                 </div>
               ))}
@@ -279,7 +282,13 @@ export function MessageThread({
         </div>
 
         {canPost ? (
-          <MessageComposer users={mentionUsers} allowEveryone={allowEveryoneMention} onSend={async (input) => { await sendMessage(input); }} />
+          <MessageComposer
+            users={mentionUsers}
+            allowEveryone={allowEveryoneMention}
+            onSend={async (input) => { await sendMessage(input); }}
+            replyTo={replyTarget}
+            onCancelReply={() => setReplyTarget(null)}
+          />
         ) : (
           <div className="border-t border-ink-200 bg-surface-subtle px-4 py-3 text-center text-xs text-ink-500">
             {channel.type === "announcement" ? "Only a company super admin can post announcements." : "You do not have permission to post here."}

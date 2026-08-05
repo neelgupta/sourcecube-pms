@@ -768,33 +768,41 @@ model ChatChannelMember {
 }
 
 model ChatMessage {
-  id              String              @id @default(cuid())
-  tenantId        String
-  channelId       String
-  channel         ChatChannel         @relation(fields: [channelId], references: [id], onDelete: Cascade)
-  authorId        String
-  author          CompanyUser         @relation("ChatMessageAuthor", fields: [authorId], references: [id])
-  parentMessageId String?
-  parentMessage   ChatMessage?        @relation("MessageThread", fields: [parentMessageId], references: [id], onDelete: Cascade)
-  replies         ChatMessage[]       @relation("MessageThread")
-  body            String?
-  attachmentType  ChatAttachmentType?
-  attachmentUrl   String?
-  attachmentName  String?
-  durationSeconds Int?
-  isAnnouncement  Boolean             @default(false)
-  isSystem        Boolean             @default(false)
-  isPinned        Boolean             @default(false)
-  isDeleted       Boolean             @default(false)
-  editedAt        DateTime?
-  createdAt       DateTime            @default(now())
-  updatedAt       DateTime            @updatedAt
+  id               String              @id @default(cuid())
+  tenantId         String
+  channelId        String
+  channel          ChatChannel         @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  authorId         String
+  author           CompanyUser         @relation("ChatMessageAuthor", fields: [authorId], references: [id])
+  parentMessageId  String?
+  parentMessage    ChatMessage?        @relation("MessageThread", fields: [parentMessageId], references: [id], onDelete: Cascade)
+  replies          ChatMessage[]       @relation("MessageThread")
+  // Inline "reply" (quotes one specific message right where it's sent, in the main flow) —
+  // distinct from parentMessageId's side-panel thread. onDelete: SetNull (not Cascade) because
+  // deleting the quoted message shouldn't cascade-delete every reply that referenced it; the
+  // reply just loses its quote preview and falls back to showing "Original message deleted".
+  replyToMessageId String?
+  replyToMessage   ChatMessage?        @relation("MessageReply", fields: [replyToMessageId], references: [id], onDelete: SetNull)
+  repliedBy        ChatMessage[]       @relation("MessageReply")
+  body             String?
+  attachmentType   ChatAttachmentType?
+  attachmentUrl    String?
+  attachmentName   String?
+  durationSeconds  Int?
+  isAnnouncement   Boolean             @default(false)
+  isSystem         Boolean             @default(false)
+  isPinned         Boolean             @default(false)
+  isDeleted        Boolean             @default(false)
+  editedAt         DateTime?
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
 
   reactions ChatReaction[]
   mentions  ChatMention[]
 
   @@index([tenantId, channelId, createdAt])
   @@index([parentMessageId])
+  @@index([replyToMessageId])
 }
 
 model ChatReaction {

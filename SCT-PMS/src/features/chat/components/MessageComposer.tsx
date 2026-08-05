@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
-import { Send } from "lucide-react";
+import { Send, X } from "lucide-react";
 import { Button } from "@/components/common";
 import { ApiError } from "@/lib/api";
-import type { TeamMemberSummary } from "@/types/tenant";
+import { cn } from "@/lib/cn";
+import type { ChatMessage, TeamMemberSummary } from "@/types/tenant";
 
 /** Only id/name/email are ever read here (search + @-mention insertion), so this accepts the
  *  narrower TeamMemberSummary rather than the full ChatUser (which additionally carries roles)
@@ -38,12 +39,18 @@ export function MessageComposer({
   disabled,
   allowEveryone = false,
   placeholder = "Write a message...",
+  replyTo,
+  onCancelReply,
 }: {
   users: TeamMemberSummary[];
-  onSend: (input: { body?: string }) => Promise<void>;
+  onSend: (input: { body?: string; replyToMessageId?: string }) => Promise<void>;
   disabled?: boolean;
   allowEveryone?: boolean;
   placeholder?: string;
+  /** The message currently being replied to, if any — shown as a dismissible quote preview
+   *  above the input. Distinct from the sidebar thread panel's composer, which never sets this. */
+  replyTo?: ChatMessage | null;
+  onCancelReply?: () => void;
 }) {
   const [text, setText] = useState("");
   const [mentions, setMentions] = useState<ResolvedMention[]>([]);
@@ -59,6 +66,10 @@ export function MessageComposer({
     textarea.style.height = `${textarea.scrollHeight}px`;
     textarea.style.overflowY = "hidden";
   }, [text]);
+
+  useEffect(() => {
+    if (replyTo) textareaRef.current?.focus();
+  }, [replyTo]);
 
   const normalizedMentionQuery = mentionQuery?.query.trim().toLowerCase() ?? "";
   const everyoneCandidate: MentionCandidate = { id: "__everyone", name: "everyone", email: "Notify everyone in this chat", isEveryone: true };
@@ -107,9 +118,10 @@ export function MessageComposer({
     setSending(true);
     setError(null);
     try {
-      await onSend({ body });
+      await onSend({ body, replyToMessageId: replyTo?.id });
       setText("");
       setMentions([]);
+      onCancelReply?.();
       requestAnimationFrame(() => {
         if (!textareaRef.current) return;
         textareaRef.current.style.height = "auto";
@@ -136,16 +148,32 @@ export function MessageComposer({
         </div>
       )}
       {error && <p className="mb-2 text-xs text-danger-600">{error}</p>}
+      {replyTo && (
+        <div className="mb-2 flex items-start gap-2 rounded-lg border border-ink-200 bg-surface-subtle px-3 py-2">
+          <div className="min-w-0 flex-1 border-l-2 border-brand-500 pl-2">
+            <p className="text-xs font-semibold text-brand-700">Replying to {replyTo.author.name}</p>
+            <p className="truncate text-xs text-ink-500">{replyTo.isDeleted ? "Message deleted" : replyTo.body || "Attachment"}</p>
+          </div>
+          <button onClick={onCancelReply} title="Cancel reply" className="shrink-0 rounded p-1 text-ink-400 hover:bg-ink-100 hover:text-ink-700">
+            <X size={14} />
+          </button>
+        </div>
+      )}
       <div className="flex items-end gap-2">
         <textarea
           ref={textareaRef}
           value={text}
           onChange={handleChange}
-          onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(); } }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(); }
+            if (event.key === "Escape" && replyTo) onCancelReply?.();
+          }}
           disabled={disabled || sending}
-          placeholder={placeholder}
+          placeholder={replyTo ? "Write a reply..." : placeholder}
           rows={1}
-          className="min-h-10 max-h-40 flex-1 resize-none overflow-hidden rounded-lg border border-ink-200 px-3 py-2 text-sm leading-5 outline-none transition-[height] duration-100 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/15 disabled:bg-ink-50"
+          className={cn(
+            "min-h-10 max-h-40 flex-1 resize-none overflow-hidden rounded-lg border border-ink-200 px-3 py-2 text-sm leading-5 outline-none transition-[height] duration-100 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/15 disabled:bg-ink-50",
+          )}
         />
         <Button onClick={submit} disabled={disabled || sending || !text.trim()} leftIcon={<Send size={15} />}>Send</Button>
       </div>

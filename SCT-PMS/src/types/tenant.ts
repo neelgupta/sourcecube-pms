@@ -753,6 +753,8 @@ export interface ChatMessage {
   authorId: ID;
   author: TeamMemberSummary;
   parentMessageId?: ID | null;
+  replyToMessageId?: ID | null;
+  replyToMessage?: { id: ID; body?: string | null; isDeleted: boolean; authorId: ID; author: TeamMemberSummary } | null;
   body?: string | null;
   attachmentType?: ChatAttachmentType | null;
   attachmentUrl?: string | null;

@@ -195,16 +195,24 @@ projectsRouter.get("/tasks/assigned", requirePermission("tasks", "view"), async 
     return;
   }
   const input = parsed.data;
-  const assignments: Prisma.ProjectTaskWhereInput[] = [
-    { assigneeId: uid },
-    { followers: { some: { userId: uid } } },
-    { project: { ownerId: uid } },
-    { project: { managerId: uid } },
-    { project: { members: { some: { userId: uid, access: { in: ["edit", "manage"] } } } } },
-  ];
-  if (roles.includes("department_head")) assignments.push({ project: { department: { headUserId: uid } } });
-  if (roles.includes("team_lead")) assignments.push({ assignee: { teamMemberships: { some: { team: { leadUserId: uid } } } } });
-  const taskScope: Prisma.ProjectTaskWhereInput = roles.some((role) => elevatedProjectReaders.has(role))
+  // A plain employee (no elevated/managerial role at all) only ever sees their own assigned or
+  // followed tasks here — never another employee's tasks, unassigned tasks, or tasks that merely
+  // belong to a project they're a member of. This mirrors taskVisibilityScope's per-project
+  // policy; without it, "My Tasks"/the dashboard's due-task widgets leaked every task in any
+  // project the employee had edit/manage membership on, even tasks assigned to teammates.
+  const isEmployeeOnly = roles.every((role) => role === "employee");
+  const assignments: Prisma.ProjectTaskWhereInput[] = isEmployeeOnly
+    ? [{ assigneeId: uid }, { followers: { some: { userId: uid } } }]
+    : [
+        { assigneeId: uid },
+        { followers: { some: { userId: uid } } },
+        { project: { ownerId: uid } },
+        { project: { managerId: uid } },
+        { project: { members: { some: { userId: uid, access: { in: ["edit", "manage"] } } } } },
+      ];
+  if (!isEmployeeOnly && roles.includes("department_head")) assignments.push({ project: { department: { headUserId: uid } } });
+  if (!isEmployeeOnly && roles.includes("team_lead")) assignments.push({ assignee: { teamMemberships: { some: { team: { leadUserId: uid } } } } });
+  const taskScope: Prisma.ProjectTaskWhereInput = !isEmployeeOnly && roles.some((role) => elevatedProjectReaders.has(role))
     ? { tenantId: tid }
     : { tenantId: tid, OR: assignments };
 

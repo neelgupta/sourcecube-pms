@@ -528,6 +528,7 @@ export const api = {
     input: {
       body?: string;
       parentMessageId?: string;
+      replyToMessageId?: string;
       isAnnouncement?: boolean;
       attachmentType?: "file" | "voice_note";
       attachmentUrl?: string;

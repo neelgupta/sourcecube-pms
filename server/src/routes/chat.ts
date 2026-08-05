@@ -23,6 +23,12 @@ const messageInclude = {
   reactions: { include: { user: { select: chatUserSelect } } },
   mentions: { select: { userId: true } },
   _count: { select: { replies: true } },
+  // Just enough of the quoted message to render an inline preview above the reply — not the
+  // full messageInclude shape (would recurse), and isDeleted/body together let the client show
+  // "Original message deleted" without a second round trip when the quoted message is gone.
+  replyToMessage: {
+    select: { id: true, body: true, isDeleted: true, authorId: true, author: { select: chatUserSelect } },
+  },
 } as const;
 
 async function activeAnnouncementMembers(tid: string, channelId: string) {
@@ -389,6 +395,7 @@ chatRouter.get("/channels/:id/messages", requirePermission("chat", "view"), asyn
 const createMessageSchema = z.object({
   body: z.string().trim().max(24000).optional(),
   parentMessageId: z.string().optional(),
+  replyToMessageId: z.string().optional(),
   isAnnouncement: z.boolean().optional(),
   attachmentType: z.enum(["file", "voice_note"]).optional(),
   attachmentUrl: z.string().optional(),
@@ -426,6 +433,13 @@ chatRouter.post("/channels/:id/messages", requirePermission("chat", "create"), a
     res.status(403).json({ error: "Not a member of this channel" });
     return;
   }
+  if (data.replyToMessageId) {
+    const replyTarget = await prisma.chatMessage.findFirst({ where: { id: data.replyToMessageId, channelId, tenantId: tid } });
+    if (!replyTarget) {
+      res.status(400).json({ error: "The message being replied to could not be found in this channel" });
+      return;
+    }
+  }
 
   const channelRecipients = channel.type === "announcement"
     ? []
@@ -440,6 +454,7 @@ chatRouter.post("/channels/:id/messages", requirePermission("chat", "create"), a
       channelId,
       authorId: uid,
       parentMessageId: data.parentMessageId ?? null,
+      replyToMessageId: data.replyToMessageId ?? null,
       body: data.body?.trim() || null,
       attachmentType: data.attachmentType ?? null,
       attachmentUrl: data.attachmentUrl ?? null,
@@ -555,8 +570,7 @@ chatRouter.delete("/messages/:id", requirePermission("chat", "create"), async (r
     res.status(404).json({ error: "Message not found" });
     return;
   }
-  const roles = await getCompanyUserRoles(tid, uid);
-  if (message.authorId !== uid && !roles.includes("company_super_admin")) {
+  if (message.authorId !== uid) {
     res.status(403).json({ error: "You can only delete your own messages" });
     return;
   }
@@ -566,8 +580,9 @@ chatRouter.delete("/messages/:id", requirePermission("chat", "create"), async (r
   res.status(204).end();
 });
 
-chatRouter.patch("/messages/:id/pin", requirePermission("chat", "manage"), async (req, res) => {
+chatRouter.patch("/messages/:id/pin", requirePermission("chat", "create"), async (req, res) => {
   const tid = tenantId(req);
+  const uid = userId(req);
   const messageId = req.params.id as string;
   const parsed = z.object({ isPinned: z.boolean() }).safeParse(req.body);
   if (!parsed.success) {
@@ -577,6 +592,10 @@ chatRouter.patch("/messages/:id/pin", requirePermission("chat", "manage"), async
   const message = await prisma.chatMessage.findFirst({ where: { id: messageId, tenantId: tid } });
   if (!message) {
     res.status(404).json({ error: "Message not found" });
+    return;
+  }
+  if (!(await isChannelMember(tid, message.channelId, uid))) {
+    res.status(403).json({ error: "Not a member of this channel" });
     return;
   }
   const updated = await prisma.chatMessage.update({ where: { id: messageId }, data: { isPinned: parsed.data.isPinned }, include: messageInclude });
