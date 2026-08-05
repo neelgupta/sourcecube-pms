@@ -169,10 +169,12 @@ export const api = {
     request<{ allocations: TaskDailyAllocationEntry[] }>(`/resources/planner/${employeeId}/allocations?start=${start}&end=${end}`),
   saveResourcePlannerDayAllocations: (employeeId: string, date: string, allocations: Array<{ taskId: string; plannedMinutes: number; note?: string | null }>) =>
     request<ResourcePlannerDayDetail>(`/resources/planner/${employeeId}/day/${date}/allocations`, { method: "PUT", body: JSON.stringify({ allocations }) }),
+  getWorkingHours: () =>
+    request<{ startTime: string; endTime: string; breakStartTime: string; breakEndTime: string }>("/resources/working-hours"),
   submitOverdueReason: (taskId: string, reason: string) =>
     request<{ review: TaskOverdueReview }>(`/resources/tasks/${taskId}/overdue-reason`, { method: "POST", body: JSON.stringify({ reason }) }),
   listOverdueReviews: () => request<{ reviews: TaskOverdueReview[] }>("/resources/overdue-reviews"),
-  resolveOverdueReview: (reviewId: string, input: { newEstimatedMinutes?: number; newDueDate?: string }) =>
+  resolveOverdueReview: (reviewId: string, input: { newEstimatedMinutes?: number; newDueDate?: string; newAssigneeId?: string }) =>
     request<{ review: TaskOverdueReview }>(`/resources/overdue-reviews/${reviewId}/resolve`, { method: "POST", body: JSON.stringify(input) }),
   getTeamProductivityReport: (input: { start: string; end: string; teamId?: string; search?: string }) => {
     const params = new URLSearchParams();
@@ -194,7 +196,7 @@ export const api = {
     Object.entries(input).forEach(([key, value]) => { if (value) params.set(key, value); });
     return request<TimeUtilisationReport>(`/reports/time-utilisation?${params.toString()}`);
   },
-  saveSchedule: (input: { name?: string; workingDays: number[]; startTime: string; endTime: string; breakMinutes: number }) =>
+  saveSchedule: (input: { name?: string; workingDays: number[]; startTime: string; endTime: string; breakMinutes: number; breakStartTime?: string; breakEndTime?: string }) =>
     request<{ schedule: WorkingSchedule }>("/onboarding/schedules", { method: "POST", body: JSON.stringify(input) }),
 
   listDepartments: () => request<{ departments: Department[] }>("/onboarding/departments"),
@@ -501,7 +503,7 @@ export const api = {
   logTaskTime: (
     projectId: string,
     taskId: string,
-    input: { date: string; durationMinutes: number; activityType: string; billable: boolean; note: string },
+    input: { date: string; durationMinutes: number; startTime?: string; activityType: string; billable: boolean; note: string },
   ) =>
     request<{ entry: TaskTimeEntry; taskTrackedSeconds: number; projectTrackedSeconds: number }>(
       `/projects/${projectId}/tasks/${taskId}/timer/log`,

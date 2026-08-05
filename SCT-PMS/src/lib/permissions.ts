@@ -38,14 +38,14 @@ const MATRIX: Record<SystemRole, Partial<Record<Module, Action[]>>> = {
     company_users: ["view"],
     projects: ["view", "edit"],
     tasks: ["view", "create", "edit"],
-    resources: ["view"],
+    resources: ["view", "edit"],
     chat: ["view", "create", "invite"],
   },
   project_manager: {
     company_users: ["view"],
     projects: ["view", "create", "edit", "deactivate", "approve", "export", "manage"],
     tasks: ["view", "create", "edit", "approve", "export", "manage"],
-    resources: ["view", "export"],
+    resources: ["view", "edit", "export"],
     chat: ["view", "create", "invite"],
   },
   employee: {

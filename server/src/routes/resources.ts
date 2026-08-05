@@ -5,6 +5,7 @@ import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireCompany, requirePermission } from "../middleware/auth.js";
 import type { AuthTokenPayload } from "../lib/jwt.js";
 import { createNotification } from "../lib/chat.js";
+import { flagNewlyOverdueTasks, resolveOverdueApprover } from "../lib/overdueReview.js";
 
 export const resourcesRouter = Router();
 resourcesRouter.use(requireAuth, requireCompany);
@@ -15,6 +16,21 @@ function tenantId(req: { auth?: AuthTokenPayload }) {
 function userId(req: { auth?: AuthTokenPayload }) {
   return (req.auth as { userId: string }).userId;
 }
+
+/** Read-only working-hours lookup for anyone with resources:view (which every role including
+ *  plain employee holds) — used by the manual work-log form's start-time picker to know which
+ *  times are valid to offer, without requiring the company_super_admin access that the full
+ *  onboarding schedule-management endpoints are gated behind. */
+resourcesRouter.get("/working-hours", requirePermission("resources", "view"), async (req, res) => {
+  const tid = tenantId(req);
+  const schedule = await prisma.workingSchedule.findFirst({ where: { tenantId: tid }, orderBy: { createdAt: "asc" } });
+  res.json({
+    startTime: schedule?.startTime ?? "09:00",
+    endTime: schedule?.endTime ?? "18:00",
+    breakStartTime: schedule?.breakStartTime ?? "14:00",
+    breakEndTime: schedule?.breakEndTime ?? "14:30",
+  });
+});
 
 const elevatedRoles = new Set(["company_super_admin", "hr_admin", "auditor"]);
 
@@ -73,48 +89,6 @@ function remainingMinutesFor(task: { estimatedMinutes: number; trackedSeconds: n
   return Math.max(0, task.estimatedMinutes - Math.round(task.trackedSeconds / 60));
 }
 
-/** Resolves who should review a task that's gone overdue: the task's creator (unless that's the
- *  assignee themselves, which wouldn't be a meaningful approval), falling back to the assignee's
- *  team lead, falling back to any active company_super_admin in the tenant. Mirrors the
- *  team-lead lookup pattern already used by canEditTaskForProject in routes/projects.ts. */
-async function resolveOverdueApprover(tid: string, task: { createdBy: string | null; assigneeId: string | null }): Promise<string | null> {
-  if (task.createdBy && task.createdBy !== task.assigneeId) {
-    const creator = await prisma.companyUser.findFirst({ where: { id: task.createdBy, tenantId: tid, accountStatus: "active" }, select: { id: true } });
-    if (creator) return creator.id;
-  }
-  if (task.assigneeId) {
-    const membership = await prisma.teamMember.findFirst({
-      where: { userId: task.assigneeId, team: { tenantId: tid, leadUserId: { not: null } } },
-      select: { team: { select: { leadUserId: true } } },
-    });
-    if (membership?.team.leadUserId) return membership.team.leadUserId;
-  }
-  const superAdmin = await prisma.companyUser.findFirst({ where: { tenantId: tid, accountStatus: "active", roles: { has: "company_super_admin" } }, select: { id: true } });
-  return superAdmin?.id ?? null;
-}
-
-/** Lazily flags tasks that are overdue (past dueDate, not done, never previously flagged) —
- *  called wherever the planner loads a batch of tasks, since there's no cron/job runner in this
- *  codebase. Idempotent: only tasks with overdueReviewStatus === null are considered, so a task
- *  already under review or already resolved-and-still-overdue isn't re-flagged/re-notified every
- *  page load. Mutates ProjectTask.overdueReviewStatus and creates the TaskOverdueReview row +
- *  notification for whichever ones just crossed the line. */
-async function flagNewlyOverdueTasks(tid: string, tasks: { id: string; dueDate: Date | null; status: string; createdBy: string | null; assigneeId: string | null; overdueReviewStatus: string | null }[]) {
-  const today = new Date();
-  today.setUTCHours(0, 0, 0, 0);
-  const candidates = tasks.filter((task) => task.overdueReviewStatus === null && task.status !== "done" && task.dueDate && task.dueDate < today);
-  if (!candidates.length) return;
-  for (const task of candidates) {
-    const approverId = await resolveOverdueApprover(tid, task);
-    if (!approverId) continue;
-    const updated = await prisma.projectTask.updateMany({ where: { id: task.id, tenantId: tid, overdueReviewStatus: null }, data: { overdueReviewStatus: "pending_review" } });
-    if (updated.count === 0) continue; // lost the race to a concurrent request; skip duplicate create/notify
-    await prisma.taskOverdueReview.create({
-      data: { tenantId: tid, taskId: task.id, originalDueDate: task.dueDate as Date, approverId, status: "pending_review" },
-    });
-    await createNotification({ tenantId: tid, userId: approverId, type: "task_overdue_review", title: "A task went overdue and needs review", channelId: undefined });
-  }
-}
 
 const plannerQuery = z.object({
   start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -179,7 +153,7 @@ resourcesRouter.get("/planner", requirePermission("resources", "view"), async (r
       select: { userId: true, taskId: true, date: true, plannedMinutes: true },
     }),
   ]);
-  await flagNewlyOverdueTasks(tid, tasks);
+  await flagNewlyOverdueTasks(tid, company.timezone, tasks);
   const globalDays = rangeDays.map((date) => {
     const holiday = holidayByDate.get(date);
     const isWorkingDay = workingDays.includes(dateFromKey(date).getUTCDay()) && (!holiday || holiday.optional);
@@ -195,10 +169,15 @@ resourcesRouter.get("/planner", requirePermission("resources", "view"), async (r
 
   let employees = users.map((user) => {
     const userTasks = plannableTasks.filter((task) => task.assigneeId === user.id);
+    // All of the user's tasks (not just currently-plannable ones) so a day's planned-hours total
+    // reflects what was actually allocated that day, historically — marking a task done later
+    // must not retroactively shrink a day's "planned" figure. plannableTasks (excludes done/
+    // overdue-review/fully-logged tasks) still governs what's offered when planning *new* time.
+    const allUserTasks = tasks.filter((task) => task.assigneeId === user.id);
     const incompleteTaskCount = tasks.filter((task) => task.assigneeId === user.id && task.status !== "done").length;
     const projectIds = new Set([...user.projectMemberships.map((item) => item.projectId), ...user.projectsOwned.map((item) => item.id), ...user.projectsManaged.map((item) => item.id), ...userTasks.map((task) => task.project.id)]);
     const dayValues = globalDays.map((day) => {
-      const scheduledTasks = userTasks.filter((task) => (allocationByUserDateTask.get(`${user.id}|${day.date}|${task.id}`) ?? 0) > 0);
+      const scheduledTasks = allUserTasks.filter((task) => (allocationByUserDateTask.get(`${user.id}|${day.date}|${task.id}`) ?? 0) > 0);
       const plannedMinutes = scheduledTasks.reduce((total, task) => total + (allocationByUserDateTask.get(`${user.id}|${day.date}|${task.id}`) ?? 0), 0);
       const dayEntries = entries.filter((entry) => entry.userId === user.id && localDateKey(entry.startedAt, company.timezone) === day.date);
       const trackedSeconds = dayEntries.reduce((total, entry) => total + durationSeconds(entry), 0);
@@ -206,7 +185,9 @@ resourcesRouter.get("/planner", requirePermission("resources", "view"), async (r
       const plannedTrackedSeconds = Math.min(trackedSeconds, plannedMinutes * 60);
       return {
         date: day.date, taskCount: scheduledTasks.length, completedTaskCount, plannedMinutes, trackedSeconds,
-        plannedTrackedSeconds, extraPlannedSeconds: Math.max(0, trackedSeconds - plannedMinutes * 60),
+        // Overrun is measured against the full working-day capacity, not just what was planned —
+        // see buildDayDetail's identical fix for the same reasoning.
+        plannedTrackedSeconds, extraPlannedSeconds: Math.max(0, trackedSeconds - day.capacityMinutes * 60),
         unplannedTrackedSeconds: plannedMinutes === 0 ? trackedSeconds : 0,
         remainingPlannedMinutes: Math.max(0, plannedMinutes - Math.floor(trackedSeconds / 60)),
       };
@@ -242,7 +223,7 @@ async function buildDayDetail(tid: string, employee: { id: string; name: string;
     prisma.taskTimeEntry.findMany({ where: { tenantId: tid, userId: employee.id, startedAt: { gte: new Date(`${addDays(date, -1)}T00:00:00.000Z`), lt: new Date(`${addDays(date, 2)}T00:00:00.000Z`) } }, include: { task: { select: { id: true, code: true, name: true, status: true, progress: true } }, project: { select: { id: true, name: true, key: true } } }, orderBy: { startedAt: "asc" } }),
     prisma.taskDailyAllocation.findMany({ where: { tenantId: tid, userId: employee.id, date: dateValue }, select: { taskId: true, plannedMinutes: true, note: true } }),
   ]);
-  await flagNewlyOverdueTasks(tid, tasks.map((task) => ({ ...task, assigneeId: employee.id })));
+  await flagNewlyOverdueTasks(tid, company.timezone, tasks.map((task) => ({ ...task, assigneeId: employee.id })));
   const workingDays = schedule?.workingDays ?? [1, 2, 3, 4, 5];
   const dailyMinutes = schedule ? minutesBetween(schedule.startTime, schedule.endTime, schedule.breakMinutes) : 480;
   const relevantEntries = entries.filter((entry) => localDateKey(entry.startedAt, company.timezone) === date);
@@ -258,10 +239,24 @@ async function buildDayDetail(tid: string, employee: { id: string; name: string;
     allocationByTaskId.has(task.id));
   const tasksWithPlan = relevantTasks.map((task) => {
     const explicit = allocationByTaskId.get(task.id);
+    // Today's own tracked time for this task, distinct from the lifetime trackedSeconds already
+    // on the task row — lets the day panel show "worked 3h of 2h planned" (over) vs. "0h worked,
+    // 2h planned" (not worked today) per task, instead of only ever showing the lifetime total.
+    const todayTrackedSeconds = relevantEntries.filter((entry) => entry.taskId === task.id).reduce((total, entry) => total + durationSeconds(entry), 0);
+    const plannedMinutes = explicit?.plannedMinutes ?? 0;
     return {
       ...task,
+      // remainingMinutes already reflects the *full* logged time against estimatedMinutes,
+      // regardless of what was planned for today — working over-plan on a task still counts
+      // fully toward shrinking its remaining hours, exactly like on-plan or unplanned work does.
       remainingMinutes: remainingMinutesFor(task),
-      plannedMinutes: explicit?.plannedMinutes ?? 0,
+      plannedMinutes,
+      todayTrackedSeconds,
+      // Per-task overrun: how much of today's tracked time on this task exceeded what was
+      // planned for it today. Mirrors the day-level extraPlannedSeconds but scoped to one task,
+      // so overrunning one task while staying on-plan on the rest is visible per task, not just
+      // blended into the day's aggregate "extra" number.
+      extraTrackedSeconds: Math.max(0, todayTrackedSeconds - plannedMinutes * 60),
       hasExplicitAllocation: Boolean(explicit),
       allocationNote: explicit?.note ?? null,
     };
@@ -269,11 +264,16 @@ async function buildDayDetail(tid: string, employee: { id: string; name: string;
   const plannedMinutes = tasksWithPlan.reduce((total, task) => total + task.plannedMinutes, 0);
   const trackedSeconds = relevantEntries.reduce((total, entry) => total + durationSeconds(entry), 0);
   const isWorkingDay = workingDays.includes(dateFromKey(date).getUTCDay()) && (!holiday || holiday.optional);
+  const capacityMinutes = isWorkingDay ? dailyMinutes : 0;
   return {
     employee, date, holiday: holiday ? { name: holiday.name, optional: holiday.optional } : null,
-    capacityMinutes: isWorkingDay ? dailyMinutes : 0, plannedMinutes, trackedSeconds,
+    capacityMinutes, plannedMinutes, trackedSeconds,
     plannedTrackedSeconds: Math.min(trackedSeconds, plannedMinutes * 60),
-    extraPlannedSeconds: Math.max(0, trackedSeconds - plannedMinutes * 60),
+    // "Extra / overrun" means logged beyond the whole working day, not beyond what was
+    // specifically planned — working up to capacity (even on unplanned/over-planned tasks) is
+    // still a normal working day, not an overrun. See extraTrackedSeconds on each task below for
+    // the per-task "logged more than that task's own plan" figure, which is a separate concept.
+    extraPlannedSeconds: Math.max(0, trackedSeconds - capacityMinutes * 60),
     unplannedTrackedSeconds: plannedMinutes === 0 ? trackedSeconds : 0,
     remainingPlannedMinutes: Math.max(0, plannedMinutes - Math.floor(trackedSeconds / 60)),
     tasks: tasksWithPlan,
@@ -332,6 +332,16 @@ resourcesRouter.put("/planner/:employeeId/day/:date/allocations", requirePermiss
   const ownedTaskIds = new Set(ownedTasks.map((task) => task.id));
   const invalid = taskIds.filter((id) => !ownedTaskIds.has(id));
   if (invalid.length) { res.status(400).json({ error: "One or more tasks are not assigned to this employee" }); return; }
+
+  // A day already planned to full capacity is locked from further edits — mirrors the frontend's
+  // "Day fully planned" lock. Checked against the day's current (pre-write) state so a write that
+  // only reduces planned minutes (e.g. clearing an allocation after a task finishes early) is
+  // still allowed even on an already-full day.
+  const currentDetail = await buildDayDetail(tid, employee, dateParam);
+  if (currentDetail.capacityMinutes > 0 && currentDetail.plannedMinutes >= currentDetail.capacityMinutes) {
+    res.status(400).json({ error: "This day is already fully planned" });
+    return;
+  }
 
   const dateValue = new Date(`${dateParam}T00:00:00.000Z`);
   await prisma.$transaction(async (tx) => {
@@ -392,7 +402,8 @@ resourcesRouter.get("/overdue-reviews", requirePermission("tasks", "approve"), a
 const resolveReviewSchema = z.object({
   newEstimatedMinutes: z.number().int().positive().optional(),
   newDueDate: z.string().optional(),
-}).refine((data) => data.newEstimatedMinutes !== undefined || data.newDueDate !== undefined, { message: "Provide a new estimate or a new due date" });
+  newAssigneeId: z.string().optional(),
+}).refine((data) => data.newEstimatedMinutes !== undefined || data.newDueDate !== undefined || data.newAssigneeId !== undefined, { message: "Provide a new estimate, a new due date, or a new assignee" });
 resourcesRouter.post("/overdue-reviews/:reviewId/resolve", requirePermission("tasks", "approve"), async (req, res) => {
   const parsed = resolveReviewSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.issues.map((issue) => issue.message).join(", ") }); return; }
@@ -405,7 +416,7 @@ resourcesRouter.post("/overdue-reviews/:reviewId/resolve", requirePermission("ta
   // Routed approver OR anyone with tasks:approve (already enforced by requirePermission) can
   // resolve — the routed-approver check here is a no-op safety net per the plan, not an
   // additional restriction, since requirePermission already gates on tasks:approve.
-  const { newEstimatedMinutes, newDueDate } = parsed.data;
+  const { newEstimatedMinutes, newDueDate, newAssigneeId } = parsed.data;
   if (newEstimatedMinutes !== undefined) {
     const trackedMinutes = Math.round(review.task.trackedSeconds / 60);
     if (newEstimatedMinutes <= trackedMinutes) {
@@ -413,12 +424,22 @@ resourcesRouter.post("/overdue-reviews/:reviewId/resolve", requirePermission("ta
       return;
     }
   }
+  if (newAssigneeId !== undefined) {
+    const newAssignee = await prisma.companyUser.findFirst({ where: { id: newAssigneeId, tenantId: tid, accountStatus: "active" }, select: { id: true } });
+    if (!newAssignee) { res.status(400).json({ error: "New assignee must be an active employee in this company" }); return; }
+  }
+  const actions = [
+    newAssigneeId !== undefined && "reassigned",
+    newEstimatedMinutes !== undefined && "re_estimated",
+    newDueDate !== undefined && "rescheduled",
+  ].filter((value): value is string => Boolean(value));
   const [, updatedReview] = await prisma.$transaction([
     prisma.projectTask.update({
       where: { id: review.taskId },
       data: {
         ...(newEstimatedMinutes !== undefined ? { estimatedMinutes: newEstimatedMinutes } : {}),
         ...(newDueDate !== undefined ? { dueDate: new Date(newDueDate) } : {}),
+        ...(newAssigneeId !== undefined ? { assigneeId: newAssigneeId } : {}),
         overdueReviewStatus: null,
       },
     }),
@@ -428,14 +449,25 @@ resourcesRouter.post("/overdue-reviews/:reviewId/resolve", requirePermission("ta
         status: "resolved",
         resolvedAt: new Date(),
         resolvedBy: uid,
-        resolutionAction: newEstimatedMinutes !== undefined && newDueDate !== undefined ? "re_estimated_and_rescheduled" : newEstimatedMinutes !== undefined ? "re_estimated" : "rescheduled",
+        resolutionAction: actions.join("_and_"),
         newEstimatedMinutes: newEstimatedMinutes ?? null,
         newDueDate: newDueDate ? new Date(newDueDate) : null,
       },
     }),
   ]);
-  if (review.task.assigneeId) {
-    await createNotification({ tenantId: tid, userId: review.task.assigneeId, type: "task_review_resolved", title: "Your overdue task was reviewed and is plannable again", actorId: uid });
+  // Notify whoever ends up owning the task after resolution — the original assignee if it wasn't
+  // reassigned, or the new assignee if it was (they need to know it's now theirs and plannable).
+  const notifyUserId = newAssigneeId ?? review.task.assigneeId;
+  if (notifyUserId) {
+    await createNotification({
+      tenantId: tid,
+      userId: notifyUserId,
+      type: "task_review_resolved",
+      title: newAssigneeId && newAssigneeId !== review.task.assigneeId
+        ? "An overdue task was reassigned to you and is plannable"
+        : "Your overdue task was reviewed and is plannable again",
+      actorId: uid,
+    });
   }
   res.json({ review: updatedReview });
 });

@@ -17,6 +17,8 @@ export function ScheduleStep({ onSaved }: { onSaved: () => void }) {
   const [startTime, setStartTime] = useState("09:00");
   const [endTime, setEndTime] = useState("18:00");
   const [breakMinutes, setBreakMinutes] = useState("60");
+  const [breakStartTime, setBreakStartTime] = useState("14:00");
+  const [breakEndTime, setBreakEndTime] = useState("14:30");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -28,6 +30,8 @@ export function ScheduleStep({ onSaved }: { onSaved: () => void }) {
         setStartTime(existing.startTime);
         setEndTime(existing.endTime);
         setBreakMinutes(String(existing.breakMinutes));
+        setBreakStartTime(existing.breakStartTime);
+        setBreakEndTime(existing.breakEndTime);
       }
     });
   }, []);
@@ -40,7 +44,7 @@ export function ScheduleStep({ onSaved }: { onSaved: () => void }) {
     setError(null);
     setSaving(true);
     try {
-      await api.saveSchedule({ workingDays, startTime, endTime, breakMinutes: Number(breakMinutes) });
+      await api.saveSchedule({ workingDays, startTime, endTime, breakMinutes: Number(breakMinutes), breakStartTime, breakEndTime });
       onSaved();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to save working schedule");
@@ -77,6 +81,15 @@ export function ScheduleStep({ onSaved }: { onSaved: () => void }) {
         </Field>
         <Field label="Break (minutes)" required>
           <Input type="number" min={0} value={breakMinutes} onChange={(e) => setBreakMinutes(e.target.value)} required />
+        </Field>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <Field label="Lunch break start" required>
+          <Input type="time" value={breakStartTime} onChange={(e) => setBreakStartTime(e.target.value)} required />
+        </Field>
+        <Field label="Lunch break end" required>
+          <Input type="time" value={breakEndTime} onChange={(e) => setBreakEndTime(e.target.value)} required />
         </Field>
       </div>
 

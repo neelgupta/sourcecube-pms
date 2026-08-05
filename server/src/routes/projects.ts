@@ -5,6 +5,7 @@ import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireCompany, requirePermission } from "../middleware/auth.js";
 import { recordAudit } from "../lib/audit.js";
 import { createNotification, ensureProjectChatMembers, extractMentionIds } from "../lib/chat.js";
+import { flagNewlyOverdueTasks } from "../lib/overdueReview.js";
 
 export const projectsRouter = Router();
 projectsRouter.use(requireAuth, requireCompany);
@@ -257,6 +258,9 @@ projectsRouter.get("/tasks/assigned", requirePermission("tasks", "view"), async 
       take: 1000,
     }),
   ]);
+
+  const company = await prisma.company.findUniqueOrThrow({ where: { id: tid }, select: { timezone: true } });
+  await flagNewlyOverdueTasks(tid, company.timezone, tasks);
 
   const assignerIds = [...new Set(tasks.map((task) => task.createdBy).filter((id): id is string => Boolean(id)))];
   const assigners = assignerIds.length
@@ -788,6 +792,9 @@ projectsRouter.get("/:id/workspace", requirePermission("projects", "view"), asyn
       orderBy: { releaseDate: "asc" },
     }),
   ]);
+  const company = await prisma.company.findUniqueOrThrow({ where: { id: tid }, select: { timezone: true } });
+  await flagNewlyOverdueTasks(tid, company.timezone, sections.flatMap((section) => section.tasks));
+
   const { favouritedBy, members, ...projectData } = project;
   const activities = await prisma.auditLog.findMany({
     where: {
@@ -1629,6 +1636,10 @@ projectsRouter.post("/:id/tasks/:taskId/timer/start", requirePermission("tasks",
     res.status(403).json({ error: "You do not have access to track time on this task" });
     return;
   }
+  if (task.overdueReviewStatus === "pending_review") {
+    res.status(400).json({ error: "This task is overdue and awaiting review — it can't be tracked until it's resolved" });
+    return;
+  }
   if (!task.estimatedMinutes) {
     res.status(400).json({ error: "Please add estimate hours" });
     return;
@@ -1756,9 +1767,92 @@ projectsRouter.post("/:id/tasks/:taskId/timer/stop", requirePermission("tasks", 
     projectTrackedSeconds: project.trackedSeconds,
   });
 });
+/** Resolves "midnight on this calendar date, in this timezone" to the correct UTC instant —
+ *  used for manual work-log entries so a log dated "2026-08-10" for a New York-timezone company
+ *  actually lands on Aug 10 when the resource planner buckets it back by company timezone,
+ *  regardless of what timezone the server process itself happens to be running in. A naive
+ *  `new Date(\`${date}T00:00:00\`)` uses the server's local wall-clock time instead, which only
+ *  coincidentally matches the company's timezone and silently shifts entries to the wrong day
+ *  (often invisible — they just vanish from that day's planner view) whenever it doesn't. */
+function localMidnightUtc(dateKey: string, timezone: string): Date {
+  const naiveUtc = new Date(`${dateKey}T00:00:00.000Z`);
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+    }).formatToParts(naiveUtc);
+    const get = (type: string) => Number(parts.find((part) => part.type === type)?.value ?? 0);
+    // naiveUtc rendered in the target timezone tells us the offset: if the timezone is behind
+    // UTC, this will show an earlier wall-clock time than naiveUtc's own 00:00:00.
+    const shownAsUtc = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second"));
+    const offsetMs = naiveUtc.getTime() - shownAsUtc;
+    return new Date(naiveUtc.getTime() + offsetMs);
+  } catch {
+    return naiveUtc;
+  }
+}
+
+/** Converts "HH:MM" (schedule field format) to minutes since local midnight. */
+function timeToMinutes(value: string): number {
+  const [hours, minutes] = value.split(":").map(Number);
+  return (hours || 0) * 60 + (minutes || 0);
+}
+
+/** Places a manually-logged duration within the company's working hours for that day, instead of
+ *  literally at midnight. If the caller supplies an explicit startMinutes (the person picked a
+ *  start time in the form), that's used as-is — validated by the caller to fall within working
+ *  hours and outside the lunch break before this is ever called. Otherwise falls back to
+ *  auto-placement: starting from the schedule's startTime, stacked after any minutes already
+ *  logged that day (so multiple manual logs the same day queue up one after another rather than
+ *  overlapping), and skipping straight over the break window (e.g. 2:00-2:30 PM) if the slot
+ *  would otherwise fall inside it. Purely a display/bookkeeping placement — the caller derives
+ *  the real durationSeconds from the requested minutes directly, never from this slot, so a log
+ *  that runs past endTime (e.g. a lot of hours logged in one day) just displays later in the
+ *  evening rather than having its recorded time silently shortened. */
+function placeManualLogSlot(
+  dateKey: string,
+  timezone: string,
+  schedule: { startTime: string; breakStartTime: string; breakEndTime: string },
+  minutesAlreadyLoggedToday: number,
+  durationMinutes: number,
+  explicitStartMinutes?: number,
+): { startedAt: Date; endedAt: Date } {
+  const dayStartMinutes = timeToMinutes(schedule.startTime);
+  const breakStartMinutes = timeToMinutes(schedule.breakStartTime);
+  const breakEndMinutes = timeToMinutes(schedule.breakEndTime);
+
+  let slotStart: number;
+  if (explicitStartMinutes !== undefined) {
+    slotStart = explicitStartMinutes;
+  } else {
+    slotStart = dayStartMinutes + minutesAlreadyLoggedToday;
+    // Skip the break: if the slot starts inside it, or would otherwise cross into it, hop to
+    // right after breakEndTime — the already-logged minutes account for real placed time only,
+    // never break time, so this only needs to check the start point once.
+    if (slotStart >= breakStartMinutes && slotStart < breakEndMinutes) {
+      slotStart = breakEndMinutes;
+    } else if (slotStart < breakStartMinutes && slotStart + durationMinutes > breakStartMinutes) {
+      slotStart = breakEndMinutes;
+    }
+  }
+  // Never truncate the logged duration itself — a manual log's minutes are the actual time
+  // worked and must be preserved exactly regardless of how they're displayed. If the slot would
+  // run past endTime, let it spill past on the display side rather than silently shortening what
+  // was recorded (this only affects a day already logged well beyond a normal working day).
+  const slotEnd = slotStart + durationMinutes;
+
+  const dayMidnightUtc = localMidnightUtc(dateKey, timezone);
+  return {
+    startedAt: new Date(dayMidnightUtc.getTime() + slotStart * 60 * 1000),
+    endedAt: new Date(dayMidnightUtc.getTime() + slotEnd * 60 * 1000),
+  };
+}
+
 const manualLogSchema = z.object({
   date: z.string().min(1, "Date is required"),
   durationMinutes: z.number().int().positive("Duration must be greater than 0"),
+  startTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
   activityType: z.string().trim().min(1, "Activity is required").max(100),
   billable: z.boolean(),
   note: z.string().trim().min(1, "Description is required").max(2000),
@@ -1783,13 +1877,66 @@ projectsRouter.post("/:id/tasks/:taskId/timer/log", requirePermission("tasks", "
     res.status(403).json({ error: "You do not have access to log time on this task" });
     return;
   }
-  const startedAt = new Date(`${parsed.data.date}T00:00:00`);
-  if (Number.isNaN(startedAt.getTime())) {
+  if (task.overdueReviewStatus === "pending_review") {
+    res.status(400).json({ error: "This task is overdue and awaiting review — it can't be tracked until it's resolved" });
+    return;
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(parsed.data.date)) {
     res.status(400).json({ error: "Invalid date" });
     return;
   }
+  const [company, schedule] = await Promise.all([
+    prisma.company.findUniqueOrThrow({ where: { id: tid }, select: { timezone: true } }),
+    prisma.workingSchedule.findFirst({ where: { tenantId: tid }, orderBy: { createdAt: "asc" } }),
+  ]);
+  const dayMidnightUtc = localMidnightUtc(parsed.data.date, company.timezone);
+  if (Number.isNaN(dayMidnightUtc.getTime())) {
+    res.status(400).json({ error: "Invalid date" });
+    return;
+  }
+  const nextDayUtc = new Date(dayMidnightUtc.getTime() + 24 * 60 * 60 * 1000);
+  const priorEntriesToday = await prisma.taskTimeEntry.findMany({
+    where: { tenantId: tid, userId: uid, startedAt: { gte: dayMidnightUtc, lt: nextDayUtc } },
+    select: { durationSeconds: true },
+  });
+  const minutesAlreadyLoggedToday = Math.round(priorEntriesToday.reduce((total, entry) => total + entry.durationSeconds, 0) / 60);
   const durationSeconds = parsed.data.durationMinutes * 60;
-  const endedAt = new Date(startedAt.getTime() + durationSeconds * 1000);
+  const scheduleTimes = {
+    startTime: schedule?.startTime ?? "09:00",
+    endTime: schedule?.endTime ?? "18:00",
+    breakStartTime: schedule?.breakStartTime ?? "14:00",
+    breakEndTime: schedule?.breakEndTime ?? "14:30",
+  };
+
+  let explicitStartMinutes: number | undefined;
+  if (parsed.data.startTime) {
+    explicitStartMinutes = timeToMinutes(parsed.data.startTime);
+    const dayStartMinutes = timeToMinutes(scheduleTimes.startTime);
+    const dayEndMinutes = timeToMinutes(scheduleTimes.endTime);
+    const breakStartMinutes = timeToMinutes(scheduleTimes.breakStartTime);
+    const breakEndMinutes = timeToMinutes(scheduleTimes.breakEndTime);
+    if (explicitStartMinutes < dayStartMinutes || explicitStartMinutes >= dayEndMinutes) {
+      res.status(400).json({ error: "Start time must fall within working hours" });
+      return;
+    }
+    if (explicitStartMinutes >= breakStartMinutes && explicitStartMinutes < breakEndMinutes) {
+      res.status(400).json({ error: "Start time cannot fall within the lunch break" });
+      return;
+    }
+    if (explicitStartMinutes < breakStartMinutes && explicitStartMinutes + parsed.data.durationMinutes > breakStartMinutes) {
+      res.status(400).json({ error: "This duration would run into the lunch break — choose a shorter duration or a start time after the break" });
+      return;
+    }
+  }
+
+  const { startedAt, endedAt } = placeManualLogSlot(
+    parsed.data.date,
+    company.timezone,
+    scheduleTimes,
+    minutesAlreadyLoggedToday,
+    parsed.data.durationMinutes,
+    explicitStartMinutes,
+  );
 
   const [entry, updatedTask, updatedProject] = await prisma.$transaction([
     prisma.taskTimeEntry.create({

@@ -261,14 +261,16 @@ model LeaveType {
 }
 
 model WorkingSchedule {
-  id           String  @id @default(cuid())
-  tenantId     String
-  company      Company @relation(fields: [tenantId], references: [id])
-  name         String  @default("Standard")
-  workingDays  Int[]   @default([1, 2, 3, 4, 5]) // 0=Sun .. 6=Sat
-  startTime    String  @default("09:00")
-  endTime      String  @default("18:00")
-  breakMinutes Int     @default(60)
+  id             String  @id @default(cuid())
+  tenantId       String
+  company        Company @relation(fields: [tenantId], references: [id])
+  name           String  @default("Standard")
+  workingDays    Int[]   @default([1, 2, 3, 4, 5]) // 0=Sun .. 6=Sat
+  startTime      String  @default("09:00")
+  endTime        String  @default("18:00")
+  breakMinutes   Int     @default(60)
+  breakStartTime String  @default("14:00")
+  breakEndTime   String  @default("14:30")
 
   createdBy String?
   updatedBy String?

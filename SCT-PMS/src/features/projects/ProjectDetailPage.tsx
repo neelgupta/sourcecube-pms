@@ -64,9 +64,12 @@ import {
 import { api, ApiError } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { projectSlug } from "./projectRoutes";
-import { usePermission, useSession } from "@/lib/session";
+import { usePermission, useSession, useCompanyTimezone } from "@/lib/session";
+import { formatDateInZone, formatDateTime } from "@/lib/formatDate";
+import { AddProjectDrawer } from "./components/AddProjectDrawer";
 import type {
   CompanyUser,
+  Department,
   ProjectSection,
   ProjectWorkspace,
   ProjectMilestone,
@@ -120,8 +123,8 @@ function initialsOf(name: string) {
   return name.split(" ").map((part) => part[0]).slice(0, 2).join("").toUpperCase();
 }
 
-function formatDate(value?: string | null) {
-  return value ? new Date(value).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" }) : "—";
+function formatDate(value?: string | null, timezone?: string) {
+  return value ? formatDateInZone(value, timezone, { day: "2-digit", month: "short", year: "numeric" }) : "—";
 }
 
 function formatMinutes(minutes: number) {
@@ -135,6 +138,45 @@ function formatSeconds(seconds: number) {
   const minutes = Math.floor((seconds % 3600) / 60);
   const secs = seconds % 60;
   return `${String(hours).padStart(2, "0")}H:${String(minutes).padStart(2, "0")}M:${String(secs).padStart(2, "0")}S`;
+}
+
+function timeToMinutesLocal(value: string) {
+  const [hours, minutes] = value.split(":").map(Number);
+  return (hours || 0) * 60 + (minutes || 0);
+}
+function minutesToLabel(totalMinutes: number) {
+  const hours24 = Math.floor(totalMinutes / 60) % 24;
+  const minutes = totalMinutes % 60;
+  const period = hours24 >= 12 ? "PM" : "AM";
+  const hours12 = hours24 % 12 === 0 ? 12 : hours24 % 12;
+  return `${hours12}:${String(minutes).padStart(2, "0")} ${period}`;
+}
+/** Builds the list of selectable start times for a manual work log — 15-minute increments from
+ *  the company's working-hours start up to (but not through) its end, skipping any slot that
+ *  falls inside the lunch break. Excludes durationMinutes' worth of slots at the very end so a
+ *  chosen start time always leaves room for the full duration before endTime, unless that would
+ *  leave no options at all (a duration longer than the whole working day), in which case the
+ *  duration constraint is dropped rather than showing an empty list. */
+function buildLogTimeOptions(schedule: { startTime: string; endTime: string; breakStartTime: string; breakEndTime: string }, durationMinutes: number) {
+  const startMin = timeToMinutesLocal(schedule.startTime);
+  const endMin = timeToMinutesLocal(schedule.endTime);
+  const breakStart = timeToMinutesLocal(schedule.breakStartTime);
+  const breakEnd = timeToMinutesLocal(schedule.breakEndTime);
+  const step = 15;
+  const build = (respectDuration: boolean) => {
+    const options: { value: string; label: string }[] = [];
+    for (let minute = startMin; minute < endMin; minute += step) {
+      if (minute >= breakStart && minute < breakEnd) continue;
+      if (minute < breakStart && minute + durationMinutes > breakStart) continue;
+      if (respectDuration && minute + durationMinutes > endMin) continue;
+      const hh = String(Math.floor(minute / 60)).padStart(2, "0");
+      const mm = String(minute % 60).padStart(2, "0");
+      options.push({ value: `${hh}:${mm}`, label: minutesToLabel(minute) });
+    }
+    return options;
+  };
+  const withDuration = build(true);
+  return withDuration.length > 0 || durationMinutes <= 0 ? withDuration : build(false);
 }
 const linkPattern = /(https?:\/\/[^\s<>"']+)/g;
 
@@ -202,6 +244,9 @@ export function ProjectDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [memberDrawer, setMemberDrawer] = useState(false);
   const [selectedTask, setSelectedTask] = useState<WorkspaceTask | null>(null);
+  const [editingProjectDrawer, setEditingProjectDrawer] = useState(false);
+  const [departments, setDepartments] = useState<Department[]>([]);
+  const [favouriteBusy, setFavouriteBusy] = useState(false);
   const { session } = useSession();
   const canEditPermission = usePermission("projects", "edit");
   const canManageProjectPermission = usePermission("projects", "manage");
@@ -209,6 +254,23 @@ export function ProjectDetailPage() {
   const canEditTaskPermission = usePermission("tasks", "edit");
   const canExportTaskPermission = usePermission("tasks", "export");
   const canDeleteTaskPermission = usePermission("tasks", "manage");
+  const canViewDepartments = usePermission("company_settings", "view");
+
+  useEffect(() => {
+    if (!canViewDepartments) return;
+    api.listDepartmentsFull().then(({ departments: rows }) => setDepartments(rows)).catch(() => undefined);
+  }, [canViewDepartments]);
+
+  async function toggleFavourite() {
+    if (!workspace || favouriteBusy) return;
+    setFavouriteBusy(true);
+    try {
+      await api.toggleProjectFavourite(workspace.project.id);
+      load();
+    } finally {
+      setFavouriteBusy(false);
+    }
+  }
 
   function load(silent = true) {
     if (!projectId) return;
@@ -403,8 +465,8 @@ export function ProjectDetailPage() {
             <span className="truncate text-base font-semibold text-ink-900">{project.name}</span>
             <ChevronDown size={15} className="text-ink-400" />
           </button>
-          {canEdit && <button className="rounded-lg p-1.5 text-ink-500 hover:bg-ink-100"><Settings size={16} /></button>}
-          <button className="rounded-lg p-1.5 text-warning-500 hover:bg-ink-100">
+          {canEdit && <button onClick={() => setEditingProjectDrawer(true)} className="rounded-lg p-1.5 text-ink-500 hover:bg-ink-100"><Settings size={16} /></button>}
+          <button onClick={toggleFavourite} disabled={favouriteBusy} className="rounded-lg p-1.5 text-warning-500 hover:bg-ink-100 disabled:opacity-50">
             <Star size={16} className={project.favourite ? "fill-warning-500" : ""} />
           </button>
           <div className="relative mx-auto hidden w-full max-w-md xl:block">
@@ -571,6 +633,14 @@ export function ProjectDetailPage() {
         onTaskDeleted={removeWorkspaceTask}
         onProjectTimeChanged={syncProjectTrackedSeconds}
         onClose={() => setSelectedTask(null)}
+      />
+      <AddProjectDrawer
+        open={editingProjectDrawer}
+        companyUsers={companyUsers}
+        departments={departments}
+        editingProject={project}
+        onClose={() => setEditingProjectDrawer(false)}
+        onSaved={() => { setEditingProjectDrawer(false); load(); }}
       />
     </div>
   );
@@ -1065,9 +1135,10 @@ function DueDateCell({
   saving: boolean;
   onChange: (dueDate: string | null) => void;
 }) {
+  const timezone = useCompanyTimezone();
   const display = (
     <span className={cn("inline-flex items-center gap-1 font-medium", task.dueDate && new Date(task.dueDate) < new Date() ? "text-danger-600" : "text-ink-600")}>
-      {formatDate(task.dueDate)}
+      {formatDate(task.dueDate, timezone)}
     </span>
   );
   if (!canEdit) return <div className="text-xs">{display}</div>;
@@ -1322,6 +1393,7 @@ function KanbanWorkspace({
   onSelectTask: (task: WorkspaceTask) => void;
   collapseSubtasks: boolean;
 }) {
+  const timezone = useCompanyTimezone();
   const [draggingTask, setDraggingTask] = useState<WorkspaceTask | null>(null);
   const [dragOverSection, setDragOverSection] = useState<string | null>(null);
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
@@ -1553,7 +1625,7 @@ function KanbanWorkspace({
                         { id: "unassigned", label: "Unassigned", icon: <Users size={14} />, onSelect: () => reassign(task, null) },
                         ...employees.map((user) => ({ id: user.id, label: user.name, icon: <MemberAvatar id={user.id} name={user.name} size="xs" status={user.accountStatus === "active" ? "active" : "inactive"} />, onSelect: () => reassign(task, user.id) })),
                       ]} /> : task.assignee ? <MemberAvatar id={task.assignee.id} name={task.assignee.name} size="xs" status={task.assignee.accountStatus === "active" ? "active" : "inactive"} /> : <Users size={15} className="text-ink-400" />}
-                      <span className={cn("text-xs", overdue ? "font-medium text-danger-500" : "text-ink-500")}>{formatDate(task.dueDate)}</span>
+                      <span className={cn("text-xs", overdue ? "font-medium text-danger-500" : "text-ink-500")}>{formatDate(task.dueDate, timezone)}</span>
                       <div className="ml-auto flex items-center gap-2 text-[11px] text-ink-500">
                         {canEditTask(task) && <button disabled={timerBusy === task.id} onClick={() => toggleTimer(task)} title={isRunning ? "Stop timer" : "Start timer"} className={cn("flex items-center gap-1 rounded px-1.5 py-1", isRunning ? "bg-danger-50 text-danger-600" : "hover:bg-success-50 hover:text-success-600")}>
                           {isRunning ? <span className="h-2.5 w-2.5 rounded-sm bg-danger-500" /> : <Play size={12} className="fill-current" />}
@@ -1610,6 +1682,7 @@ function KanbanWorkspace({
   );
 }
 function ProjectDashboard({ workspace }: { workspace: ProjectWorkspace }) {
+  const timezone = useCompanyTimezone();
   const { project, sections, milestones, members } = workspace;
   const tasks = sections.flatMap((section) => section.tasks);
   const overdue = tasks.filter((task) => task.dueDate && new Date(task.dueDate) < new Date() && task.status !== "done").length;
@@ -1630,7 +1703,7 @@ function ProjectDashboard({ workspace }: { workspace: ProjectWorkspace }) {
         <Card className="p-5 lg:col-span-2">
           <h3 className="font-semibold text-ink-900">Project progress</h3>
           <ProgressBar value={project.completionPercent} className="mt-5 h-2" />
-          <div className="mt-5 grid grid-cols-3 gap-4 text-sm"><Summary label="Planned start" value={formatDate(project.startDate)} /><Summary label="Planned end" value={formatDate(project.dueDate)} /><Summary label="Methodology" value={project.methodology} /></div>
+          <div className="mt-5 grid grid-cols-3 gap-4 text-sm"><Summary label="Planned start" value={formatDate(project.startDate, timezone)} /><Summary label="Planned end" value={formatDate(project.dueDate, timezone)} /><Summary label="Methodology" value={project.methodology} /></div>
         </Card>
         <Card className="p-5">
           <h3 className="font-semibold text-ink-900">Budget</h3>
@@ -1655,6 +1728,7 @@ function MilestoneWorkspace({
   canEdit: boolean;
   onChanged: () => void;
 }) {
+  const timezone = useCompanyTimezone();
   const [name, setName] = useState("");
   const [ownerId, setOwnerId] = useState("");
   const [editingMilestone, setEditingMilestone] = useState<ProjectMilestone | null>(null);
@@ -1689,7 +1763,7 @@ function MilestoneWorkspace({
       {error && <div className="m-3 rounded-lg border border-danger-200 bg-danger-50 px-3.5 py-2.5 text-sm text-danger-700">{error}</div>}
       <table className="w-full min-w-[900px] text-sm">
         <thead><tr className="border-b border-ink-200 bg-surface-subtle">{["Milestone Name", "Owner", "Start Date", "Release Date", "Progress", "Total Tasks", "Tags", "Description", ""].map((header) => <th key={header} className="px-4 py-3 text-left text-xs font-semibold text-ink-600">{header}</th>)}</tr></thead>
-        <tbody>{milestones.map((milestone) => <tr key={milestone.id} className="border-b border-ink-100"><td className="px-4 py-3 font-medium text-ink-900">{milestone.name}</td><td className="px-4 py-3">{milestone.owner?.name ?? "—"}</td><td className="px-4 py-3">{formatDate(milestone.startDate)}</td><td className="px-4 py-3">{formatDate(milestone.releaseDate)}</td><td className="px-4 py-3"><span className="inline-flex h-9 w-9 items-center justify-center rounded-full border-2 border-brand-500 text-[10px] font-semibold">{milestone.progress}%</span></td><td className="px-4 py-3">{milestone._count?.tasks ?? 0}</td><td className="px-4 py-3">{milestone.tags.join(", ") || "—"}</td><td className="px-4 py-3 text-ink-500">{milestone.description ?? "—"}</td><td className="px-4 py-3">{canEdit && <div className="flex items-center gap-0.5"><button onClick={() => setEditingMilestone(milestone)} title="Edit milestone" className="rounded p-1.5 text-ink-400 hover:bg-ink-100 hover:text-ink-900"><Pencil size={14} /></button><button onClick={() => setDeletingMilestone(milestone)} title="Delete milestone" className="rounded p-1.5 text-ink-400 hover:bg-danger-50 hover:text-danger-600"><Trash2 size={14} /></button></div>}</td></tr>)}</tbody>
+        <tbody>{milestones.map((milestone) => <tr key={milestone.id} className="border-b border-ink-100"><td className="px-4 py-3 font-medium text-ink-900">{milestone.name}</td><td className="px-4 py-3">{milestone.owner?.name ?? "—"}</td><td className="px-4 py-3">{formatDate(milestone.startDate, timezone)}</td><td className="px-4 py-3">{formatDate(milestone.releaseDate, timezone)}</td><td className="px-4 py-3"><span className="inline-flex h-9 w-9 items-center justify-center rounded-full border-2 border-brand-500 text-[10px] font-semibold">{milestone.progress}%</span></td><td className="px-4 py-3">{milestone._count?.tasks ?? 0}</td><td className="px-4 py-3">{milestone.tags.join(", ") || "—"}</td><td className="px-4 py-3 text-ink-500">{milestone.description ?? "—"}</td><td className="px-4 py-3">{canEdit && <div className="flex items-center gap-0.5"><button onClick={() => setEditingMilestone(milestone)} title="Edit milestone" className="rounded p-1.5 text-ink-400 hover:bg-ink-100 hover:text-ink-900"><Pencil size={14} /></button><button onClick={() => setDeletingMilestone(milestone)} title="Delete milestone" className="rounded p-1.5 text-ink-400 hover:bg-danger-50 hover:text-danger-600"><Trash2 size={14} /></button></div>}</td></tr>)}</tbody>
       </table>
 
       <ProjectMilestoneEditModal
@@ -1833,7 +1907,8 @@ function CalendarWorkspace({ sections, onSelectTask }: { sections: ProjectSectio
 }
 
 function ActivityWorkspace({ workspace, users }: { workspace: ProjectWorkspace; users: CompanyUser[] }) {
-  return <div className="bg-white"><div className="flex items-center border-b border-ink-200 px-4 py-3"><h3 className="font-semibold">Activities</h3><div className="ml-auto flex gap-2"><Button variant="outline" size="sm">Activities Date</Button><Button variant="outline" size="sm">All Types</Button><Button variant="outline" size="sm">All Employees</Button></div></div>{workspace.activities.length === 0 ? <EmptyWorkspace label="No activities yet" /> : workspace.activities.map((activity) => { const actor = users.find((user) => user.id === activity.actorId); return <div key={activity.id} className="flex items-center gap-3 border-b border-ink-100 px-5 py-3">{actor ? <MemberAvatar id={actor.id} name={actor.name} size="sm" status={actor.accountStatus === "active" ? "active" : "inactive"} className="ring-0" /> : <Avatar initials="S" color="bg-ink-400" size="sm" />}<p className="text-sm"><b>{actor?.name ?? "System"}</b> {activity.action.replaceAll(".", " ")}.</p><span className="ml-auto text-xs text-ink-500">{new Date(activity.createdAt).toLocaleString()}</span></div>; })}</div>;
+  const timezone = useCompanyTimezone();
+  return <div className="bg-white"><div className="flex items-center border-b border-ink-200 px-4 py-3"><h3 className="font-semibold">Activities</h3><div className="ml-auto flex gap-2"><Button variant="outline" size="sm">Activities Date</Button><Button variant="outline" size="sm">All Types</Button><Button variant="outline" size="sm">All Employees</Button></div></div>{workspace.activities.length === 0 ? <EmptyWorkspace label="No activities yet" /> : workspace.activities.map((activity) => { const actor = users.find((user) => user.id === activity.actorId); return <div key={activity.id} className="flex items-center gap-3 border-b border-ink-100 px-5 py-3">{actor ? <MemberAvatar id={actor.id} name={actor.name} size="sm" status={actor.accountStatus === "active" ? "active" : "inactive"} className="ring-0" /> : <Avatar initials="S" color="bg-ink-400" size="sm" />}<p className="text-sm"><b>{actor?.name ?? "System"}</b> {activity.action.replaceAll(".", " ")}.</p><span className="ml-auto text-xs text-ink-500">{formatDateTime(activity.createdAt, timezone)}</span></div>; })}</div>;
 }
 
 function DocumentWorkspace({ canEdit }: { canEdit: boolean }) {
@@ -1947,6 +2022,7 @@ function ActivityTimeline({
   currentUserId: string;
   onRemoveComment: (commentId: string) => void;
 }) {
+  const timezone = useCompanyTimezone();
   type TimelineEntry =
     | { kind: "activity"; id: string; createdAt: string; activity: AuditLogEntry }
     | { kind: "comment"; id: string; createdAt: string; comment: TaskComment };
@@ -1971,7 +2047,7 @@ function ActivityTimeline({
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <b className="text-ink-900">{comment.author.name}</b>
-                  <span className="text-xs text-ink-400">{new Date(comment.createdAt).toLocaleString()}</span>
+                  <span className="text-xs text-ink-400">{formatDateTime(comment.createdAt, timezone)}</span>
                   {canEdit && comment.authorId === currentUserId && (
                     <button className="ml-auto text-ink-400 hover:text-danger-600" onClick={() => onRemoveComment(comment.id)}><Trash2 size={13} /></button>
                   )}
@@ -1988,7 +2064,7 @@ function ActivityTimeline({
             {actor ? <MemberAvatar id={actor.id} name={actor.name} size="sm" status={actor.accountStatus === "active" ? "active" : "inactive"} className="ring-0" /> : <Avatar initials="S" color="bg-ink-400" size="sm" />}
             <div>
               <p><b className="text-ink-900">{actor?.name ?? "Project system"}</b> {describeActivity(activity)}</p>
-              <p className="mt-0.5 text-xs text-ink-400">{new Date(activity.createdAt).toLocaleString()}</p>
+              <p className="mt-0.5 text-xs text-ink-400">{formatDateTime(activity.createdAt, timezone)}</p>
             </div>
           </div>
         );
@@ -2074,6 +2150,7 @@ export function TaskWorkspaceDrawer({
   onProjectTimeChanged: (trackedSeconds: number) => void;
   onClose: () => void;
 }) {
+  const timezone = useCompanyTimezone();
   const [localTask, setLocalTask] = useState<WorkspaceTask | null>(task);
   const [panel, setPanel] = useState<"activities" | "worklog" | "approval" | "planner">("activities");
   const [lowerTab, setLowerTab] = useState<"subtasks" | "checklist">("subtasks");
@@ -2101,11 +2178,18 @@ export function TaskWorkspaceDrawer({
   const [logDate, setLogDate] = useState("");
   const [logHours, setLogHours] = useState("");
   const [logMinutes, setLogMinutes] = useState("");
+  const [logStartTime, setLogStartTime] = useState("");
   const [logActivity, setLogActivity] = useState("");
   const [logBillable, setLogBillable] = useState(false);
   const [logNote, setLogNote] = useState("");
   const [logSaving, setLogSaving] = useState(false);
   const [logError, setLogError] = useState<string | null>(null);
+  const [workingHours, setWorkingHours] = useState<{ startTime: string; endTime: string; breakStartTime: string; breakEndTime: string } | null>(null);
+
+  useEffect(() => {
+    if (!showLogForm || workingHours) return;
+    api.getWorkingHours().then(setWorkingHours).catch(() => undefined);
+  }, [showLogForm, workingHours]);
 
   useEffect(() => {
     setLocalTask(task);
@@ -2217,6 +2301,7 @@ export function TaskWorkspaceDrawer({
     const durationMinutes = hours * 60 + minutes;
     if (!logDate) { setLogError("Please choose a date"); return; }
     if (durationMinutes <= 0) { setLogError("Duration must be greater than 0"); return; }
+    if (!logStartTime) { setLogError("Please choose a start time"); return; }
     if (!logActivity) { setLogError("Please select an activity"); return; }
     if (!logNote.trim()) { setLogError("Please add a description"); return; }
     setLogSaving(true);
@@ -2225,6 +2310,7 @@ export function TaskWorkspaceDrawer({
       const result = await api.logTaskTime(projectId, taskId, {
         date: logDate,
         durationMinutes,
+        startTime: logStartTime,
         activityType: logActivity,
         billable: logBillable,
         note: logNote.trim(),
@@ -2233,7 +2319,7 @@ export function TaskWorkspaceDrawer({
       setTrackedSeconds(result.taskTrackedSeconds);
       if (result.entry.projectId === projectId) onProjectTimeChanged(result.projectTrackedSeconds);
       setShowLogForm(false);
-      setLogDate(""); setLogHours(""); setLogMinutes(""); setLogActivity(""); setLogBillable(false); setLogNote("");
+      setLogDate(""); setLogHours(""); setLogMinutes(""); setLogStartTime(""); setLogActivity(""); setLogBillable(false); setLogNote("");
     } catch (err) {
       setLogError(err instanceof ApiError ? err.message : "Time log could not be saved");
     } finally {
@@ -2440,7 +2526,13 @@ export function TaskWorkspaceDrawer({
             <div className="ml-auto flex items-center gap-2">
               {activeTimer && activeTimer.taskId !== taskId && <span className="hidden max-w-36 truncate text-[11px] font-medium text-warning-600 xl:inline" title={activeTimer.task?.name ?? "Another task"}>Running: {activeTimer.task ? `#${activeTimer.task.code} ${activeTimer.task.name}` : "another task"}</span>}
               <span className={cn("rounded-md bg-white px-2 py-1 font-mono text-xs", activeTimer && "text-danger-600 ring-1 ring-danger-200")}>{formatSeconds(activeTimer ? runningSeconds : trackedSeconds)}</span>
-              <Button size="sm" onClick={toggleTimer} disabled={!canEdit || timerBusy} className={cn("px-3", activeTimer ? "bg-danger-500 hover:bg-danger-600" : "bg-success-500 hover:bg-success-600")}>
+              <Button
+                size="sm"
+                onClick={toggleTimer}
+                disabled={!canEdit || timerBusy || (!activeTimer && localTask.overdueReviewStatus === "pending_review")}
+                title={!activeTimer && localTask.overdueReviewStatus === "pending_review" ? "This task is overdue and awaiting review — it can't be tracked until it's resolved" : undefined}
+                className={cn("px-3", activeTimer ? "bg-danger-500 hover:bg-danger-600" : "bg-success-500 hover:bg-success-600")}
+              >
                 {activeTimer ? <><span className="mr-1.5 h-3 w-3 rounded-sm bg-white" /> Stop</> : <><Play size={14} className="mr-1.5 fill-white" /> Start</>}
               </Button>
               {canDelete && (
@@ -2529,7 +2621,10 @@ export function TaskWorkspaceDrawer({
             {panel === "activities" && <ActivityTimeline activities={taskActivities} comments={localTask.comments} employees={employees} canEdit={canEdit} currentUserId={currentUserId} onRemoveComment={removeComment} />}
             {panel === "worklog" && (
               <div className="space-y-3">
-                {canEdit && (
+                {localTask.overdueReviewStatus === "pending_review" && (
+                  <p className="rounded-lg border border-warning-200 bg-warning-50 px-3 py-2 text-xs text-warning-700">This task is overdue and awaiting review — time can't be tracked until it's resolved.</p>
+                )}
+                {canEdit && localTask.overdueReviewStatus !== "pending_review" && (
                   showLogForm ? (
                     <Card className="p-3">
                       <p className="mb-3 text-sm font-semibold text-ink-900">Log time</p>
@@ -2546,6 +2641,18 @@ export function TaskWorkspaceDrawer({
                               <span className="ml-1 shrink-0 text-xs font-semibold text-ink-500">M</span>
                             </label>
                           </div>
+                        </Field>
+                        <Field label="Start Time" className="mb-0">
+                          <FilterSelect
+                            value={logStartTime}
+                            onChange={setLogStartTime}
+                            disabled={!workingHours}
+                            options={
+                              workingHours
+                                ? [{ value: "", label: "Select time" }, ...buildLogTimeOptions(workingHours, Math.max(0, Math.floor(Number(logHours || 0))) * 60 + Math.max(0, Math.floor(Number(logMinutes || 0))))]
+                                : [{ value: "", label: "Loading…" }]
+                            }
+                          />
                         </Field>
                         <Field label="Activity" className="mb-0">
                           <FilterSelect
@@ -2575,11 +2682,27 @@ export function TaskWorkspaceDrawer({
                     <Button size="sm" variant="outline" onClick={() => setShowLogForm(true)}><Plus size={14} className="mr-1.5" />Add time log</Button>
                   )
                 )}
-                {entries.length === 0 ? <p>No work logs recorded yet.</p> : entries.map((entry) => <Card key={entry.id} className="p-3"><div className="flex justify-between"><b>{entry.user.name}</b><span className="font-mono">{entry.endedAt ? formatSeconds(entry.durationSeconds) : "Running"}</span></div><p className="mt-1 text-xs text-ink-500">{entry.activityType} · {entry.billable ? "Billable" : "Non-billable"} · {new Date(entry.startedAt).toLocaleString()}</p>{entry.note && <p className="mt-2 text-xs">{entry.note}</p>}</Card>)}
+                {entries.length === 0 ? <p>No work logs recorded yet.</p> : entries.map((entry) => <Card key={entry.id} className="p-3"><div className="flex justify-between"><b>{entry.user.name}</b><span className="font-mono">{entry.endedAt ? formatSeconds(entry.durationSeconds) : "Running"}</span></div><p className="mt-1 text-xs text-ink-500">{entry.activityType} · {entry.billable ? "Billable" : "Non-billable"} · {formatDateTime(entry.startedAt, timezone)}</p>{entry.note && <p className="mt-2 text-xs">{entry.note}</p>}</Card>)}
               </div>
             )}
             {panel === "approval" && <div className="rounded-lg border border-dashed border-ink-200 p-6 text-center"><CheckCircle2 className="mx-auto text-ink-300" /><p className="mt-2">No approvals requested for this task.</p></div>}
-            {panel === "planner" && <div className="space-y-3"><Summary label="Assignee" value={localTask.assignee?.name ?? "Unassigned"} /><Summary label="Estimate" value={formatMinutes(localTask.estimatedMinutes)} /><Summary label="Tracked" value={formatSeconds(liveSeconds)} /><Summary label="Due" value={formatDate(localTask.dueDate)} /><Summary label="Followers" value={localTask.followers.map((follower) => follower.user.name).join(", ") || "None"} /></div>}
+            {panel === "planner" && (
+              <div className="space-y-3">
+                <Summary label="Assignee" value={localTask.assignee?.name ?? "Unassigned"} />
+                <Summary label="Estimate" value={formatMinutes(localTask.estimatedMinutes)} />
+                <Summary
+                  label="Tracked"
+                  value={
+                    localTask.estimatedMinutes > 0 && liveSeconds > localTask.estimatedMinutes * 60
+                      ? `${formatSeconds(liveSeconds)} — took ${formatSeconds(liveSeconds - localTask.estimatedMinutes * 60)} extra`
+                      : formatSeconds(liveSeconds)
+                  }
+                  tone={localTask.estimatedMinutes > 0 && liveSeconds > localTask.estimatedMinutes * 60 ? "danger" : "default"}
+                />
+                <Summary label="Due" value={formatDate(localTask.dueDate, timezone)} />
+                <Summary label="Followers" value={localTask.followers.map((follower) => follower.user.name).join(", ") || "None"} />
+              </div>
+            )}
           </div>
           <div className="border-t border-ink-200 p-3"><textarea value={commentText} onChange={(event) => setCommentText(event.target.value)} disabled={!canEdit} placeholder={canEdit ? "Please enter your comment..." : "You do not have permission to comment"} className="min-h-24 w-full rounded-lg border border-ink-200 p-3 text-sm outline-none focus:border-brand-500 disabled:bg-ink-50" /><div className="mt-2 flex items-center justify-between"><span className="text-xs text-ink-400">{commentText.length}/24000</span><Button size="sm" onClick={addComment} disabled={!canEdit || saving || !commentText.trim()}><Send size={14} className="mr-1.5" />Send</Button></div></div>
         </div>
@@ -2609,8 +2732,8 @@ export function TaskWorkspaceDrawer({
 function TaskRow({ icon, label, children }: { icon: React.ReactNode; label: string; children: React.ReactNode }) {
   return <div className="grid grid-cols-[155px_minmax(0,1fr)] items-start gap-4 px-4 py-3 text-sm"><dt className="flex items-center gap-2 pt-2 text-ink-500">{icon}{label}</dt><dd className="min-w-0">{children}</dd></div>;
 }
-function Summary({ label, value }: { label: string; value: string }) {
-  return <div><p className="text-xs text-ink-500">{label}</p><p className="mt-1 font-semibold capitalize text-ink-900">{value}</p></div>;
+function Summary({ label, value, tone = "default" }: { label: string; value: string; tone?: "default" | "danger" }) {
+  return <div><p className="text-xs text-ink-500">{label}</p><p className={cn("mt-1 font-semibold capitalize", tone === "danger" ? "text-danger-600" : "text-ink-900")}>{value}</p></div>;
 }
 const timerActivityOptions = ["Coding", "Meeting", "Learning", "Designing", "Bug fixing", "Testing", "Documentation", "Review", "Support", "Other"];
 
@@ -2702,7 +2825,7 @@ export function TimerStopDialog({
     }
   }
 
-  return <div className="fixed inset-0 z-[120] flex items-center justify-center bg-ink-900/35 p-4" onMouseDown={() => !busy && onCancel()}>
+  return <div className="fixed inset-0 z-[120] flex items-center justify-center bg-ink-900/35 p-4" onMouseDown={(event) => { if (busy) return; if ((event.target as HTMLElement).closest("[data-portal-panel]")) return; onCancel(); }}>
     <div className="w-full max-w-md overflow-hidden rounded-xl border border-ink-200 bg-white shadow-2xl" onMouseDown={(event) => event.stopPropagation()}>
       <header className="flex items-center gap-3 border-b border-ink-200 px-4 py-3">
         <span className="flex h-8 w-8 items-center justify-center rounded-md bg-ink-100 text-sm font-semibold text-ink-700">{target.task?.code ?? target.entry.task?.code ?? ""}</span>

@@ -40,8 +40,8 @@ export function DropdownMenu({
       const spaceAbove = rect.top - viewportPadding;
       const placement = spaceBelow < estimatedHeight && spaceAbove > spaceBelow ? "top" : "bottom";
       setCoords({
-        top: placement === "top" ? rect.top + window.scrollY - 6 : rect.bottom + window.scrollY + 6,
-        left: align === "right" ? rect.right + window.scrollX : rect.left + window.scrollX,
+        top: placement === "top" ? rect.top - 6 : rect.bottom + 6,
+        left: align === "right" ? rect.right : rect.left,
         placement,
       });
     }
@@ -72,13 +72,13 @@ export function DropdownMenu({
           ref={menuRef}
           data-portal-panel
           style={{
-            position: "absolute",
+            position: "fixed",
             top: coords.top,
             left: align === "right" ? undefined : coords.left,
             right: align === "right" ? window.innerWidth - coords.left : undefined,
             transform: coords.placement === "top" ? "translateY(-100%)" : undefined,
           }}
-          className="z-50 min-w-52 overflow-hidden rounded-lg border border-ink-200 bg-white py-1 shadow-popover"
+          className="z-[200] min-w-52 overflow-hidden rounded-lg border border-ink-200 bg-white py-1 shadow-popover"
         >
           {items.map((item) => (
             <button
@@ -200,7 +200,7 @@ export function FilterSelect({
           ref={panelRef}
           data-portal-panel
           style={{ position: "fixed", top: coords.top, left: coords.left, minWidth: coords.width, transform: coords.placement === "top" ? "translateY(-100%)" : undefined }}
-          className="z-50 w-max max-w-xs overflow-hidden rounded-lg border border-ink-200 bg-white py-1 shadow-popover"
+          className="z-[200] w-max max-w-xs overflow-hidden rounded-lg border border-ink-200 bg-white py-1 shadow-popover"
         >
           {options.map((opt) => (
             <button

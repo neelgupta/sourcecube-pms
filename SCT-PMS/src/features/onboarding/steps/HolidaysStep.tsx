@@ -2,9 +2,12 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Trash2 } from "lucide-react";
 import { Button, Checkbox, DatePicker, Field, Input, Select } from "@/components/common";
 import { api, ApiError } from "@/lib/api";
+import { formatDateOnly } from "@/lib/formatDate";
+import { useCompanyTimezone } from "@/lib/session";
 import type { Holiday, HolidayType } from "@/types/tenant";
 
 export function HolidaysStep({ onSaved }: { onSaved: () => void }) {
+  const timezone = useCompanyTimezone();
   const [holidays, setHolidays] = useState<Holiday[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -85,7 +88,7 @@ export function HolidaysStep({ onSaved }: { onSaved: () => void }) {
             <div>
               <span className="font-medium text-ink-900">{h.name}</span>
               <span className="ml-2 text-xs text-ink-500">
-                {new Date(h.date).toLocaleDateString()} · {h.type}
+                {formatDateOnly(h.date, timezone)} · {h.type}
                 {h.optional && " · optional"}
               </span>
             </div>

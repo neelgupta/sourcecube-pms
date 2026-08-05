@@ -438,11 +438,21 @@ function AllocationEditor({
     }
   }
 
+  // Once the day's planned total reaches (or exceeds) the working-day capacity, the day is
+  // considered fully planned and locked from further editing — for everyone, including TL/PM/
+  // admin, not just the employee. Re-plannable again only if planned minutes drop back below
+  // capacity (e.g. after a task is marked done and its allocation cleared).
+  const isFullyPlanned = detail.capacityMinutes > 0 && detail.plannedMinutes >= detail.capacityMinutes;
+
   return (
     <section className="mt-6">
       <div className="mb-2 flex items-center justify-between">
         <div className="flex items-center gap-2"><ListChecks size={16} className="text-brand-600" /><h3 className="font-semibold text-ink-900">Assigned task progress ({detail.tasks.length})</h3></div>
-        {canEdit && detail.tasks.some((task) => task.status !== "done") && !editing && <button onClick={startEditing} className="text-xs font-semibold text-brand-600 hover:text-brand-700">Edit today's plan</button>}
+        {canEdit && detail.tasks.some((task) => task.status !== "done") && !editing && (
+          isFullyPlanned
+            ? <span className="text-xs font-medium text-ink-400" title="This day is already fully planned">Day fully planned</span>
+            : <button onClick={startEditing} className="text-xs font-semibold text-brand-600 hover:text-brand-700">Edit today's plan</button>
+        )}
       </div>
       {editing && (
         <div className={cn("mb-3 flex items-center justify-between rounded-lg border px-3 py-2 text-sm", load > 1 ? "border-danger-200 bg-danger-50 text-danger-700" : load > 0.85 ? "border-warning-200 bg-warning-50 text-warning-700" : "border-success-200 bg-success-50 text-success-700")}>
@@ -470,13 +480,25 @@ function AllocationEditor({
                 </div>
               ) : task.status === "done" ? (
                 <div className="mt-2 flex flex-wrap items-center gap-4 text-[11px] text-ink-500">
-                  <span className="font-semibold text-success-700">Task done{task.trackedSeconds < task.estimatedMinutes * 60 && " — finished earlier than estimated"}</span>
+                  <span className={cn("font-semibold", task.trackedSeconds > task.estimatedMinutes * 60 ? "text-danger-600" : "text-success-700")}>
+                    Task done
+                    {task.trackedSeconds < task.estimatedMinutes * 60 && " — finished earlier than estimated"}
+                    {task.trackedSeconds > task.estimatedMinutes * 60 && ` — took ${durationLabel(task.trackedSeconds - task.estimatedMinutes * 60)} extra to complete`}
+                  </span>
                   <span>{hoursFromMinutes(task.estimatedMinutes)}h estimated</span>
                   <span>{durationLabel(task.trackedSeconds)} total tracked</span>
                 </div>
               ) : (
                 <div className="mt-2 flex flex-wrap items-center gap-4 text-[11px] text-ink-500">
                   <span>{hoursFromMinutes(task.plannedMinutes)}h planned today{task.hasExplicitAllocation && <span className="ml-1 font-semibold text-brand-600">(set)</span>}</span>
+                  {task.plannedMinutes > 0 && task.todayTrackedSeconds === 0 ? (
+                    <span className="font-medium text-ink-400">Not worked on today</span>
+                  ) : (
+                    <span className={cn("font-medium", task.extraTrackedSeconds > 0 ? "text-warning-600" : "text-ink-700")}>
+                      {durationLabel(task.todayTrackedSeconds)} worked today
+                      {task.extraTrackedSeconds > 0 && <span className="ml-1">(+{durationLabel(task.extraTrackedSeconds)} extra)</span>}
+                    </span>
+                  )}
                   <span className="font-semibold text-ink-700">{hoursFromMinutes(task.remainingMinutes)}h remaining</span>
                   <span>{hoursFromMinutes(task.estimatedMinutes)}h total estimate</span>
                   <span>{durationLabel(task.trackedSeconds)} total tracked</span>

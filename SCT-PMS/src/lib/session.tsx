@@ -99,6 +99,15 @@ export function useCurrentTenantId(): ID | undefined {
   return session.user.kind === "company" ? session.user.tenantId : undefined;
 }
 
+/** The signed-in company's configured timezone, for formatting dates/times consistently with
+ *  how the server buckets them (e.g. the resource planner) — see @/lib/formatDate. Undefined for
+ *  platform users/logged-out sessions, which have no company timezone; callers should fall back
+ *  to the browser's local timezone in that case (the formatters in formatDate.ts already do). */
+export function useCompanyTimezone(): string | undefined {
+  const { session } = useSession();
+  return session?.company?.timezone;
+}
+
 /** Tenant isolation guard: filters tenant-owned records down to the given tenant. */
 export function scopeToCurrentTenant<T extends { tenantId: ID }>(records: T[], tenantId: ID | undefined): T[] {
   if (!tenantId) return [];

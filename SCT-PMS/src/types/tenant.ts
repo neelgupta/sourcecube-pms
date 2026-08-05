@@ -168,6 +168,8 @@ export interface WorkingSchedule {
   startTime: string;
   endTime: string;
   breakMinutes: number;
+  breakStartTime: string;
+  breakEndTime: string;
 }
 
 export interface TeamProductivityMetrics {
@@ -395,7 +397,7 @@ export interface ResourcePlannerDayDetail {
   tasks: Array<{
     id: ID; code: number; name: string; status: ProjectTaskStatus; progress: number; estimatedMinutes: number; trackedSeconds: number;
     remainingMinutes: number; overdueReviewStatus: "pending_review" | null;
-    plannedMinutes: number; startDate?: string | null; dueDate?: string | null; completedAt?: string | null;
+    plannedMinutes: number; todayTrackedSeconds: number; extraTrackedSeconds: number; startDate?: string | null; dueDate?: string | null; completedAt?: string | null;
     hasExplicitAllocation: boolean; allocationNote?: string | null;
     project: { id: ID; name: string; key: string };
   }>;
