@@ -2,7 +2,9 @@
 ALTER TABLE "ChatMessage" ADD COLUMN     "replyToMessageId" TEXT;
 
 -- DropTable
-DROP TABLE "PushSubscription";
+DROP TABLE IF EXISTS "PushSubscription";
+
+
 
 -- CreateIndex
 CREATE INDEX "ChatMessage_replyToMessageId_idx" ON "ChatMessage"("replyToMessageId");
