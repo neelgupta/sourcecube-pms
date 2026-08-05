@@ -65,7 +65,7 @@ import { api, ApiError } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { projectSlug } from "./projectRoutes";
 import { usePermission, useSession, useCompanyTimezone } from "@/lib/session";
-import { formatDateInZone, formatDateTime } from "@/lib/formatDate";
+import { formatDateInZone, formatDateTime, formatTimeOnly } from "@/lib/formatDate";
 import { AddProjectDrawer } from "./components/AddProjectDrawer";
 import type {
   CompanyUser,
@@ -2682,7 +2682,7 @@ export function TaskWorkspaceDrawer({
                     <Button size="sm" variant="outline" onClick={() => setShowLogForm(true)}><Plus size={14} className="mr-1.5" />Add time log</Button>
                   )
                 )}
-                {entries.length === 0 ? <p>No work logs recorded yet.</p> : entries.map((entry) => <Card key={entry.id} className="p-3"><div className="flex justify-between"><b>{entry.user.name}</b><span className="font-mono">{entry.endedAt ? formatSeconds(entry.durationSeconds) : "Running"}</span></div><p className="mt-1 text-xs text-ink-500">{entry.activityType} · {entry.billable ? "Billable" : "Non-billable"} · {formatDateTime(entry.startedAt, timezone)}</p>{entry.note && <p className="mt-2 text-xs">{entry.note}</p>}</Card>)}
+                {entries.length === 0 ? <p>No work logs recorded yet.</p> : entries.map((entry) => <Card key={entry.id} className="p-3"><div className="flex justify-between"><b>{entry.user.name}</b><span className="font-mono">{entry.endedAt ? formatSeconds(entry.durationSeconds) : "Running"}</span></div><p className="mt-1 text-xs text-ink-500">{entry.activityType} · {entry.billable ? "Billable" : "Non-billable"} · {formatDateTime(entry.startedAt, timezone)}{entry.endedAt ? ` – ${formatTimeOnly(entry.endedAt, timezone)}` : ""}</p>{entry.note && <p className="mt-2 text-xs">{entry.note}</p>}</Card>)}
               </div>
             )}
             {panel === "approval" && <div className="rounded-lg border border-dashed border-ink-200 p-6 text-center"><CheckCircle2 className="mx-auto text-ink-300" /><p className="mt-2">No approvals requested for this task.</p></div>}

@@ -215,15 +215,23 @@ resourcesRouter.get("/planner", requirePermission("resources", "view"), async (r
 
 async function buildDayDetail(tid: string, employee: { id: string; name: string; email: string }, date: string) {
   const dateValue = new Date(`${date}T00:00:00.000Z`);
-  const [company, schedule, holiday, tasks, entries, dayAllocations] = await Promise.all([
+  const [company, schedule, holiday, entries, dayAllocations] = await Promise.all([
     prisma.company.findUniqueOrThrow({ where: { id: tid }, select: { timezone: true } }),
     prisma.workingSchedule.findFirst({ where: { tenantId: tid }, orderBy: { createdAt: "asc" } }),
     prisma.holiday.findFirst({ where: { tenantId: tid, date: { gte: dateValue, lt: new Date(`${addDays(date, 1)}T00:00:00.000Z`) } } }),
-    prisma.projectTask.findMany({ where: { tenantId: tid, assigneeId: employee.id, project: { isArchived: false } }, select: { id: true, code: true, name: true, status: true, progress: true, estimatedMinutes: true, trackedSeconds: true, startDate: true, dueDate: true, completedAt: true, createdBy: true, overdueReviewStatus: true, project: { select: { id: true, name: true, key: true } } }, orderBy: { dueDate: "asc" } }),
     prisma.taskTimeEntry.findMany({ where: { tenantId: tid, userId: employee.id, startedAt: { gte: new Date(`${addDays(date, -1)}T00:00:00.000Z`), lt: new Date(`${addDays(date, 2)}T00:00:00.000Z`) } }, include: { task: { select: { id: true, code: true, name: true, status: true, progress: true } }, project: { select: { id: true, name: true, key: true } } }, orderBy: { startedAt: "asc" } }),
     prisma.taskDailyAllocation.findMany({ where: { tenantId: tid, userId: employee.id, date: dateValue }, select: { taskId: true, plannedMinutes: true, note: true } }),
   ]);
-  await flagNewlyOverdueTasks(tid, company.timezone, tasks.map((task) => ({ ...task, assigneeId: employee.id })));
+  // Tasks assigned to this employee, plus any task someone logged time against or explicitly
+  // allocated for them today even if they're not the assignee (e.g. a collaborator pitching in on
+  // someone else's task) — otherwise that work silently has nowhere to show up on their day panel.
+  const loggedOrAllocatedTaskIds = new Set([...entries.map((entry) => entry.taskId), ...dayAllocations.map((row) => row.taskId)]);
+  const tasks = await prisma.projectTask.findMany({
+    where: { tenantId: tid, project: { isArchived: false }, OR: [{ assigneeId: employee.id }, { id: { in: [...loggedOrAllocatedTaskIds] } }] },
+    select: { id: true, code: true, name: true, status: true, progress: true, estimatedMinutes: true, trackedSeconds: true, startDate: true, dueDate: true, completedAt: true, createdBy: true, assigneeId: true, overdueReviewStatus: true, project: { select: { id: true, name: true, key: true } } },
+    orderBy: { dueDate: "asc" },
+  });
+  await flagNewlyOverdueTasks(tid, company.timezone, tasks);
   const workingDays = schedule?.workingDays ?? [1, 2, 3, 4, 5];
   const dailyMinutes = schedule ? minutesBetween(schedule.startTime, schedule.endTime, schedule.breakMinutes) : 480;
   const relevantEntries = entries.filter((entry) => localDateKey(entry.startedAt, company.timezone) === date);
