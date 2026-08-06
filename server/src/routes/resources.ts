@@ -254,6 +254,12 @@ async function buildDayDetail(tid: string, employee: { id: string; name: string;
     const plannedMinutes = explicit?.plannedMinutes ?? 0;
     return {
       ...task,
+      // Whether this task is actually assigned to the employee whose day this is — false for a
+      // collaborator task that only shows up here because someone logged time/allocated it for
+      // this employee (see loggedOrAllocatedTaskIds above). The PUT allocations endpoint only
+      // accepts writes for tasks assigned to the employee, so the frontend must not offer this
+      // task's row for editing or include it in a save — see ResourcesPage.tsx's isOwnTask.
+      isOwnTask: task.assigneeId === employee.id,
       // remainingMinutes already reflects the *full* logged time against estimatedMinutes,
       // regardless of what was planned for today — working over-plan on a task still counts
       // fully toward shrinking its remaining hours, exactly like on-plan or unplanned work does.

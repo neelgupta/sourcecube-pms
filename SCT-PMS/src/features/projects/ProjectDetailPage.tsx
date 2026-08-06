@@ -73,6 +73,7 @@ import type {
   ProjectSection,
   ProjectWorkspace,
   ProjectMilestone,
+  ProjectEvent,
   ProjectTaskStatus,
   ProjectPriority,
   ProjectTaskFilters,
@@ -404,7 +405,7 @@ export function ProjectDetailPage() {
     );
   }
 
-  const { project, sections, members, milestones } = workspace;
+  const { project, sections, members, milestones, events } = workspace;
   const canEdit = canEditPermission && (project.currentUserAccess === "edit" || project.currentUserAccess === "manage");
   const canManageProject = canManageProjectPermission && project.currentUserAccess === "manage";
   const canCreateTask = canCreateTaskPermission && canEdit;
@@ -602,7 +603,17 @@ export function ProjectDetailPage() {
           />
         )}
         {activeView === "gantt" && <GanttWorkspace sections={sections} />}
-        {activeView === "calendar" && <CalendarWorkspace sections={sections} onSelectTask={setSelectedTask} />}
+        {activeView === "calendar" && (
+          <CalendarWorkspace
+            projectId={project.id}
+            sections={sections}
+            milestones={milestones}
+            events={events}
+            canEdit={canEdit}
+            onSelectTask={setSelectedTask}
+            onChanged={load}
+          />
+        )}
         {activeView === "activities" && <ActivityWorkspace workspace={workspace} users={companyUsers} />}
         {activeView === "document" && <DocumentWorkspace canEdit={canEdit} />}
         {activeView === "automation" && <AutomationWorkspace canEdit={canEdit} />}
@@ -768,12 +779,15 @@ function TaskListWorkspace({
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [collapsedTasks, setCollapsedTasks] = useState<Record<string, boolean>>({});
   const [subtaskParent, setSubtaskParent] = useState<string | null>(null);
+  const [draggingTask, setDraggingTask] = useState<WorkspaceTask | null>(null);
+  const [dragOverSection, setDragOverSection] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [draftPriorities, setDraftPriorities] = useState<Record<string, ProjectPriority>>({});
   const [saving, setSaving] = useState<string | null>(null);
   const [savingField, setSavingField] = useState<string | null>(null);
   const [activeTimer, setActiveTimer] = useState<ActiveTaskTimer | null>(null);
   const [stopTarget, setStopTarget] = useState<StopTimerTarget | null>(null);
+  const [pendingStatus, setPendingStatus] = useState<{ taskId: string; status: ProjectTaskStatus } | null>(null);
   const [timerBusy, setTimerBusy] = useState<string | null>(null);
   const [timerError, setTimerError] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());  useEffect(() => {
@@ -825,9 +839,17 @@ function TaskListWorkspace({
       if (stopTarget.task) onTaskUpdated({ ...stopTarget.task, trackedSeconds: result.taskTrackedSeconds });
       if (stopTarget.entry.projectId === projectId) onProjectTimeChanged(result.projectTrackedSeconds);
       const nextTask = stopTarget.nextTask;
+      const stoppedTaskId = stopTarget.entry.taskId;
       setActiveTimer(null);
       setStopTarget(null);
       if (nextTask) await startTimer(nextTask);
+      if (pendingStatus?.taskId === stoppedTaskId) {
+        const status = pendingStatus.status;
+        setPendingStatus(null);
+        await patchTask(stoppedTaskId, "status", { status });
+      } else {
+        setPendingStatus(null);
+      }
     } finally {
       setTimerBusy(null);
     }
@@ -839,9 +861,17 @@ function TaskListWorkspace({
     try {
       await api.discardTaskTimer(stopTarget.entry.projectId, stopTarget.entry.taskId);
       const nextTask = stopTarget.nextTask;
+      const stoppedTaskId = stopTarget.entry.taskId;
       setActiveTimer(null);
       setStopTarget(null);
       if (nextTask) await startTimer(nextTask);
+      if (pendingStatus?.taskId === stoppedTaskId) {
+        const status = pendingStatus.status;
+        setPendingStatus(null);
+        await patchTask(stoppedTaskId, "status", { status });
+      } else {
+        setPendingStatus(null);
+      }
     } finally {
       setTimerBusy(null);
     }
@@ -878,6 +908,21 @@ function TaskListWorkspace({
     }
   }
 
+  function canDragTask(task: WorkspaceTask) {
+    return task.status !== "done" && canEditTask(task);
+  }
+
+  async function moveTask(sectionId: string) {
+    setDragOverSection(null);
+    if (!draggingTask || !canDragTask(draggingTask) || draggingTask.sectionId === sectionId) {
+      setDraggingTask(null);
+      return;
+    }
+    const { task } = await api.moveProjectTask(projectId, draggingTask.id, sectionId);
+    setDraggingTask(null);
+    onTaskUpdated(task);
+  }
+
   const headers = ["Task Name", "Assignee", "Due Date", "Task Type", "Milestone", "Task Status", "Tags", "Estimation Hours", "Work Logs"];
 
   return (
@@ -900,7 +945,12 @@ function TaskListWorkspace({
         <tbody>
           {sections.map((section) => (
             <Fragment key={section.id}>
-              <tr className="border-b border-ink-200 bg-surface-muted">
+              <tr
+                onDragOver={(event) => { if (draggingTask && canEditTask(draggingTask)) { event.preventDefault(); setDragOverSection(section.id); } }}
+                onDragLeave={() => setDragOverSection((current) => (current === section.id ? null : current))}
+                onDrop={(event) => { event.preventDefault(); moveTask(section.id); }}
+                className={cn("border-b border-ink-200 bg-surface-muted transition-colors", dragOverSection === section.id && "bg-brand-50/60")}
+              >
                 <td colSpan={headers.length} className="px-3 py-2.5">
                   <div className="flex items-center gap-2">
                     <GripVertical size={15} className="text-ink-400" />
@@ -920,9 +970,24 @@ function TaskListWorkspace({
               </tr>
               {!collapsed[section.id] && flattenTasks(section.tasks, collapsedTasks).map(({ task, depth, displayCode, childCount }) => (
                 <Fragment key={task.id}>
-                <tr onClick={() => onSelectTask(task)} className="cursor-pointer border-b border-ink-100 hover:bg-brand-50/30">
+                <tr
+                  onClick={() => onSelectTask(task)}
+                  onDragOver={(event) => { if (draggingTask && canDragTask(draggingTask)) { event.preventDefault(); setDragOverSection(section.id); } }}
+                  onDrop={(event) => { event.preventDefault(); moveTask(section.id); }}
+                  className={cn("cursor-pointer border-b border-ink-100 hover:bg-brand-50/30", draggingTask?.id === task.id && "opacity-50")}
+                >
                   <td className="px-3 py-2.5">
                     <div className="flex items-center gap-2" style={{ paddingLeft: `${depth * 28}px` }}>
+                      <span
+                        draggable={canDragTask(task)}
+                        onDragStart={(event) => { event.stopPropagation(); if (canDragTask(task)) setDraggingTask(task); }}
+                        onDragEnd={() => setDraggingTask(null)}
+                        onClick={(event) => event.stopPropagation()}
+                        title={canDragTask(task) ? "Drag to move task" : task.status === "done" ? "Completed tasks can't be moved" : undefined}
+                        className={cn("-m-1.5 rounded p-1.5 text-ink-300", canDragTask(task) ? "cursor-grab hover:bg-ink-50 hover:text-ink-500 active:cursor-grabbing" : "cursor-default opacity-40")}
+                      >
+                        <GripVertical size={14} />
+                      </span>
                       <span className="w-12 text-right text-xs text-ink-500">{displayCode}</span>
                       {childCount > 0 ? <button onClick={(event) => { event.stopPropagation(); setCollapsedTasks((value) => ({ ...value, [task.id]: !value[task.id] })); }} className="rounded bg-ink-100 p-0.5">{collapsedTasks[task.id] ? <ChevronRight size={12} /> : <ChevronDown size={12} />}</button> : <span className="w-4" />}
                       <CheckCircle2 size={16} className={task.status === "done" ? "text-success-500" : "text-ink-400"} />
@@ -970,7 +1035,14 @@ function TaskListWorkspace({
                       task={task}
                       canEdit={canEditTask(task)}
                       saving={savingField === `${task.id}-status`}
-                      onChange={(status) => patchTask(task.id, "status", { status })}
+                      onChange={(status) => {
+                        if (status === "done" && activeTimer?.taskId === task.id) {
+                          setPendingStatus({ taskId: task.id, status });
+                          setStopTarget({ entry: activeTimer, task });
+                          return;
+                        }
+                        patchTask(task.id, "status", { status });
+                      }}
                     />
                   </td>
                   <td className="px-3 py-2.5" onClick={(event) => event.stopPropagation()}>
@@ -1061,7 +1133,7 @@ function TaskListWorkspace({
         </tbody>
       </table>
     </div>
-    <TimerStopDialog target={stopTarget} busy={timerBusy !== null} onCancel={() => setStopTarget(null)} onSave={saveTimerLog} onDiscard={discardTimer} />
+    <TimerStopDialog target={stopTarget} busy={timerBusy !== null} onCancel={() => { setStopTarget(null); setPendingStatus(null); }} onSave={saveTimerLog} onDiscard={discardTimer} />
     </>
   );
 }
@@ -1346,7 +1418,7 @@ function WorkLogCell({
   onToggle: () => void;
 }) {
   const displaySeconds = isRunning ? task.trackedSeconds + runningSeconds : task.trackedSeconds;
-  if (!canEdit) return <span className="font-mono text-xs text-ink-600">{formatSeconds(displaySeconds)}</span>;
+  if (!canEdit || task.status === "done") return <span className="font-mono text-xs text-ink-600">{formatSeconds(displaySeconds)}</span>;
   return (
     <div className="flex items-center gap-2">
       <button
@@ -1407,6 +1479,7 @@ function KanbanWorkspace({
   const [sectionError, setSectionError] = useState<string | null>(null);
   const [activeTimer, setActiveTimer] = useState<ActiveTaskTimer | null>(null);
   const [stopTarget, setStopTarget] = useState<StopTimerTarget | null>(null);
+  const [pendingMove, setPendingMove] = useState<{ taskId: string; sectionId: string } | null>(null);
   const [timerBusy, setTimerBusy] = useState<string | null>(null);
   const [timerError, setTimerError] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
@@ -1420,13 +1493,24 @@ function KanbanWorkspace({
     return () => window.clearInterval(interval);
   }, [activeTimer?.id]);
 
+  async function moveTask(taskId: string, sectionId: string) {
+    const { task } = await api.moveProjectTask(projectId, taskId, sectionId);
+    onTaskUpdated(task);
+    onChanged();
+  }
+
   async function drop(sectionId: string) {
     setDragOverSection(null);
     if (!draggingTask || !canEditTask(draggingTask) || draggingTask.sectionId === sectionId) return;
-    const { task } = await api.moveProjectTask(projectId, draggingTask.id, sectionId);
+    const targetSection = sections.find((section) => section.id === sectionId);
+    const task = draggingTask;
     setDraggingTask(null);
-    onTaskUpdated(task);
-    onChanged();
+    if (targetSection?.status === "done" && activeTimer?.taskId === task.id) {
+      setPendingMove({ taskId: task.id, sectionId });
+      setStopTarget({ entry: activeTimer, task });
+      return;
+    }
+    await moveTask(task.id, sectionId);
   }
 
   async function addTask(section: ProjectSection) {
@@ -1518,9 +1602,17 @@ function KanbanWorkspace({
       if (stopTarget.task) onTaskUpdated({ ...stopTarget.task, trackedSeconds: result.taskTrackedSeconds });
       if (stopTarget.entry.projectId === projectId) onProjectTimeChanged(result.projectTrackedSeconds);
       const nextTask = stopTarget.nextTask;
+      const stoppedTaskId = stopTarget.entry.taskId;
       setActiveTimer(null);
       setStopTarget(null);
       if (nextTask) await startTimer(nextTask);
+      if (pendingMove?.taskId === stoppedTaskId) {
+        const sectionId = pendingMove.sectionId;
+        setPendingMove(null);
+        await moveTask(stoppedTaskId, sectionId);
+      } else {
+        setPendingMove(null);
+      }
     } finally {
       setTimerBusy(null);
     }
@@ -1532,9 +1624,17 @@ function KanbanWorkspace({
     try {
       await api.discardTaskTimer(stopTarget.entry.projectId, stopTarget.entry.taskId);
       const nextTask = stopTarget.nextTask;
+      const stoppedTaskId = stopTarget.entry.taskId;
       setActiveTimer(null);
       setStopTarget(null);
       if (nextTask) await startTimer(nextTask);
+      if (pendingMove?.taskId === stoppedTaskId) {
+        const sectionId = pendingMove.sectionId;
+        setPendingMove(null);
+        await moveTask(stoppedTaskId, sectionId);
+      } else {
+        setPendingMove(null);
+      }
     } finally {
       setTimerBusy(null);
     }
@@ -1627,7 +1727,7 @@ function KanbanWorkspace({
                       ]} /> : task.assignee ? <MemberAvatar id={task.assignee.id} name={task.assignee.name} size="xs" status={task.assignee.accountStatus === "active" ? "active" : "inactive"} /> : <Users size={15} className="text-ink-400" />}
                       <span className={cn("text-xs", overdue ? "font-medium text-danger-500" : "text-ink-500")}>{formatDate(task.dueDate, timezone)}</span>
                       <div className="ml-auto flex items-center gap-2 text-[11px] text-ink-500">
-                        {canEditTask(task) && <button disabled={timerBusy === task.id} onClick={() => toggleTimer(task)} title={isRunning ? "Stop timer" : "Start timer"} className={cn("flex items-center gap-1 rounded px-1.5 py-1", isRunning ? "bg-danger-50 text-danger-600" : "hover:bg-success-50 hover:text-success-600")}>
+                        {canEditTask(task) && task.status !== "done" && <button disabled={timerBusy === task.id} onClick={() => toggleTimer(task)} title={isRunning ? "Stop timer" : "Start timer"} className={cn("flex items-center gap-1 rounded px-1.5 py-1", isRunning ? "bg-danger-50 text-danger-600" : "hover:bg-success-50 hover:text-success-600")}>
                           {isRunning ? <span className="h-2.5 w-2.5 rounded-sm bg-danger-500" /> : <Play size={12} className="fill-current" />}
                           {isRunning && <span className="font-mono">{formatSeconds(runningSeconds)}</span>}
                         </button>}
@@ -1677,7 +1777,7 @@ function KanbanWorkspace({
     </div>
     </div>
     </div>
-    <TimerStopDialog target={stopTarget} busy={timerBusy !== null} onCancel={() => setStopTarget(null)} onSave={saveTimerLog} onDiscard={discardTimer} />
+    <TimerStopDialog target={stopTarget} busy={timerBusy !== null} onCancel={() => { setStopTarget(null); setPendingMove(null); }} onSave={saveTimerLog} onDiscard={discardTimer} />
     </>
   );
 }
@@ -1896,14 +1996,208 @@ function GanttWorkspace({ sections }: { sections: ProjectSection[] }) {
   </div>;
 }
 
-function CalendarWorkspace({ sections, onSelectTask }: { sections: ProjectSection[]; onSelectTask: (task: WorkspaceTask) => void }) {
-  const [cursor, setCursor] = useState(new Date(2026, 6, 1));
+type CalendarItem =
+  | { kind: "task"; id: string; date: Date; label: string; task: WorkspaceTask }
+  | { kind: "milestone"; id: string; date: Date; label: string; milestone: ProjectMilestone }
+  | { kind: "event"; id: string; date: Date; label: string; event: ProjectEvent };
+
+const calendarItemStyles: Record<CalendarItem["kind"], string> = {
+  task: "bg-brand-50 text-brand-700 hover:bg-brand-100",
+  milestone: "bg-warning-50 text-warning-700 hover:bg-warning-100",
+  event: "bg-success-50 text-success-700 hover:bg-success-100",
+};
+
+function CalendarWorkspace({
+  projectId,
+  sections,
+  milestones,
+  events,
+  canEdit,
+  onSelectTask,
+  onChanged,
+}: {
+  projectId: string;
+  sections: ProjectSection[];
+  milestones: ProjectMilestone[];
+  events: ProjectEvent[];
+  canEdit: boolean;
+  onSelectTask: (task: WorkspaceTask) => void;
+  onChanged: () => void;
+}) {
+  const [cursor, setCursor] = useState(() => new Date());
+  const [addingDate, setAddingDate] = useState<Date | null>(null);
+  const [editingEvent, setEditingEvent] = useState<ProjectEvent | null>(null);
   const tasks = sections.flatMap((section) => section.tasks);
   const year = cursor.getFullYear(), month = cursor.getMonth();
   const offset = new Date(year, month, 1).getDay();
   const count = new Date(year, month + 1, 0).getDate();
   const cells = Array.from({ length: 42 }, (_, index) => index - offset + 1);
-  return <div className="bg-white"><div className="flex items-center gap-2 border-b border-ink-200 p-3"><Button variant="outline" size="icon" onClick={() => setCursor(new Date(year, month - 1, 1))}><ChevronLeft size={15} /></Button><b>{cursor.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</b><Button variant="outline" size="icon" onClick={() => setCursor(new Date(year, month + 1, 1))}><ChevronRight size={15} /></Button><FilterSelect className="ml-3 w-36" value="Month" onChange={() => {}} options={[{ value: "Month", label: "Month" }, { value: "Week", label: "Week" }]} /><div className="ml-auto"><Button variant="outline" size="sm">View for: Task</Button></div></div><div className="grid grid-cols-7">{["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map((day) => <div key={day} className="border-b border-r border-ink-200 py-3 text-center text-xs font-semibold">{day}</div>)}{cells.map((day, index) => <div key={index} className="min-h-32 border-b border-r border-ink-200 p-2"><span className={cn("float-right text-xs font-semibold", day < 1 || day > count ? "text-ink-300" : "text-ink-800")}>{day < 1 ? new Date(year, month, day).getDate() : day > count ? day - count : day}</span>{day > 0 && day <= count && tasks.filter((task) => task.dueDate && new Date(task.dueDate).getFullYear() === year && new Date(task.dueDate).getMonth() === month && new Date(task.dueDate).getDate() === day).map((task) => <button key={task.id} onClick={() => onSelectTask(task)} className="mt-6 block w-full truncate rounded bg-brand-50 px-2 py-1 text-left text-xs text-brand-700">{task.name}</button>)}</div>)}</div></div>;
+
+  const items: CalendarItem[] = [
+    ...tasks.filter((task) => task.dueDate).map((task): CalendarItem => ({ kind: "task", id: `task-${task.id}`, date: new Date(task.dueDate as string), label: task.name, task })),
+    ...milestones.filter((milestone) => milestone.releaseDate).map((milestone): CalendarItem => ({ kind: "milestone", id: `milestone-${milestone.id}`, date: new Date(milestone.releaseDate as string), label: milestone.name, milestone })),
+    ...events.map((event): CalendarItem => ({ kind: "event", id: `event-${event.id}`, date: new Date(event.date), label: event.title, event })),
+  ];
+
+  function itemsOnDay(day: number) {
+    return items.filter((item) => item.date.getFullYear() === year && item.date.getMonth() === month && item.date.getDate() === day);
+  }
+
+  return (
+    <div className="bg-white">
+      <div className="flex items-center gap-2 border-b border-ink-200 p-3">
+        <Button variant="outline" size="icon" onClick={() => setCursor(new Date(year, month - 1, 1))}><ChevronLeft size={15} /></Button>
+        <b>{cursor.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</b>
+        <Button variant="outline" size="icon" onClick={() => setCursor(new Date(year, month + 1, 1))}><ChevronRight size={15} /></Button>
+        <Button variant="outline" size="sm" onClick={() => setCursor(new Date())}>Today</Button>
+        <div className="ml-3 flex items-center gap-3 text-xs text-ink-500">
+          <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-brand-500" />Task due</span>
+          <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-warning-500" />Milestone</span>
+          <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-success-500" />Event</span>
+        </div>
+        {canEdit && <div className="ml-auto"><Button size="sm" leftIcon={<Plus size={14} />} onClick={() => setAddingDate(new Date())}>Add Event</Button></div>}
+      </div>
+      <div className="grid grid-cols-7">
+        {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => <div key={day} className="border-b border-r border-ink-200 py-3 text-center text-xs font-semibold">{day}</div>)}
+        {cells.map((day, index) => {
+          const inMonth = day > 0 && day <= count;
+          const dayItems = inMonth ? itemsOnDay(day) : [];
+          return (
+            <div
+              key={index}
+              onClick={() => canEdit && inMonth && setAddingDate(new Date(year, month, day))}
+              className={cn("group relative min-h-32 border-b border-r border-ink-200 p-2", inMonth && canEdit && "cursor-pointer hover:bg-surface-muted")}
+            >
+              <span className={cn("float-right text-xs font-semibold", !inMonth ? "text-ink-300" : "text-ink-800")}>{day < 1 ? new Date(year, month, day).getDate() : day > count ? day - count : day}</span>
+              {inMonth && canEdit && (
+                <button
+                  onClick={(clickEvent) => { clickEvent.stopPropagation(); setAddingDate(new Date(year, month, day)); }}
+                  title="Add event"
+                  className="absolute right-1.5 top-1.5 hidden rounded p-0.5 text-ink-400 hover:bg-white hover:text-brand-600 group-hover:block"
+                >
+                  <Plus size={13} />
+                </button>
+              )}
+              {dayItems.map((item) => (
+                <button
+                  key={item.id}
+                  onClick={(clickEvent) => {
+                    clickEvent.stopPropagation();
+                    if (item.kind === "task") onSelectTask(item.task);
+                    else if (item.kind === "event") setEditingEvent(item.event);
+                  }}
+                  title={item.label}
+                  className={cn("mt-6 block w-full truncate rounded px-2 py-1 text-left text-xs", calendarItemStyles[item.kind])}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          );
+        })}
+      </div>
+
+      <ProjectEventModal
+        projectId={projectId}
+        date={addingDate}
+        event={null}
+        onClose={() => setAddingDate(null)}
+        onSaved={() => { setAddingDate(null); onChanged(); }}
+      />
+      <ProjectEventModal
+        projectId={projectId}
+        date={editingEvent ? new Date(editingEvent.date) : null}
+        event={editingEvent}
+        onClose={() => setEditingEvent(null)}
+        onSaved={() => { setEditingEvent(null); onChanged(); }}
+      />
+    </div>
+  );
+}
+
+function ProjectEventModal({
+  projectId,
+  date,
+  event,
+  onClose,
+  onSaved,
+}: {
+  projectId: string;
+  date: Date | null;
+  event: ProjectEvent | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [title, setTitle] = useState("");
+  const [eventDate, setEventDate] = useState("");
+  const [description, setDescription] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const open = Boolean(date);
+
+  useEffect(() => {
+    if (!open) return;
+    setTitle(event?.title ?? "");
+    setEventDate(event ? event.date.slice(0, 10) : date ? date.toISOString().slice(0, 10) : "");
+    setDescription(event?.description ?? "");
+    setError(null);
+  }, [open, event, date]);
+
+  async function save() {
+    if (!title.trim() || !eventDate) return;
+    setSaving(true);
+    setError(null);
+    try {
+      if (event) {
+        await api.updateProjectEvent(projectId, event.id, { title: title.trim(), date: eventDate, description: description || null });
+      } else {
+        await api.createProjectEvent(projectId, { title: title.trim(), date: eventDate, description: description || null });
+      }
+      onSaved();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Event could not be saved");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove() {
+    if (!event) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      await api.deleteProjectEvent(projectId, event.id);
+      onSaved();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Event could not be deleted");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={event ? "Edit Event" : "Add Event"}
+      size="sm"
+      footer={
+        <>
+          {event && <Button variant="danger" onClick={remove} disabled={deleting || saving} className="mr-auto">{deleting ? "Deleting…" : "Delete"}</Button>}
+          <Button variant="outline" onClick={onClose} disabled={saving || deleting}>Cancel</Button>
+          <Button onClick={save} disabled={saving || deleting || !title.trim() || !eventDate}>{saving ? "Saving…" : "Save"}</Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        {error && <div className="rounded-lg border border-danger-200 bg-danger-50 px-3.5 py-2.5 text-sm text-danger-700">{error}</div>}
+        <Field label="Title"><Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Event title" autoFocus /></Field>
+        <Field label="Date"><Input type="date" value={eventDate} onChange={(e) => setEventDate(e.target.value)} /></Field>
+        <Field label="Description"><Textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} placeholder="Optional details" /></Field>
+      </div>
+    </Modal>
+  );
 }
 
 function ActivityWorkspace({ workspace, users }: { workspace: ProjectWorkspace; users: CompanyUser[] }) {
@@ -2157,6 +2451,7 @@ export function TaskWorkspaceDrawer({
   const [entries, setEntries] = useState(task?.timeEntries ?? []);
   const [activeTimer, setActiveTimer] = useState<ActiveTaskTimer | null>(null);
   const [stopTarget, setStopTarget] = useState<StopTimerTarget | null>(null);
+  const [pendingStatus, setPendingStatus] = useState<WorkspaceTask["status"] | null>(null);
   const [trackedSeconds, setTrackedSeconds] = useState(task?.trackedSeconds ?? 0);
   const [now, setNow] = useState(Date.now());
   const [timerBusy, setTimerBusy] = useState(false);
@@ -2375,9 +2670,17 @@ export function TaskWorkspaceDrawer({
         if (affectedTask) onTaskChanged({ ...affectedTask, trackedSeconds: result.taskTrackedSeconds });
       }
       if (stopTarget.entry.projectId === projectId) onProjectTimeChanged(result.projectTrackedSeconds);
+      const wasThisTask = stopTarget.entry.taskId === taskId;
       setActiveTimer(null);
       setStopTarget(null);
       setNow(Date.now());
+      if (wasThisTask && pendingStatus) {
+        const status = pendingStatus;
+        setPendingStatus(null);
+        await updateTask({ status });
+      } else {
+        setPendingStatus(null);
+      }
     } finally {
       setTimerBusy(false);
     }
@@ -2389,9 +2692,17 @@ export function TaskWorkspaceDrawer({
     try {
       await api.discardTaskTimer(stopTarget.entry.projectId, stopTarget.entry.taskId);
       if (stopTarget.entry.taskId === taskId) setEntries((current) => current.filter((entry) => entry.id !== stopTarget.entry.id));
+      const wasThisTask = stopTarget.entry.taskId === taskId;
       setActiveTimer(null);
       setStopTarget(null);
       setNow(Date.now());
+      if (wasThisTask && pendingStatus) {
+        const status = pendingStatus;
+        setPendingStatus(null);
+        await updateTask({ status });
+      } else {
+        setPendingStatus(null);
+      }
     } finally {
       setTimerBusy(false);
     }
@@ -2490,7 +2801,15 @@ export function TaskWorkspaceDrawer({
               ) : (
                 <FilterSelect
                   value={localTask.status}
-                  onChange={(value) => updateTask({ status: value as WorkspaceTask["status"] })}
+                  onChange={(value) => {
+                    const nextStatus = value as WorkspaceTask["status"];
+                    if (nextStatus === "done" && activeTimer?.taskId === taskId) {
+                      setPendingStatus(nextStatus);
+                      setStopTarget({ entry: activeTimer, task: currentTask });
+                      return;
+                    }
+                    updateTask({ status: nextStatus });
+                  }}
                   disabled={!canEdit || saving}
                   options={[
                     { value: "new_request", label: "New Request" },
@@ -2526,15 +2845,17 @@ export function TaskWorkspaceDrawer({
             <div className="ml-auto flex items-center gap-2">
               {activeTimer && activeTimer.taskId !== taskId && <span className="hidden max-w-36 truncate text-[11px] font-medium text-warning-600 xl:inline" title={activeTimer.task?.name ?? "Another task"}>Running: {activeTimer.task ? `#${activeTimer.task.code} ${activeTimer.task.name}` : "another task"}</span>}
               <span className={cn("rounded-md bg-white px-2 py-1 font-mono text-xs", activeTimer && "text-danger-600 ring-1 ring-danger-200")}>{formatSeconds(activeTimer ? runningSeconds : trackedSeconds)}</span>
-              <Button
-                size="sm"
-                onClick={toggleTimer}
-                disabled={!canEdit || timerBusy || (!activeTimer && localTask.overdueReviewStatus === "pending_review")}
-                title={!activeTimer && localTask.overdueReviewStatus === "pending_review" ? "This task is overdue and awaiting review — it can't be tracked until it's resolved" : undefined}
-                className={cn("px-3", activeTimer ? "bg-danger-500 hover:bg-danger-600" : "bg-success-500 hover:bg-success-600")}
-              >
-                {activeTimer ? <><span className="mr-1.5 h-3 w-3 rounded-sm bg-white" /> Stop</> : <><Play size={14} className="mr-1.5 fill-white" /> Start</>}
-              </Button>
+              {currentTask.status !== "done" && (
+                <Button
+                  size="sm"
+                  onClick={toggleTimer}
+                  disabled={!canEdit || timerBusy || (!activeTimer && localTask.overdueReviewStatus === "pending_review")}
+                  title={!activeTimer && localTask.overdueReviewStatus === "pending_review" ? "This task is overdue and awaiting review — it can't be tracked until it's resolved" : undefined}
+                  className={cn("px-3", activeTimer ? "bg-danger-500 hover:bg-danger-600" : "bg-success-500 hover:bg-success-600")}
+                >
+                  {activeTimer ? <><span className="mr-1.5 h-3 w-3 rounded-sm bg-white" /> Stop</> : <><Play size={14} className="mr-1.5 fill-white" /> Start</>}
+                </Button>
+              )}
               {canDelete && (
                 <Button size="sm" variant="outline" onClick={() => setConfirmDelete(true)} className="border-danger-200 px-3 text-danger-600 hover:bg-danger-50">
                   <Trash2 size={14} className="mr-1.5" /> Delete
@@ -2708,7 +3029,7 @@ export function TaskWorkspaceDrawer({
         </div>
       </div>
     </Drawer>
-    <TimerStopDialog target={stopTarget} busy={timerBusy} onCancel={() => setStopTarget(null)} onSave={saveTimerLog} onDiscard={discardTimer} />
+    <TimerStopDialog target={stopTarget} busy={timerBusy} onCancel={() => { setStopTarget(null); setPendingStatus(null); }} onSave={saveTimerLog} onDiscard={discardTimer} />
     <Modal
       open={confirmDelete}
       onClose={() => setConfirmDelete(false)}

@@ -96,6 +96,7 @@ model Company {
   projectSections      ProjectSection[]
   projectTasks         ProjectTask[]
   projectMilestones    ProjectMilestone[]
+  projectEvents        ProjectEvent[]
   projectMembers       ProjectMember[]
   taskTimeEntries      TaskTimeEntry[]
   chatChannels         ChatChannel[]
@@ -158,6 +159,7 @@ model CompanyUser {
   projectTasksAssigned   ProjectTask[]         @relation("TaskAssignee")
   projectSectionsOwned   ProjectSection[]      @relation("SectionOwner")
   projectMilestonesOwned ProjectMilestone[]    @relation("MilestoneOwner")
+  projectEventsCreated   ProjectEvent[]        @relation("EventCreatedBy")
   taskTimeEntries        TaskTimeEntry[]
   taskFollowers          TaskFollower[]
   taskComments           TaskComment[]
@@ -507,6 +509,7 @@ model Project {
   sections     ProjectSection[]
   tasks        ProjectTask[]
   milestones   ProjectMilestone[]
+  events       ProjectEvent[]
   timeEntries  TaskTimeEntry[]
   chatChannel  ChatChannel?
 
@@ -747,6 +750,23 @@ model ProjectMilestone {
   tasks       ProjectTask[]
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
+}
+
+model ProjectEvent {
+  id          String      @id @default(cuid())
+  tenantId    String
+  company     Company     @relation(fields: [tenantId], references: [id])
+  projectId   String
+  project     Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  date        DateTime
+  createdById String
+  createdBy   CompanyUser @relation("EventCreatedBy", fields: [createdById], references: [id])
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([projectId, date])
 }
 
 model ChatChannel {

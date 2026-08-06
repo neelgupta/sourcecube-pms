@@ -398,7 +398,7 @@ export interface ResourcePlannerDayDetail {
     id: ID; code: number; name: string; status: ProjectTaskStatus; progress: number; estimatedMinutes: number; trackedSeconds: number;
     remainingMinutes: number; overdueReviewStatus: "pending_review" | null;
     plannedMinutes: number; todayTrackedSeconds: number; extraTrackedSeconds: number; startDate?: string | null; dueDate?: string | null; completedAt?: string | null;
-    hasExplicitAllocation: boolean; allocationNote?: string | null;
+    hasExplicitAllocation: boolean; allocationNote?: string | null; isOwnTask: boolean;
     project: { id: ID; name: string; key: string };
   }>;
   logs: Array<{
@@ -696,11 +696,20 @@ export interface AllMilestone {
   trackedSeconds: number;
 }
 
+export interface ProjectEvent {
+  id: ID;
+  title: string;
+  description?: string | null;
+  date: string;
+  createdBy?: TeamMemberSummary | null;
+}
+
 export interface ProjectWorkspace {
   project: RealProject;
   sections: ProjectSection[];
   members: ProjectMember[];
   milestones: ProjectMilestone[];
+  events: ProjectEvent[];
   activities: AuditLogEntry[];
 }
 

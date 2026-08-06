@@ -781,7 +781,7 @@ projectsRouter.get("/:id/workspace", requirePermission("projects", "view"), asyn
     return;
   }
   const taskScope = await taskVisibilityScope(tid, uid, project);
-  const [sections, milestones] = await Promise.all([
+  const [sections, milestones, events] = await Promise.all([
     prisma.projectSection.findMany({
       where: { projectId: id },
       include: {
@@ -798,6 +798,11 @@ projectsRouter.get("/:id/workspace", requirePermission("projects", "view"), asyn
       where: { projectId: id },
       include: { owner: { select: userSelect }, _count: { select: { tasks: true } } },
       orderBy: { releaseDate: "asc" },
+    }),
+    prisma.projectEvent.findMany({
+      where: { projectId: id },
+      include: { createdBy: { select: userSelect } },
+      orderBy: { date: "asc" },
     }),
   ]);
   const company = await prisma.company.findUniqueOrThrow({ where: { id: tid }, select: { timezone: true } });
@@ -820,6 +825,7 @@ projectsRouter.get("/:id/workspace", requirePermission("projects", "view"), asyn
     sections,
     members,
     milestones,
+    events,
     activities,
   });
 });
@@ -1596,6 +1602,95 @@ projectsRouter.delete("/:id/milestones/:milestoneId", requirePermission("project
   await prisma.projectTask.updateMany({ where: { milestoneId }, data: { milestoneId: null } });
   await prisma.projectMilestone.delete({ where: { id: milestoneId } });
   await recordAudit({ actor: req.auth!, action: "project.milestone.deleted", tenantId: tid, targetType: "ProjectMilestone", targetId: milestoneId, metadata: { projectId: id, name: existing.name } });
+  res.status(204).end();
+});
+
+const eventSchema = z.object({
+  title: z.string().min(1).max(255),
+  date: z.string().min(1),
+  description: z.string().nullable().optional(),
+});
+
+projectsRouter.post("/:id/events", requirePermission("projects", "edit"), async (req, res) => {
+  const parsed = eventSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.issues.map((issue) => issue.message).join(", ") });
+    return;
+  }
+  const tid = tenantId(req);
+  const id = req.params.id as string;
+  if (!(await requireProjectAccess(tid, userId(req), id, "edit"))) {
+    res.status(403).json({ error: "You do not have sufficient access to this project" });
+    return;
+  }
+  if (!(await getTenantProject(id, tid))) {
+    res.status(404).json({ error: "Project not found" });
+    return;
+  }
+  const event = await prisma.projectEvent.create({
+    data: {
+      tenantId: tid,
+      projectId: id,
+      title: parsed.data.title,
+      date: new Date(parsed.data.date),
+      description: parsed.data.description ?? null,
+      createdById: userId(req),
+    },
+    include: { createdBy: { select: userSelect } },
+  });
+  await recordAudit({ actor: req.auth!, action: "project.event.created", tenantId: tid, targetType: "ProjectEvent", targetId: event.id, metadata: { projectId: id, title: event.title } });
+  res.status(201).json({ event });
+});
+
+const eventUpdateSchema = eventSchema.partial();
+
+projectsRouter.patch("/:id/events/:eventId", requirePermission("projects", "edit"), async (req, res) => {
+  const parsed = eventUpdateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.issues.map((issue) => issue.message).join(", ") });
+    return;
+  }
+  const tid = tenantId(req);
+  const id = req.params.id as string;
+  const eventId = req.params.eventId as string;
+  if (!(await requireProjectAccess(tid, userId(req), id, "edit"))) {
+    res.status(403).json({ error: "You do not have sufficient access to this project" });
+    return;
+  }
+  const existing = await prisma.projectEvent.findFirst({ where: { id: eventId, projectId: id, tenantId: tid } });
+  if (!existing) {
+    res.status(404).json({ error: "Event not found" });
+    return;
+  }
+  const data = parsed.data;
+  const event = await prisma.projectEvent.update({
+    where: { id: eventId },
+    data: {
+      title: data.title,
+      date: data.date !== undefined ? new Date(data.date) : undefined,
+      description: data.description !== undefined ? data.description : undefined,
+    },
+    include: { createdBy: { select: userSelect } },
+  });
+  await recordAudit({ actor: req.auth!, action: "project.event.updated", tenantId: tid, targetType: "ProjectEvent", targetId: eventId, metadata: { projectId: id, changes: Object.keys(data) } });
+  res.json({ event });
+});
+
+projectsRouter.delete("/:id/events/:eventId", requirePermission("projects", "edit"), async (req, res) => {
+  const tid = tenantId(req);
+  const id = req.params.id as string;
+  const eventId = req.params.eventId as string;
+  if (!(await requireProjectAccess(tid, userId(req), id, "edit"))) {
+    res.status(403).json({ error: "You do not have sufficient access to this project" });
+    return;
+  }
+  const existing = await prisma.projectEvent.findFirst({ where: { id: eventId, projectId: id, tenantId: tid } });
+  if (!existing) {
+    res.status(404).json({ error: "Event not found" });
+    return;
+  }
+  await prisma.projectEvent.delete({ where: { id: eventId } });
+  await recordAudit({ actor: req.auth!, action: "project.event.deleted", tenantId: tid, targetType: "ProjectEvent", targetId: eventId, metadata: { projectId: id, title: existing.title } });
   res.status(204).end();
 });
 
