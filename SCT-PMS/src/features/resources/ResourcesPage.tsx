@@ -102,6 +102,8 @@ export function ResourcesPage() {
   const [selectedDay, setSelectedDay] = useState<{ employeeId: string; date: string } | null>(null);
   const [detail, setDetail] = useState<ResourcePlannerDayDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [unestimatedCount, setUnestimatedCount] = useState(0);
+  const [bannerDismissed, setBannerDismissed] = useState(false);
   const selectedPeriod = useMemo(
     () => (preset === "custom" ? customRange : presetRange(preset)),
     [preset, customRange],
@@ -177,6 +179,18 @@ export function ResourcesPage() {
       .finally(() => { if (!cancelled) setDetailLoading(false); });
     return () => { cancelled = true; };
   }, [selectedDay?.employeeId, selectedDay?.date]);
+
+  // Tasks with no estimate never become plannable (the planner requires remainingMinutes > 0),
+  // and previously just vanished from here with no explanation. This surfaces a proactive nudge
+  // instead of leaving the user to notice the gap on their own. Scoped by the same task
+  // visibility rules as "My Tasks" (see GET /projects/tasks/assigned).
+  useEffect(() => {
+    let cancelled = false;
+    api.listAssignedTasks({ estimated: "unestimated" })
+      .then(({ tasks }) => { if (!cancelled) setUnestimatedCount(tasks.length); })
+      .catch(() => { if (!cancelled) setUnestimatedCount(0); });
+    return () => { cancelled = true; };
+  }, [revision]);
 
   function handleTaskAssigned() {
     if (!selectedDay) return;
@@ -276,6 +290,16 @@ export function ResourcesPage() {
       </div>
 
       {error && <div className="m-4 rounded-lg border border-danger-200 bg-danger-50 px-4 py-3 text-sm text-danger-700">{error}</div>}
+      {!bannerDismissed && unestimatedCount > 0 && (
+        <div className="mx-4 mt-4 flex items-center gap-3 rounded-lg border border-warning-200 bg-warning-50 px-4 py-3 text-sm text-warning-800 lg:mx-6">
+          <HelpCircle size={16} className="shrink-0 text-warning-600" />
+          <span className="flex-1">
+            You have <strong>{unestimatedCount}</strong> task{unestimatedCount === 1 ? "" : "s"} with no time estimate — {unestimatedCount === 1 ? "it" : "they"} won't appear in this planner until an estimate is set.
+          </span>
+          <button onClick={() => navigate("/tasks?estimated=unestimated")} className="shrink-0 font-semibold text-warning-700 hover:underline">View them</button>
+          <button onClick={() => setBannerDismissed(true)} title="Dismiss" className="shrink-0 text-warning-500 hover:text-warning-700"><X size={14} /></button>
+        </div>
+      )}
       <div className="min-h-0 flex-1 p-4 lg:p-6">
         <Card className="h-full overflow-hidden">
           <div className="h-full overflow-auto">
@@ -311,6 +335,7 @@ export function ResourcesPage() {
           canEditAllocation={canEditAllocation}
           employeeId={selectedDay.employeeId}
           date={selectedDay.date}
+          workingDays={planner?.schedule.workingDays ?? [1, 2, 3, 4, 5]}
           onClose={() => setSelectedDay(null)}
           onOpenTask={(projectId, taskId) => openResourceTask(projectId, taskId)}
           onTaskAssigned={handleTaskAssigned}
@@ -344,6 +369,7 @@ function DayDetailPanel({
   canEditAllocation,
   employeeId,
   date,
+  workingDays,
   onClose,
   onOpenTask,
   onTaskAssigned,
@@ -355,6 +381,7 @@ function DayDetailPanel({
   canEditAllocation: boolean;
   employeeId: string;
   date: string;
+  workingDays: number[];
   onClose: () => void;
   onOpenTask: (projectId: string, taskId: string) => void;
   onTaskAssigned: () => void;
@@ -366,7 +393,7 @@ function DayDetailPanel({
       {detail.holiday && <div className="mb-4 rounded-lg bg-info-50 px-3 py-2 text-sm text-info-700">{detail.holiday.name}{detail.holiday.optional ? " (optional holiday)" : ""}</div>}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3"><Metric label="Company capacity" value={`${hoursFromMinutes(detail.capacityMinutes)}h`} /><Metric label="Planned hours" value={`${hoursFromMinutes(detail.plannedMinutes)}h`} /><Metric label="Tracked hours" value={durationLabel(detail.trackedSeconds)} /><Metric label="Planned tracked" value={durationLabel(detail.plannedTrackedSeconds)} /><Metric label="Extra / overrun" value={durationLabel(detail.extraPlannedSeconds)} danger={detail.extraPlannedSeconds > 0} /><Metric label="Remaining plan" value={`${hoursFromMinutes(detail.remainingPlannedMinutes)}h`} /></div>
       {canAssign && <AssignTaskSection employeeId={employeeId} date={date} onAssigned={onTaskAssigned} />}
-      <AllocationEditor detail={detail} employeeId={employeeId} date={date} canEdit={canEditAllocation} onOpenTask={onOpenTask} onSaved={onAllocationsSaved} />
+      <AllocationEditor detail={detail} employeeId={employeeId} date={date} workingDays={workingDays} canEdit={canEditAllocation} onOpenTask={onOpenTask} onSaved={onAllocationsSaved} />
       <section className="mt-6"><div className="mb-2 flex items-center gap-2"><Clock3 size={16} className="text-brand-600" /><h3 className="font-semibold text-ink-900">Work logs ({detail.logs.length})</h3></div>{detail.logs.length ? <div className="divide-y divide-ink-100 rounded-lg border border-ink-200">{detail.logs.map((log) => <div key={log.id} className="p-3"><div className="flex items-center gap-2"><CheckCircle2 size={14} className="text-success-500" /><p className="text-sm font-medium text-ink-900">{log.activityType}</p><span className="ml-auto font-mono text-xs text-ink-700">{durationLabel(log.effectiveDurationSeconds)}</span></div><p className="mt-1 text-xs text-ink-500">#{log.task.code} {log.task.name} · {log.project.name}</p><p className="mt-1 text-[11px] text-ink-400">{new Date(log.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} – {log.endedAt ? new Date(log.endedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "Running"} · {log.billable ? "Billable" : "Non-billable"}</p>{log.note && <p className="mt-1 text-xs text-ink-600">{log.note}</p>}</div>)}</div> : <p className="rounded-lg border border-dashed border-ink-200 p-4 text-sm text-ink-500">No tracked work was recorded on this date.</p>}</section>
     </div>}
   </aside></div>;
@@ -377,10 +404,28 @@ function DayDetailPanel({
  *  scope) type an explicit number of hours per task instead of accepting the system's uniform
  *  estimate/span split. Inputs are local until Save; a live running total (computed client-side,
  *  no round trip) shows how the edits compare to the day's capacity before committing. */
+/** Working-day count between `from` (inclusive) and `to` (inclusive), both YYYY-MM-DD, per the
+ *  company's configured workingDays (0=Sun..6=Sat) — mirrors keysBetween/workingDays filtering in
+ *  server/src/routes/resources.ts, kept client-side here since this only ever feeds a draft
+ *  suggestion, never a persisted value. */
+function workingDaysBetween(from: string, to: string, workingDays: number[]): string[] {
+  if (from > to) return [];
+  const days: string[] = [];
+  let cursor = new Date(`${from}T12:00:00.000Z`);
+  const end = new Date(`${to}T12:00:00.000Z`);
+  for (let i = 0; i < 740 && cursor <= end; i += 1) {
+    const key = cursor.toISOString().slice(0, 10);
+    if (workingDays.includes(cursor.getUTCDay())) days.push(key);
+    cursor = new Date(cursor.getTime() + 86_400_000);
+  }
+  return days;
+}
+
 function AllocationEditor({
   detail,
   employeeId,
   date,
+  workingDays,
   canEdit,
   onOpenTask,
   onSaved,
@@ -388,12 +433,14 @@ function AllocationEditor({
   detail: ResourcePlannerDayDetail;
   employeeId: string;
   date: string;
+  workingDays: number[];
   canEdit: boolean;
   onOpenTask: (projectId: string, taskId: string) => void;
   onSaved: (detail: ResourcePlannerDayDetail) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [hours, setHours] = useState<Record<string, string>>({});
+  const [suggested, setSuggested] = useState<Record<string, boolean>>({});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [markingDone, setMarkingDone] = useState<string | null>(null);
@@ -418,13 +465,46 @@ function AllocationEditor({
   // read-only. Submitting it in the PUT allocations payload gets the whole save rejected by the
   // backend's ownership check, silently failing the entire day's plan — see isOwnTask.
   function startEditing() {
-    setHours(Object.fromEntries(detail.tasks.filter((task) => task.status !== "done" && task.isOwnTask).map((task) => [task.id, hoursFromMinutes(task.plannedMinutes)])));
+    setHours(Object.fromEntries(detail.tasks.filter((task) => task.status !== "done" && task.isOwnTask && !task.isLocked).map((task) => [task.id, hoursFromMinutes(task.plannedMinutes)])));
+    setSuggested({});
     setError(null);
     setEditing(true);
   }
 
+  /** Pre-fills the draft `hours` state (never persisted until "Save plan" is clicked) with a
+   *  candidate split of each editable task's remaining estimate across its remaining working
+   *  days up to its due date. A task without a due date is skipped — there's no span to spread
+   *  across, so guessing one would just be the old auto-split bug under a new name. Only ever
+   *  touches fields the user hasn't already hand-edited (won't clobber a manual edit if clicked
+   *  again), and any field it does touch is flagged "(suggested)" until the user edits it. */
+  function suggestHours() {
+    const editable = detail.tasks.filter((task) => task.status !== "done" && task.isOwnTask && !task.isLocked);
+    const nextHours = { ...hours };
+    const nextSuggested = { ...suggested };
+    for (const task of editable) {
+      if (suggested[task.id] === false) continue; // user already hand-edited this field — leave it alone
+      if (!task.dueDate) continue;
+      const dueKey = task.dueDate.slice(0, 10);
+      if (dueKey < date) continue; // already overdue — no forward span to suggest across
+      const span = workingDaysBetween(date, dueKey, workingDays);
+      if (!span.length) continue;
+      const suggestedMinutes = Math.round(task.remainingMinutes / span.length);
+      if (suggestedMinutes <= 0) continue;
+      nextHours[task.id] = hoursFromMinutes(suggestedMinutes);
+      nextSuggested[task.id] = true;
+    }
+    setHours(nextHours);
+    setSuggested(nextSuggested);
+  }
+
+  // Locked tasks (same-day-urgent / carried-forward) aren't part of the editable `hours` draft,
+  // but their hours are real and already committed — the running total while editing must
+  // include them too, or the capacity meter understates the day (e.g. showing "0h / 8.5h" while
+  // 7h of locked work is already sitting on the day), which both misleads the user about
+  // remaining room and could let them plan the day well past its actual capacity without warning.
+  const lockedMinutes = detail.tasks.filter((task) => task.status !== "done" && task.isOwnTask && task.isLocked).reduce((total, task) => total + task.plannedMinutes, 0);
   const runningTotalMinutes = editing
-    ? detail.tasks.filter((task) => task.status !== "done" && task.isOwnTask).reduce((total, task) => total + Math.round((Number(hours[task.id]) || 0) * 60), 0)
+    ? lockedMinutes + detail.tasks.filter((task) => task.status !== "done" && task.isOwnTask && !task.isLocked).reduce((total, task) => total + Math.round((Number(hours[task.id]) || 0) * 60), 0)
     : detail.plannedMinutes;
   const load = detail.capacityMinutes ? runningTotalMinutes / detail.capacityMinutes : 0;
 
@@ -432,7 +512,7 @@ function AllocationEditor({
     setSaving(true);
     setError(null);
     try {
-      const allocations = detail.tasks.filter((task) => task.status !== "done" && task.isOwnTask).map((task) => ({ taskId: task.id, plannedMinutes: Math.round((Number(hours[task.id]) || 0) * 60) }));
+      const allocations = detail.tasks.filter((task) => task.status !== "done" && task.isOwnTask && !task.isLocked).map((task) => ({ taskId: task.id, plannedMinutes: Math.round((Number(hours[task.id]) || 0) * 60) }));
       const next = await api.saveResourcePlannerDayAllocations(employeeId, date, allocations);
       onSaved(next);
       setEditing(false);
@@ -446,14 +526,17 @@ function AllocationEditor({
   // Once the day's planned total reaches (or exceeds) the working-day capacity, the day is
   // considered fully planned and locked from further editing — for everyone, including TL/PM/
   // admin, not just the employee. Re-plannable again only if planned minutes drop back below
-  // capacity (e.g. after a task is marked done and its allocation cleared).
+  // capacity (e.g. after a task is marked done and its allocation cleared). This must be judged
+  // purely against real capacity — locked (same-day-urgent / carried-forward) tasks count toward
+  // the total exactly like any other planned hours, no differently, so a day isn't reported
+  // "fully planned" a moment early or late relative to its actual capacityMinutes.
   const isFullyPlanned = detail.capacityMinutes > 0 && detail.plannedMinutes >= detail.capacityMinutes;
 
   return (
     <section className="mt-6">
       <div className="mb-2 flex items-center justify-between">
         <div className="flex items-center gap-2"><ListChecks size={16} className="text-brand-600" /><h3 className="font-semibold text-ink-900">Assigned task progress ({detail.tasks.length})</h3></div>
-        {canEdit && detail.tasks.some((task) => task.status !== "done" && task.isOwnTask) && !editing && (
+        {canEdit && detail.tasks.some((task) => task.status !== "done" && task.isOwnTask && !task.isLocked) && !editing && (
           isFullyPlanned
             ? <span className="text-xs font-medium text-ink-400" title="This day is already fully planned">Day fully planned</span>
             : <button onClick={startEditing} className="text-xs font-semibold text-brand-600 hover:text-brand-700">Edit today's plan</button>
@@ -462,7 +545,10 @@ function AllocationEditor({
       {editing && (
         <div className={cn("mb-3 flex items-center justify-between rounded-lg border px-3 py-2 text-sm", load > 1 ? "border-danger-200 bg-danger-50 text-danger-700" : load > 0.85 ? "border-warning-200 bg-warning-50 text-warning-700" : "border-success-200 bg-success-50 text-success-700")}>
           <span className="font-semibold">{hoursFromMinutes(runningTotalMinutes)}h / {hoursFromMinutes(detail.capacityMinutes)}h planned</span>
-          <span className="text-xs">{load > 1 ? "Over capacity" : "Looks good"}</span>
+          <div className="flex items-center gap-3">
+            <button onClick={suggestHours} title="Fills a draft split of each task's remaining hours across its working days up to its due date — nothing is saved until you click Save plan" className="text-xs font-semibold underline decoration-dotted hover:no-underline">Suggest hours</button>
+            <span className="text-xs">{load > 1 ? "Over capacity" : "Looks good"}</span>
+          </div>
         </div>
       )}
       {detail.tasks.length ? (
@@ -477,10 +563,16 @@ function AllocationEditor({
                 </div>
                 <Badge tone={task.status === "done" ? "green" : task.status === "in_progress" ? "amber" : "blue"}>{task.progress}%</Badge>
               </button>
-              {editing && task.status !== "done" && task.isOwnTask ? (
+              {editing && task.status !== "done" && task.isOwnTask && !task.isLocked ? (
                 <div className="mt-2 flex items-center gap-2" onClick={(event) => event.stopPropagation()}>
-                  <input type="number" min="0" step="0.25" value={hours[task.id] ?? "0"} onChange={(event) => setHours((current) => ({ ...current, [task.id]: event.target.value }))} className="h-8 w-24 rounded-md border border-ink-200 px-2 text-sm outline-none focus:border-brand-500" />
+                  <input
+                    type="number" min="0" step="0.25" value={hours[task.id] ?? "0"}
+                    onChange={(event) => { setHours((current) => ({ ...current, [task.id]: event.target.value })); setSuggested((current) => ({ ...current, [task.id]: false })); }}
+                    className="h-8 w-24 rounded-md border border-ink-200 px-2 text-sm outline-none focus:border-brand-500"
+                  />
                   <span className="text-xs text-ink-500">hours planned today</span>
+                  {suggested[task.id] && <span className="rounded bg-brand-50 px-1.5 py-0.5 text-[10px] font-semibold text-brand-700" title="Draft suggestion — not saved yet">(suggested)</span>}
+                  {!task.dueDate && <span className="text-[11px] text-ink-400">Set a due date to get a suggestion</span>}
                   <span className="ml-auto text-[11px] text-ink-400">{hoursFromMinutes(task.remainingMinutes)}h remaining · {hoursFromMinutes(task.estimatedMinutes)}h total estimate</span>
                 </div>
               ) : task.status === "done" ? (
@@ -495,7 +587,12 @@ function AllocationEditor({
                 </div>
               ) : (
                 <div className="mt-2 flex flex-wrap items-center gap-4 text-[11px] text-ink-500">
-                  <span>{hoursFromMinutes(task.plannedMinutes)}h planned today{task.hasExplicitAllocation && <span className="ml-1 font-semibold text-brand-600">(set)</span>}</span>
+                  <span>
+                    {hoursFromMinutes(task.plannedMinutes)}h planned today
+                    {task.isLocked
+                      ? <span className="ml-1 font-semibold text-warning-600" title="This task must be finished by its due date — its hours are fixed and can't be edited here">(locked)</span>
+                      : task.hasExplicitAllocation && <span className="ml-1 font-semibold text-brand-600">(set)</span>}
+                  </span>
                   {task.plannedMinutes > 0 && task.todayTrackedSeconds === 0 ? (
                     <span className="font-medium text-ink-400">Not worked on today</span>
                   ) : (
@@ -591,6 +688,7 @@ function AssignTaskSection({ employeeId, date, onAssigned }: { employeeId: strin
         name: newTaskName.trim(),
         sectionId: sections[0].id,
         assigneeId: employeeId,
+        startDate: date,
         dueDate: date,
         priority: newTaskPriority,
       });

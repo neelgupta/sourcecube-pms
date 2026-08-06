@@ -89,6 +89,10 @@ function remainingMinutesFor(task: { estimatedMinutes: number; trackedSeconds: n
   return Math.max(0, task.estimatedMinutes - Math.round(task.trackedSeconds / 60));
 }
 
+/** Marks a TaskDailyAllocation row as system-written by carryForwardRemainingToDueDate, so
+ *  buildDayDetail can tell it apart from a manually-set allocation and lock it from editing. */
+const carryForwardNote = "Auto-planned: remaining hours carried to due date";
+
 
 const plannerQuery = z.object({
   start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -240,11 +244,18 @@ async function buildDayDetail(tid: string, employee: { id: string; name: string;
   // Any open, plannable task is offered on the day panel (not just ones with an existing log or
   // allocation today) so the person can pick from their full open workload — plus any task that
   // was actually logged/allocated today even if it's since gone overdue-under-review or done, so
-  // history for this specific date doesn't disappear.
-  const relevantTasks = tasks.filter((task) =>
-    (task.status !== "done" && task.overdueReviewStatus === null && remainingMinutesFor(task) > 0) ||
-    loggedTaskIds.has(task.id) ||
-    allocationByTaskId.has(task.id));
+  // history for this specific date doesn't disappear. Critically, a task with a due date is only
+  // ever "open and plannable" on days up to and including its own due date — otherwise a
+  // same-day-urgent task (or any task whose due date has come and gone) keeps reappearing as a
+  // fresh, plannable row on every later day's panel forever, which both misrepresents its status
+  // and lets someone re-plan hours for a task that should have gone to overdue review instead.
+  const relevantTasks = tasks.filter((task) => {
+    const dueKey = task.dueDate ? localDateKey(task.dueDate, company.timezone) : null;
+    const isWithinDueWindow = !dueKey || dueKey >= date;
+    return (task.status !== "done" && task.overdueReviewStatus === null && isWithinDueWindow && remainingMinutesFor(task) > 0) ||
+      loggedTaskIds.has(task.id) ||
+      allocationByTaskId.has(task.id);
+  });
   const tasksWithPlan = relevantTasks.map((task) => {
     const explicit = allocationByTaskId.get(task.id);
     // Today's own tracked time for this task, distinct from the lifetime trackedSeconds already
@@ -252,6 +263,24 @@ async function buildDayDetail(tid: string, employee: { id: string; name: string;
     // 2h planned" (not worked today) per task, instead of only ever showing the lifetime total.
     const todayTrackedSeconds = relevantEntries.filter((entry) => entry.taskId === task.id).reduce((total, entry) => total + durationSeconds(entry), 0);
     const plannedMinutes = explicit?.plannedMinutes ?? 0;
+    // A task is "locked" on this day — shown with its planned hours, but not offered as an
+    // editable input in "Edit Today's Plan" — in two cases: (1) it's an urgent same-day task
+    // (startDate = dueDate = this date), auto-planned in full by autoPlanIfUrgentSameDay and not
+    // meant to be second-guessed once the day is already committed to it; or (2) it's the
+    // system-carried-forward leftover of a multi-day task's due date, written by
+    // carryForwardRemainingToDueDate below — the person already decided how much to do today
+    // when they saved that day's plan, so the due-date remainder is fixed, not re-editable.
+    const startKey = task.startDate ? localDateKey(task.startDate, company.timezone) : null;
+    const dueKey = task.dueDate ? localDateKey(task.dueDate, company.timezone) : null;
+    // Locking is about an actual committed allocation, not just a date coincidence — a same-day
+    // task with startDate = dueDate = this date is only "locked" if it actually has a nonzero
+    // planned allocation on it (i.e. autoPlanIfUrgentSameDay succeeded). Without the explicit
+    // check, a task that never got auto-planned (e.g. zero remaining minutes at the time, or its
+    // allocation was later cleared) would still show as "0h planned today (locked)" — locked
+    // with nothing to actually lock, which just blocks the person from planning it manually for
+    // no reason.
+    const isSameDayUrgent = startKey === date && dueKey === date && Boolean(explicit) && plannedMinutes > 0;
+    const isCarriedForward = explicit?.note === carryForwardNote && plannedMinutes > 0;
     return {
       ...task,
       // Whether this task is actually assigned to the employee whose day this is — false for a
@@ -273,6 +302,7 @@ async function buildDayDetail(tid: string, employee: { id: string; name: string;
       extraTrackedSeconds: Math.max(0, todayTrackedSeconds - plannedMinutes * 60),
       hasExplicitAllocation: Boolean(explicit),
       allocationNote: explicit?.note ?? null,
+      isLocked: isSameDayUrgent || isCarriedForward,
     };
   });
   const plannedMinutes = tasksWithPlan.reduce((total, task) => total + task.plannedMinutes, 0);
@@ -322,6 +352,48 @@ resourcesRouter.get("/planner/:employeeId/allocations", requirePermission("resou
   res.json({ allocations: rows.map((row) => ({ taskId: row.taskId, date: row.date.toISOString().slice(0, 10), plannedMinutes: row.plannedMinutes, note: row.note })) });
 });
 
+/** After saving a day's plan, any task due on a later date that still has remaining minutes left
+ *  over (its estimate minus tracked time minus what was just planned today) gets that leftover
+ *  automatically booked onto its own due date — reserving the time it must be finished by,
+ *  without the person having to separately go plan that future day themselves. Written with the
+ *  carryForwardNote marker so buildDayDetail locks it from manual editing (see isLocked) — it
+ *  represents "this must happen by the due date," not a discretionary plan. Only tasks actually
+ *  submitted in this save (i.e. the ones the person just decided today's amount for) are
+ *  considered; tasks left untouched this save aren't re-carried on every unrelated save. */
+async function carryForwardRemainingToDueDate(
+  tid: string,
+  uid: string,
+  employeeId: string,
+  dateParam: string,
+  timezone: string,
+  allocations: { taskId: string; plannedMinutes: number }[],
+  tasks: { id: string; estimatedMinutes: number; trackedSeconds: number; dueDate: Date | null }[],
+) {
+  const taskById = new Map(tasks.map((task) => [task.id, task]));
+  for (const row of allocations) {
+    const task = taskById.get(row.taskId);
+    if (!task || !task.dueDate) continue;
+    const dueKey = localDateKey(task.dueDate, timezone);
+    if (dueKey <= dateParam) continue; // due today or already overdue — nothing to carry forward
+    const leftover = Math.max(0, remainingMinutesFor(task) - row.plannedMinutes);
+    if (leftover <= 0) continue;
+    const dueDateValue = new Date(`${dueKey}T00:00:00.000Z`);
+    // Never clobber a due-date row the person already set by hand — only ever create one, or
+    // update one this same mechanism previously wrote (so re-saving today's plan keeps the
+    // carried-forward figure in sync with the latest leftover instead of stacking duplicates).
+    const existingDueRow = await prisma.taskDailyAllocation.findUnique({
+      where: { taskId_userId_date: { taskId: task.id, userId: employeeId, date: dueDateValue } },
+      select: { note: true },
+    });
+    if (existingDueRow && existingDueRow.note !== carryForwardNote) continue;
+    await prisma.taskDailyAllocation.upsert({
+      where: { taskId_userId_date: { taskId: task.id, userId: employeeId, date: dueDateValue } },
+      update: { plannedMinutes: leftover, note: carryForwardNote, updatedBy: uid },
+      create: { tenantId: tid, taskId: task.id, userId: employeeId, date: dueDateValue, plannedMinutes: leftover, note: carryForwardNote, createdBy: uid, updatedBy: uid },
+    });
+  }
+}
+
 const dayAllocationWriteSchema = z.object({
   allocations: z.array(z.object({
     taskId: z.string(),
@@ -341,11 +413,45 @@ resourcesRouter.put("/planner/:employeeId/day/:date/allocations", requirePermiss
 
   const taskIds = [...new Set(parsed.data.allocations.map((row) => row.taskId))];
   const ownedTasks = taskIds.length
-    ? await prisma.projectTask.findMany({ where: { id: { in: taskIds }, tenantId: tid, assigneeId: employeeId }, select: { id: true } })
+    ? await prisma.projectTask.findMany({
+        where: { id: { in: taskIds }, tenantId: tid, assigneeId: employeeId },
+        select: { id: true, estimatedMinutes: true, trackedSeconds: true, startDate: true, dueDate: true },
+      })
     : [];
   const ownedTaskIds = new Set(ownedTasks.map((task) => task.id));
   const invalid = taskIds.filter((id) => !ownedTaskIds.has(id));
   if (invalid.length) { res.status(400).json({ error: "One or more tasks are not assigned to this employee" }); return; }
+
+  // Reject any attempt to edit a locked task's allocation for this day — a same-day urgent task
+  // (auto-planned by autoPlanIfUrgentSameDay) or a carried-forward due-date remainder
+  // (autoPlanIfUrgentSameDay/carryForwardRemainingToDueDate below) is intentionally not
+  // user-editable. Mirrors the frontend excluding isLocked tasks from the submitted payload —
+  // this is the server-side backstop for that same rule.
+  const company = await prisma.company.findUniqueOrThrow({ where: { id: tid }, select: { timezone: true } });
+  const existingForDay = await prisma.taskDailyAllocation.findMany({
+    where: { tenantId: tid, userId: employeeId, date: new Date(`${dateParam}T00:00:00.000Z`), taskId: { in: taskIds } },
+    select: { taskId: true, note: true, plannedMinutes: true },
+  });
+  const existingByTaskId = new Map(existingForDay.map((row) => [row.taskId, row]));
+  // A task is only actually "locked" if it has a real, positive allocation from one of the
+  // system-write paths — a same-day date match with no (or a zeroed-out) allocation isn't
+  // locking anything, so it must not block a manual write either. Mirrors the identical fix in
+  // buildDayDetail's isLocked computation.
+  const lockedTaskIds = new Set(
+    ownedTasks
+      .filter((task) => {
+        const existing = existingByTaskId.get(task.id);
+        if (!existing || existing.plannedMinutes <= 0) return false;
+        const startKey = task.startDate ? localDateKey(task.startDate, company.timezone) : null;
+        const dueKey = task.dueDate ? localDateKey(task.dueDate, company.timezone) : null;
+        return (startKey === dateParam && dueKey === dateParam) || existing.note === carryForwardNote;
+      })
+      .map((task) => task.id),
+  );
+  if (taskIds.some((id) => lockedTaskIds.has(id))) {
+    res.status(400).json({ error: "One or more tasks are locked for this day and can't be edited manually" });
+    return;
+  }
 
   // A day already planned to full capacity is locked from further edits — mirrors the frontend's
   // "Day fully planned" lock. Checked against the day's current (pre-write) state so a write that
@@ -373,6 +479,8 @@ resourcesRouter.put("/planner/:employeeId/day/:date/allocations", requirePermiss
     const keepTaskIds = parsed.data.allocations.filter((row) => row.plannedMinutes > 0).map((row) => row.taskId);
     await tx.taskDailyAllocation.deleteMany({ where: { tenantId: tid, userId: employeeId, date: dateValue, taskId: { notIn: keepTaskIds.length ? keepTaskIds : ["__none__"] } } });
   });
+
+  await carryForwardRemainingToDueDate(tid, uid, employeeId, dateParam, company.timezone, parsed.data.allocations, ownedTasks);
 
   res.json(await buildDayDetail(tid, employee, dateParam));
 });

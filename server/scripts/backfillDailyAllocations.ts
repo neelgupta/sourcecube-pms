@@ -72,20 +72,21 @@ async function main() {
     const workingDays = schedule?.workingDays ?? [1, 2, 3, 4, 5];
 
     // Only tasks that are assigned (an allocation always belongs to an assignee) and have a
-    // date span to spread across. Tasks that already have at least one TaskDailyAllocation row
-    // are skipped entirely — they were planned under the new (or a mix of old/new) regime and
-    // should not be second-guessed by this script.
+    // date span to spread across. Deliberately NOT filtering out tasks that already have some
+    // TaskDailyAllocation rows — a task planned once under the new system (e.g. today, via
+    // "Suggest hours" or a manual edit) still needs its older, pre-cutover days backfilled; only
+    // individual (task, user, date) rows that already exist are skipped, per-day, below.
     const tasks = await prisma.projectTask.findMany({
       where: {
         tenantId: company.id,
         assigneeId: { not: null },
         estimatedMinutes: { gt: 0 },
         OR: [{ startDate: { not: null } }, { dueDate: { not: null } }],
-        dailyAllocations: { none: {} },
       },
       select: {
         id: true, code: true, name: true, assigneeId: true, status: true,
         estimatedMinutes: true, startDate: true, dueDate: true, completedAt: true,
+        dailyAllocations: { select: { date: true } },
       },
     });
 
@@ -94,6 +95,7 @@ async function main() {
       const span = taskDateSpan(task, workingDays);
       if (!span.length) continue;
 
+      const existingDates = new Set(task.dailyAllocations.map((row) => localDateKey(row.date, company.timezone)));
       const completedKey = task.status === "done" && task.completedAt ? localDateKey(task.completedAt, company.timezone) : null;
       const plannedPerDay = Math.round(task.estimatedMinutes / Math.max(1, span.length));
       if (plannedPerDay <= 0) continue;
@@ -102,6 +104,7 @@ async function main() {
       for (const dateKey of span) {
         if (dateKey >= todayKey) continue; // leave today/future for explicit planning
         if (completedKey && dateKey >= completedKey) continue; // old fallback zeroed these out
+        if (existingDates.has(dateKey)) continue; // this specific day was already planned — don't touch it
         rowsForTask.push({ date: dateKey, plannedMinutes: plannedPerDay });
       }
       if (!rowsForTask.length) continue;
