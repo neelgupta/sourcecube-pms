@@ -6,6 +6,7 @@ import { requireAuth, requireCompany, requirePermission } from "../middleware/au
 import { recordAudit } from "../lib/audit.js";
 import { createNotification, ensureProjectChatMembers, extractMentionIds } from "../lib/chat.js";
 import { flagNewlyOverdueTasks } from "../lib/overdueReview.js";
+import { autoPlanIfUrgentSameDay } from "../lib/urgentAutoPlan.js";
 
 export const projectsRouter = Router();
 projectsRouter.use(requireAuth, requireCompany);
@@ -183,6 +184,7 @@ const assignedTaskQuerySchema = z.object({
   dueTo: z.string().optional(),
   worklogUserId: z.string().optional(),
   worklog: z.enum(["with_logs", "without_logs", "billable", "non_billable"]).optional(),
+  estimated: z.enum(["unestimated"]).optional(),
 });
 
 projectsRouter.get("/tasks/assigned", requirePermission("tasks", "view"), async (req, res) => {
@@ -241,6 +243,7 @@ projectsRouter.get("/tasks/assigned", requirePermission("tasks", "view"), async 
   if (input.worklog === "without_logs") filters.push({ timeEntries: { none: {} } });
   if (input.worklog === "billable") filters.push({ timeEntries: { some: { billable: true } } });
   if (input.worklog === "non_billable") filters.push({ timeEntries: { some: { billable: false } } });
+  if (input.estimated === "unestimated") filters.push({ estimatedMinutes: 0, status: { not: "done" } });
 
   const where: Prisma.ProjectTaskWhereInput = filters.length ? { AND: [taskScope, ...filters] } : taskScope;
 
@@ -840,6 +843,7 @@ const projectTaskQuerySchema = z.object({
   taskType: z.string().trim().max(100).optional(),
   milestoneId: z.string().optional(),
   due: z.enum(["overdue", "today", "this_week", "no_date"]).optional(),
+  estimated: z.enum(["unestimated"]).optional(),
 });
 
 projectsRouter.get("/:id/tasks/query", requirePermission("tasks", "view"), async (req, res) => {
@@ -889,6 +893,7 @@ projectsRouter.get("/:id/tasks/query", requirePermission("tasks", "view"), async
     if (input.due === "this_week") filters.push({ dueDate: { gte: start, lt: weekEnd } });
     if (input.due === "no_date") filters.push({ dueDate: null });
   }
+  if (input.estimated === "unestimated") filters.push({ estimatedMinutes: 0 });
   const [tasks, optionRows] = await Promise.all([
     prisma.projectTask.findMany({
       where: { tenantId: tid, projectId, AND: filters },
@@ -909,11 +914,15 @@ const taskSchema = z.object({
   description: z.string().nullable().optional(),
   assigneeId: z.string().nullable().optional(),
   priority: z.enum(["low", "medium", "high", "critical"]).optional(),
+  startDate: z.string().nullable().optional(),
   dueDate: z.string().nullable().optional(),
   taskType: z.string().nullable().optional(),
   billingType: z.enum(["billable", "non_billable"]).optional(),
   tags: z.array(z.string()).optional(),
   estimatedMinutes: z.number().int().nonnegative().optional(),
+}).refine((data) => !data.startDate || !data.dueDate || new Date(data.startDate).getTime() <= new Date(data.dueDate).getTime(), {
+  message: "Due date cannot be before start date",
+  path: ["dueDate"],
 });
 
 projectsRouter.post("/:id/tasks", requirePermission("tasks", "create"), async (req, res) => {
@@ -970,6 +979,7 @@ projectsRouter.post("/:id/tasks", requirePermission("tasks", "create"), async (r
       description: parsed.data.description ?? null,
       status: section.status,
       priority: parsed.data.priority ?? "medium",
+      startDate: parsed.data.startDate ? new Date(parsed.data.startDate) : null,
       dueDate: parsed.data.dueDate ? new Date(parsed.data.dueDate) : null,
       assigneeId: parsed.data.assigneeId ?? null,
       taskType: parsed.data.taskType ?? null,
@@ -1008,6 +1018,7 @@ projectsRouter.post("/:id/tasks", requirePermission("tasks", "create"), async (r
     metadata: { projectId: id, name: task.name },
   });
   await ensureProjectChatMembers(tid, id, [creatorId, ...(parsed.data.assigneeId ? [parsed.data.assigneeId] : [])]);
+  await autoPlanIfUrgentSameDay(tid, req.auth!, createdTask);
   res.status(201).json({ task: createdTask });
 });
 
@@ -1270,6 +1281,16 @@ projectsRouter.patch("/:id/tasks/:taskId", requirePermission("tasks", "edit"), a
       title: `You were assigned to #${task.code} ${task.name}`,
       actorId: uid,
     });
+  }
+  // Re-evaluate the urgent-same-day auto-plan whenever any field that could make it newly
+  // applicable changes — not just the dates/assignee, but the estimate too. A task can arrive at
+  // "urgent and plannable" in either order: dates set first then an estimate added later (the
+  // estimate was 0 when dates were saved, so the auto-plan bailed out with nothing to plan), or
+  // the reverse. Without checking estimatedMinutes here, a task edited via a path that only sends
+  // the estimate (e.g. an inline estimate cell, separate from a combined schedule save) would
+  // never retroactively trigger the auto-plan even though it's now fully qualified.
+  if (data.startDate !== undefined || data.dueDate !== undefined || data.assigneeId !== undefined || data.estimatedMinutes !== undefined) {
+    await autoPlanIfUrgentSameDay(tid, req.auth!, updated);
   }
   res.json({ task: updated });
 });

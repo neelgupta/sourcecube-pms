@@ -339,6 +339,7 @@ export const api = {
     dueTo?: string;
     worklogUserId?: string;
     worklog?: "" | "with_logs" | "without_logs" | "billable" | "non_billable";
+    estimated?: "" | "unestimated";
   }) => {
     const params = new URLSearchParams();
     Object.entries(filters ?? {}).forEach(([key, value]) => {
@@ -426,6 +427,7 @@ export const api = {
       description?: string | null;
       assigneeId?: string | null;
       priority?: ProjectPriority;
+      startDate?: string | null;
       dueDate?: string | null;
       taskType?: string | null;
       billingType?: "billable" | "non_billable";

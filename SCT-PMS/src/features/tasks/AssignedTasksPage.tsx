@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
+import { useSearchParams } from "react-router-dom";
 import { CalendarDays, CheckCircle2, ChevronDown, ChevronRight, Clock3, FolderKanban, Play, Search } from "lucide-react";
 import { Badge, Card, DateRangePicker, FilterSelect, MemberAvatar, Tabs, type TabItem } from "@/components/common";
 import { api, ApiError } from "@/lib/api";
@@ -43,6 +44,7 @@ type AssignedTaskFilters = {
   dueTo: string;
   worklogUserId: string;
   worklog: "" | "with_logs" | "without_logs" | "billable" | "non_billable";
+  estimated: "" | "unestimated";
 };
 
 type TaskFilterUser = Pick<CompanyUser, "id" | "name" | "email" | "accountStatus">;
@@ -63,6 +65,7 @@ const defaultTaskFilters: AssignedTaskFilters = {
   dueTo: "",
   worklogUserId: "",
   worklog: "",
+  estimated: "",
 };
 
 function dateLabel(value?: string | null) {
@@ -82,24 +85,37 @@ function isOverdue(task: AssignedTask) {
   return task.status !== "done" && Boolean(task.dueDate) && new Date(task.dueDate as string).getTime() < Date.now();
 }
 
-function assignedDateMatches(task: AssignedTask, filter: "" | "yesterday" | "today" | "tomorrow") {
-  if (!filter) return true;
-  if (!task.createdAt) return false;
+type AssignedDateBucket = "yesterday" | "today" | "tomorrow" | "other";
+
+const assignedDateBucketLabels: Record<AssignedDateBucket, string> = {
+  yesterday: "Assigned Yesterday",
+  today: "Assigned Today",
+  tomorrow: "Assigned Tomorrow",
+  other: "Other",
+};
+
+function assignedDateBucket(task: AssignedTask): AssignedDateBucket {
+  if (!task.createdAt) return "other";
   const startOfDay = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate());
   const assignedDay = startOfDay(new Date(task.createdAt));
   const today = startOfDay(new Date());
   const diffDays = Math.round((assignedDay.getTime() - today.getTime()) / 86_400_000);
-  if (filter === "yesterday") return diffDays === -1;
-  if (filter === "today") return diffDays === 0;
-  return diffDays === 1;
+  if (diffDays === -1) return "yesterday";
+  if (diffDays === 0) return "today";
+  if (diffDays === 1) return "tomorrow";
+  return "other";
 }
 
 export function AssignedTasksPage() {
   const { session } = useSession();
   const canEditTaskPermission = usePermission("tasks", "edit");
   const canDeleteTaskPermission = usePermission("tasks", "manage");
+  const [searchParams] = useSearchParams();
   const [tasks, setTasks] = useState<AssignedTask[]>([]);
-  const [taskFilters, setTaskFilters] = useState<AssignedTaskFilters>(defaultTaskFilters);
+  const [taskFilters, setTaskFilters] = useState<AssignedTaskFilters>(() => {
+    const estimated = searchParams.get("estimated");
+    return estimated === "unestimated" ? { ...defaultTaskFilters, estimated } : defaultTaskFilters;
+  });
   const [filterOptions, setFilterOptions] = useState<AssignedTaskFilterOptions>({ projects: [], assignees: [], worklogUsers: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -227,15 +243,13 @@ export function AssignedTasksPage() {
     setOpenTask((current) => (current && current.id === next.id ? { ...current, ...next } : current));
   }
 
-  const [assignedQuickFilter, setAssignedQuickFilter] = useState<"" | "yesterday" | "today" | "tomorrow">("");
   const myTasks = useMemo(
     // Subtasks belong under their parent task (see the drawer's Subtasks tab), not as their
     // own row in this flat cross-project list — otherwise a task and its subtasks all show up
     // as unrelated-looking sibling rows here even though there's no nesting UI to group them.
     () => (hasBroadVisibility ? tasks : tasks.filter((task) => task.assigneeId === currentUserId))
-      .filter((task) => !task.parentTaskId)
-      .filter((task) => assignedDateMatches(task, assignedQuickFilter)),
-    [tasks, currentUserId, hasBroadVisibility, assignedQuickFilter],
+      .filter((task) => !task.parentTaskId),
+    [tasks, currentUserId, hasBroadVisibility],
   );
   const overdueTasks = useMemo(() => tasks.filter((task) => isOverdue(task) && !task.parentTaskId), [tasks]);
 
@@ -277,8 +291,6 @@ export function AssignedTasksPage() {
                   filterOptions={filterOptions}
                   onFiltersChange={setTaskFilters}
                   onClearFilters={() => setTaskFilters(defaultTaskFilters)}
-                  assignedQuickFilter={assignedQuickFilter}
-                  onAssignedQuickFilterChange={setAssignedQuickFilter}
                 />
               )}
               {tab === "overdue-tasks" && <OverdueTaskTable tasks={overdueTasks} onOpenTask={openTaskDrawer} />}
@@ -327,8 +339,6 @@ function TaskTable({
   filterOptions,
   onFiltersChange,
   onClearFilters,
-  assignedQuickFilter,
-  onAssignedQuickFilterChange,
 }: {
   tasks: AssignedTask[];
   emptyLabel: string;
@@ -342,8 +352,6 @@ function TaskTable({
   filterOptions: AssignedTaskFilterOptions;
   onFiltersChange: Dispatch<SetStateAction<AssignedTaskFilters>>;
   onClearFilters: () => void;
-  assignedQuickFilter: "" | "yesterday" | "today" | "tomorrow";
-  onAssignedQuickFilterChange: (value: "" | "yesterday" | "today" | "tomorrow") => void;
 }) {
   const activeFilterCount = Object.values(filters).filter(Boolean).length;
   const openCount = tasks.filter((task) => task.status !== "done").length;
@@ -431,13 +439,11 @@ function TaskTable({
           ]}
         />
         <FilterSelect
-          value={assignedQuickFilter}
-          onChange={(value) => onAssignedQuickFilterChange(value as typeof assignedQuickFilter)}
+          value={filters.estimated}
+          onChange={(value) => setFilter("estimated", value as AssignedTaskFilters["estimated"])}
           options={[
-            { value: "", label: "Any assigned date" },
-            { value: "yesterday", label: "Assigned yesterday" },
-            { value: "today", label: "Assigned today" },
-            { value: "tomorrow", label: "Assigned tomorrow" },
+            { value: "", label: "Any estimate" },
+            { value: "unestimated", label: "No estimate" },
           ]}
         />
         <DateRangePicker
@@ -505,7 +511,24 @@ function TaskGridRow({ task, onOpenTask, activeTimer, now, timerBusy, canEditTim
   );
 }
 
+const assignedDateBucketOrder: AssignedDateBucket[] = ["yesterday", "today", "tomorrow", "other"];
+
 function TaskGrid({ tasks, ...rowProps }: TaskGridRowProps & { tasks: AssignedTask[] }) {
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+
+  const groups = useMemo(() => {
+    const byBucket = new Map<AssignedDateBucket, AssignedTask[]>();
+    for (const task of tasks) {
+      const bucket = assignedDateBucket(task);
+      const group = byBucket.get(bucket) ?? [];
+      group.push(task);
+      byBucket.set(bucket, group);
+    }
+    return assignedDateBucketOrder
+      .map((bucket) => ({ bucket, tasks: byBucket.get(bucket) ?? [] }))
+      .filter((group) => group.tasks.length > 0);
+  }, [tasks]);
+
   return (
     <div className="overflow-x-auto">
       <table className="w-full border-collapse text-left text-sm">
@@ -513,7 +536,23 @@ function TaskGrid({ tasks, ...rowProps }: TaskGridRowProps & { tasks: AssignedTa
           <tr>{gridHeaders.map((header) => <th key={header} className="whitespace-nowrap px-3 py-3 font-semibold">{header}</th>)}</tr>
         </thead>
         <tbody className="divide-y divide-ink-100">
-          {tasks.map((task) => <TaskGridRow key={task.id} task={task} {...rowProps} />)}
+          {groups.map((group) => (
+            <Fragment key={group.bucket}>
+              <tr className="bg-surface-muted">
+                <td colSpan={gridHeaders.length} className="px-3 py-2">
+                  <button
+                    onClick={() => setCollapsed((current) => ({ ...current, [group.bucket]: !current[group.bucket] }))}
+                    className="flex items-center gap-2 text-xs font-semibold text-ink-700"
+                  >
+                    {collapsed[group.bucket] ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                    {assignedDateBucketLabels[group.bucket]}
+                    <span className="font-normal text-ink-400">({group.tasks.length})</span>
+                  </button>
+                </td>
+              </tr>
+              {!collapsed[group.bucket] && group.tasks.map((task) => <TaskGridRow key={task.id} task={task} {...rowProps} />)}
+            </Fragment>
+          ))}
         </tbody>
       </table>
     </div>

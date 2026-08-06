@@ -726,6 +726,7 @@ function WorkspaceToolbar({
         <button className="shrink-0 rounded-md border border-brand-200 bg-brand-50 px-3 py-1.5 text-xs text-brand-700">Group By: Section (default)</button>
         <button onClick={onCollapseSubtasks} className={cn("shrink-0 rounded-md border px-3 py-1.5 text-xs", collapseSubtasks ? "border-brand-200 bg-brand-50 text-brand-700" : "border-ink-200 bg-white text-ink-600")}>Subtasks: {collapseSubtasks ? "Collapse all" : "Expanded"}</button>
         <button onClick={() => update("incomplete", filters.incomplete ? undefined : true)} className={cn("shrink-0 rounded-md border px-3 py-1.5 text-xs", filters.incomplete ? "border-brand-300 bg-brand-50 text-brand-700" : "border-ink-200 bg-white text-ink-600")}>Incomplete Tasks</button>
+        <button onClick={() => update("estimated", filters.estimated ? undefined : "unestimated")} title="Tasks with no estimate won't appear in the Resource Planner" className={cn("shrink-0 rounded-md border px-3 py-1.5 text-xs", filters.estimated ? "border-warning-300 bg-warning-50 text-warning-700" : "border-ink-200 bg-white text-ink-600")}>No Estimate</button>
         <FilterSelect value={filters.status ?? ""} onChange={(value) => update("status", value as ProjectTaskFilters["status"])} options={[{ value: "", label: "All Statuses" }, ...TASK_STATUS_OPTIONS]} className="w-36 shrink-0 [&_button]:h-8 [&_button]:rounded-md [&_button]:text-xs" />
         <FilterSelect value={filters.priority ?? ""} onChange={(value) => update("priority", value as ProjectTaskFilters["priority"])} options={[{ value: "", label: "All Priorities" }, ...["critical", "high", "medium", "low"].map((value) => ({ value, label: value[0].toUpperCase() + value.slice(1) }))]} className="w-36 shrink-0 [&_button]:h-8 [&_button]:rounded-md [&_button]:text-xs" />
         <FilterSelect value={filters.due ?? ""} onChange={(value) => update("due", value as ProjectTaskFilters["due"])} options={dueOptions} className="w-36 shrink-0 [&_button]:h-8 [&_button]:rounded-md [&_button]:text-xs" />
@@ -788,6 +789,9 @@ function TaskListWorkspace({
   const [activeTimer, setActiveTimer] = useState<ActiveTaskTimer | null>(null);
   const [stopTarget, setStopTarget] = useState<StopTimerTarget | null>(null);
   const [pendingStatus, setPendingStatus] = useState<{ taskId: string; status: ProjectTaskStatus } | null>(null);
+  const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set());
+  const [bulkSaving, setBulkSaving] = useState(false);
+  const [bulkError, setBulkError] = useState<string | null>(null);
   const [timerBusy, setTimerBusy] = useState<string | null>(null);
   const [timerError, setTimerError] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());  useEffect(() => {
@@ -908,6 +912,51 @@ function TaskListWorkspace({
     }
   }
 
+  const allVisibleTasks = sections.flatMap((section) => section.tasks);
+  const selectableTasks = allVisibleTasks.filter((task) => canEditTask(task));
+
+  function toggleTaskSelection(taskId: string) {
+    setSelectedTaskIds((current) => {
+      const next = new Set(current);
+      if (next.has(taskId)) next.delete(taskId); else next.add(taskId);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    setSelectedTaskIds((current) =>
+      current.size === selectableTasks.length ? new Set() : new Set(selectableTasks.map((task) => task.id)),
+    );
+  }
+
+  /** Applies one field to every selected, editable task via N calls to the existing single-task
+   *  PATCH — reusing its per-task tasks:edit permission check rather than opening a new bulk
+   *  write path. Tasks the caller can't edit are already excluded from selection entirely; any
+   *  that still fail (e.g. a permission change mid-session) are reported individually rather than
+   *  silently dropped or failing the whole batch. */
+  async function bulkApply(input: Parameters<typeof api.updateProjectTask>[2]) {
+    const taskIds = [...selectedTaskIds].filter((id) => allVisibleTasks.some((task) => task.id === id && canEditTask(task)));
+    if (!taskIds.length) return;
+    setBulkSaving(true);
+    setBulkError(null);
+    const failures: string[] = [];
+    for (const taskId of taskIds) {
+      try {
+        const { task } = await api.updateProjectTask(projectId, taskId, input);
+        onTaskUpdated(task);
+      } catch (err) {
+        const task = allVisibleTasks.find((candidate) => candidate.id === taskId);
+        failures.push(task ? `#${task.code} ${task.name}` : taskId);
+      }
+    }
+    setBulkSaving(false);
+    if (failures.length) {
+      setBulkError(`Updated ${taskIds.length - failures.length} of ${taskIds.length} — failed: ${failures.join(", ")}`);
+    } else {
+      setSelectedTaskIds(new Set());
+    }
+  }
+
   function canDragTask(task: WorkspaceTask) {
     return task.status !== "done" && canEditTask(task);
   }
@@ -934,9 +983,30 @@ function TaskListWorkspace({
           <button onClick={() => setTimerError(null)} className="text-danger-500 hover:text-danger-700">×</button>
         </div>
       )}
+      {bulkError && (
+        <div className="m-3 flex items-center justify-between rounded-lg border border-danger-200 bg-danger-50 px-3.5 py-2.5 text-sm text-danger-700">
+          {bulkError}
+          <button onClick={() => setBulkError(null)} className="text-danger-500 hover:text-danger-700">×</button>
+        </div>
+      )}
+      {selectedTaskIds.size > 0 && (
+        <BulkTaskActionBar
+          count={selectedTaskIds.size}
+          employees={employees}
+          milestones={milestones}
+          saving={bulkSaving}
+          onClear={() => setSelectedTaskIds(new Set())}
+          onApply={bulkApply}
+        />
+      )}
       <table className="w-full min-w-[1450px] border-collapse text-sm">
         <thead className="sticky top-0 z-10 bg-white">
           <tr className="border-b border-ink-200">
+            <th className="w-9 border-r border-ink-200 px-3 py-3">
+              {selectableTasks.length > 0 && (
+                <input type="checkbox" checked={selectedTaskIds.size > 0 && selectedTaskIds.size === selectableTasks.length} onChange={toggleSelectAll} aria-label="Select all tasks" />
+              )}
+            </th>
             {headers.map((header, index) => (
               <th key={header} className={cn("border-r border-ink-200 px-3 py-3 text-left text-xs font-semibold text-ink-700", index === 0 && "min-w-[480px]")}>{header}</th>
             ))}
@@ -951,6 +1021,7 @@ function TaskListWorkspace({
                 onDrop={(event) => { event.preventDefault(); moveTask(section.id); }}
                 className={cn("border-b border-ink-200 bg-surface-muted transition-colors", dragOverSection === section.id && "bg-brand-50/60")}
               >
+                <td className="border-r border-ink-200 px-3 py-2.5" />
                 <td colSpan={headers.length} className="px-3 py-2.5">
                   <div className="flex items-center gap-2">
                     <GripVertical size={15} className="text-ink-400" />
@@ -976,6 +1047,9 @@ function TaskListWorkspace({
                   onDrop={(event) => { event.preventDefault(); moveTask(section.id); }}
                   className={cn("cursor-pointer border-b border-ink-100 hover:bg-brand-50/30", draggingTask?.id === task.id && "opacity-50")}
                 >
+                  <td className="border-r border-ink-200 px-3 py-2.5" onClick={(event) => event.stopPropagation()}>
+                    {canEditTask(task) && <input type="checkbox" checked={selectedTaskIds.has(task.id)} onChange={() => toggleTaskSelection(task.id)} aria-label={`Select task ${task.name}`} />}
+                  </td>
                   <td className="px-3 py-2.5">
                     <div className="flex items-center gap-2" style={{ paddingLeft: `${depth * 28}px` }}>
                       <span
@@ -992,6 +1066,9 @@ function TaskListWorkspace({
                       {childCount > 0 ? <button onClick={(event) => { event.stopPropagation(); setCollapsedTasks((value) => ({ ...value, [task.id]: !value[task.id] })); }} className="rounded bg-ink-100 p-0.5">{collapsedTasks[task.id] ? <ChevronRight size={12} /> : <ChevronDown size={12} />}</button> : <span className="w-4" />}
                       <CheckCircle2 size={16} className={task.status === "done" ? "text-success-500" : "text-ink-400"} />
                       <span className="font-medium text-ink-900">{task.name}</span>
+                      {task.status !== "done" && task.estimatedMinutes === 0 && (
+                        <span title="No estimate — won't appear in the Resource Planner until an estimate is set" className="whitespace-nowrap rounded bg-warning-50 px-1.5 py-0.5 text-[10px] font-medium text-warning-700">No estimate</span>
+                      )}
                       {childCount > 0 && <span className="rounded bg-ink-100 px-1.5 py-0.5 text-[10px] text-ink-600">{childCount} subtask{childCount === 1 ? "" : "s"}</span>}
                       {canCreate && <button title="Add subtask" onClick={(event) => { event.stopPropagation(); setSubtaskParent(task.id); setCollapsedTasks((value) => ({ ...value, [task.id]: false })); }} className="rounded p-1 text-ink-400 hover:bg-brand-50 hover:text-brand-600"><Plus size={13} /></button>}
                     </div>
@@ -1074,7 +1151,7 @@ function TaskListWorkspace({
                 </tr>
                 {subtaskParent === task.id && (
                   <tr className="border-b border-ink-100 bg-brand-50/20">
-                    <td colSpan={headers.length} className="py-2 pr-4" style={{ paddingLeft: `${92 + (depth + 1) * 28}px` }}>
+                    <td colSpan={headers.length + 1} className="py-2 pr-4" style={{ paddingLeft: `${92 + (depth + 1) * 28}px` }}>
                       <div className="flex max-w-xl items-center gap-2">
                         <span className="text-xs text-ink-400">↳</span>
                         <input autoFocus value={drafts[`sub-${task.id}`] ?? ""} onChange={(event) => setDrafts((value) => ({ ...value, [`sub-${task.id}`]: event.target.value }))} onKeyDown={(event) => { if (event.key === "Enter") addTask(section, task.id); if (event.key === "Escape") setSubtaskParent(null); }} placeholder={`Add subtask under ${task.name}`} className="h-8 flex-1 rounded-md border border-ink-200 bg-white px-3 text-sm outline-none focus:border-brand-500" />
@@ -1099,7 +1176,7 @@ function TaskListWorkspace({
               ))}
               {!collapsed[section.id] && canCreate && (
                 <tr className="border-b border-ink-100">
-                  <td colSpan={headers.length} className="px-4 py-2">
+                  <td colSpan={headers.length + 1} className="px-4 py-2">
                     <div className="flex max-w-lg items-center gap-2">
                       <Plus size={14} className="text-ink-500" />
                       <input
@@ -1278,6 +1355,53 @@ function MilestoneCell({
         />
       }
     />
+  );
+}
+
+/** Applies one shared field (due date, priority, or assignee) to every selected task in one
+ *  action instead of opening each task individually — reuses the parent's bulkApply, which loops
+ *  the existing single-task PATCH per task and reports partial failures rather than hiding them
+ *  or failing the whole batch. Estimate is deliberately not offered here: it's inherently
+ *  per-task, so a shared bulk value wouldn't be meaningful the way due date/priority/assignee
+ *  are. */
+function BulkTaskActionBar({
+  count,
+  employees,
+  milestones,
+  saving,
+  onClear,
+  onApply,
+}: {
+  count: number;
+  employees: CompanyUser[];
+  milestones: ProjectMilestone[];
+  saving: boolean;
+  onClear: () => void;
+  onApply: (input: Parameters<typeof api.updateProjectTask>[2]) => Promise<void>;
+}) {
+  const [dueDate, setDueDate] = useState("");
+  const [priority, setPriority] = useState("");
+  const [assigneeId, setAssigneeId] = useState("");
+  const [milestoneId, setMilestoneId] = useState("");
+
+  return (
+    <div className="m-3 flex flex-wrap items-center gap-2 rounded-lg border border-brand-200 bg-brand-50 px-3 py-2.5">
+      <span className="text-sm font-semibold text-brand-800">{count} task{count === 1 ? "" : "s"} selected</span>
+      <DatePicker value={dueDate} onChange={(value) => setDueDate(value ?? "")} allowClear={false} />
+      {dueDate && <Button size="sm" disabled={saving} onClick={() => onApply({ dueDate })}>Set due date</Button>}
+      <FilterSelect value={priority} onChange={setPriority} className="w-32 [&_button]:h-8" options={[{ value: "", label: "Priority…" }, { value: "low", label: "Low" }, { value: "medium", label: "Medium" }, { value: "high", label: "High" }, { value: "critical", label: "Critical" }]} />
+      {priority && <Button size="sm" disabled={saving} onClick={() => onApply({ priority: priority as ProjectPriority })}>Set priority</Button>}
+      <EmployeePicker employees={employees} value={assigneeId} onChange={(value) => setAssigneeId(value ?? "")} placeholder="Assignee…" allowClear extraOptions={[{ value: "", label: "Assignee…" }]} className="w-40 [&_button]:h-8" />
+      {assigneeId && <Button size="sm" disabled={saving} onClick={() => onApply({ assigneeId })}>Set assignee</Button>}
+      {milestones.length > 0 && (
+        <>
+          <FilterSelect value={milestoneId} onChange={setMilestoneId} className="w-40 [&_button]:h-8" options={[{ value: "", label: "Milestone…" }, ...milestones.map((milestone) => ({ value: milestone.id, label: milestone.name }))]} />
+          {milestoneId && <Button size="sm" disabled={saving} onClick={() => onApply({ milestoneId })}>Set milestone</Button>}
+        </>
+      )}
+      {saving && <span className="text-xs text-brand-700">Applying…</span>}
+      <button onClick={onClear} disabled={saving} className="ml-auto text-xs font-medium text-brand-700 hover:underline">Clear selection</button>
+    </div>
   );
 }
 
@@ -2462,6 +2586,10 @@ export function TaskWorkspaceDrawer({
   const [tagText, setTagText] = useState(task?.tags.join(", ") ?? "");
   const [estimateHours, setEstimateHours] = useState(task?.estimatedMinutes ? String(Math.floor(task.estimatedMinutes / 60)) : "");
   const [estimateMinutes, setEstimateMinutes] = useState(task?.estimatedMinutes ? String(task.estimatedMinutes % 60).padStart(2, "0") : "");
+  const [scheduleStartDate, setScheduleStartDate] = useState(task?.startDate ? task.startDate.slice(0, 10) : "");
+  const [scheduleDueDate, setScheduleDueDate] = useState(task?.dueDate ? task.dueDate.slice(0, 10) : "");
+  const [scheduleSaving, setScheduleSaving] = useState(false);
+  const [scheduleError, setScheduleError] = useState<string | null>(null);
   const [commentText, setCommentText] = useState("");
   const [checkItem, setCheckItem] = useState("");
   const [subtaskName, setSubtaskName] = useState("");
@@ -2495,6 +2623,9 @@ export function TaskWorkspaceDrawer({
     setTagText(task?.tags.join(", ") ?? "");
     setEstimateHours(task?.estimatedMinutes ? String(Math.floor(task.estimatedMinutes / 60)) : "");
     setEstimateMinutes(task?.estimatedMinutes ? String(task.estimatedMinutes % 60).padStart(2, "0") : "");
+    setScheduleStartDate(task?.startDate ? task.startDate.slice(0, 10) : "");
+    setScheduleDueDate(task?.dueDate ? task.dueDate.slice(0, 10) : "");
+    setScheduleError(null);
     setError(null);
   }, [task]);
 
@@ -2573,20 +2704,40 @@ export function TaskWorkspaceDrawer({
     setDescriptionEditing(false);
   }
 
-  async function saveEstimate(hoursValue = estimateHours, minutesValue = estimateMinutes) {
-    const hours = Math.max(0, Math.floor(Number(hoursValue || 0)));
-    const enteredMinutes = Math.max(0, Math.floor(Number(minutesValue || 0)));
-    const normalizedHours = hours + Math.floor(enteredMinutes / 60);
-    const normalizedMinutes = enteredMinutes % 60;
-    setEstimateHours(normalizedHours ? String(normalizedHours) : "");
-    setEstimateMinutes(normalizedHours || normalizedMinutes ? String(normalizedMinutes).padStart(2, "0") : "");
-    await updateTask({ estimatedMinutes: normalizedHours * 60 + normalizedMinutes });
-  }
+  const scheduleDirty = Boolean(
+    scheduleStartDate !== (localTask?.startDate ? localTask.startDate.slice(0, 10) : "") ||
+    scheduleDueDate !== (localTask?.dueDate ? localTask.dueDate.slice(0, 10) : "") ||
+    estimateHours !== (localTask?.estimatedMinutes ? String(Math.floor(localTask.estimatedMinutes / 60)) : "") ||
+    estimateMinutes !== (localTask?.estimatedMinutes ? String(localTask.estimatedMinutes % 60).padStart(2, "0") : ""),
+  );
 
-  async function clearEstimate() {
-    setEstimateHours("");
-    setEstimateMinutes("");
-    await updateTask({ estimatedMinutes: 0 });
+  /** One combined save for Start Date + Due Date + Estimate, replacing three separate
+   *  auto-saving fields with a single explicit action — the three were previously independent
+   *  PATCH round-trips (own DatePicker onChange, own estimate onBlur), which meant scheduling
+   *  one task took three separate saves. */
+  async function saveSchedule() {
+    if (scheduleStartDate && scheduleDueDate && new Date(scheduleStartDate).getTime() > new Date(scheduleDueDate).getTime()) {
+      setScheduleError("Due date cannot be before start date");
+      return;
+    }
+    setScheduleSaving(true);
+    setScheduleError(null);
+    try {
+      const hours = Math.max(0, Math.floor(Number(estimateHours || 0)));
+      const enteredMinutes = Math.max(0, Math.floor(Number(estimateMinutes || 0)));
+      const normalizedHours = hours + Math.floor(enteredMinutes / 60);
+      const normalizedMinutes = enteredMinutes % 60;
+      setEstimateHours(normalizedHours ? String(normalizedHours) : "");
+      setEstimateMinutes(normalizedHours || normalizedMinutes ? String(normalizedMinutes).padStart(2, "0") : "");
+      const result = await updateTask({
+        startDate: scheduleStartDate || null,
+        dueDate: scheduleDueDate || null,
+        estimatedMinutes: normalizedHours * 60 + normalizedMinutes,
+      });
+      if (!result) setScheduleError(error ?? "Schedule could not be saved");
+    } finally {
+      setScheduleSaving(false);
+    }
   }
 
   async function logTime() {
@@ -2882,16 +3033,38 @@ export function TaskWorkspaceDrawer({
               <TaskRow icon={<Users size={15} />} label="Assignee">
                 <EmployeePicker employees={activeEmployees} value={localTask.assigneeId} onChange={(employeeId) => updateTask({ assigneeId: employeeId })} disabled={!canReassign || saving} placeholder="Unassigned" allowClear />
               </TaskRow>
-              <TaskRow icon={<CalendarDays size={15} />} label="Start Date"><DatePicker value={dateValue(localTask.startDate)} onChange={(value) => updateTask({ startDate: value })} disabled={!canEdit} max={dateValue(localTask.dueDate) || null} /></TaskRow>
-              <TaskRow icon={<CalendarDays size={15} />} label="Due Date"><DatePicker value={dateValue(localTask.dueDate)} onChange={(value) => updateTask({ dueDate: value })} disabled={!canEdit} min={dateValue(localTask.startDate) || null} /></TaskRow>
-              <TaskRow icon={<Clock3 size={15} />} label="Estimation Hours">
-                <div className="flex max-w-sm items-center gap-2 rounded-lg bg-surface-subtle px-3 py-2">
-                  <input type="number" min="0" inputMode="numeric" value={estimateHours} onChange={(event) => setEstimateHours(event.target.value)} onBlur={(event) => saveEstimate(event.currentTarget.value, estimateMinutes)} onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()} disabled={!canEdit || saving} placeholder="00" aria-label="Estimated hours" className="w-14 border-0 border-b border-ink-300 bg-transparent px-1 py-1 text-center text-sm font-semibold text-ink-800 outline-none focus:border-brand-500 disabled:text-ink-400" />
-                  <span className="text-xs font-medium text-ink-500">H :</span>
-                  <input type="number" min="0" max="59" inputMode="numeric" value={estimateMinutes} onChange={(event) => setEstimateMinutes(event.target.value)} onBlur={(event) => saveEstimate(estimateHours, event.currentTarget.value)} onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()} disabled={!canEdit || saving} placeholder="00" aria-label="Estimated minutes" className="w-14 border-0 border-b border-ink-300 bg-transparent px-1 py-1 text-center text-sm font-semibold text-ink-800 outline-none focus:border-brand-500 disabled:text-ink-400" />
-                  <span className="text-xs font-medium text-ink-500">M</span>
-                  {canEdit && localTask.estimatedMinutes > 0 && <button type="button" onClick={clearEstimate} disabled={saving} className="rounded-md p-1 text-ink-400 hover:bg-white hover:text-danger-600" title="Clear estimate"><X size={14} /></button>}
-                  <span className="ml-auto flex h-8 w-8 items-center justify-center rounded-full border border-ink-200 bg-white text-ink-500" title="Task estimate"><AlarmClock size={15} /></span>
+              <TaskRow icon={<CalendarDays size={15} />} label="Schedule">
+                <div className="max-w-md space-y-2 rounded-lg bg-surface-subtle p-3">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <div>
+                      <label className="mb-1 block text-[11px] font-medium text-ink-500">Start Date</label>
+                      <DatePicker value={scheduleStartDate} onChange={(value) => setScheduleStartDate(value ?? "")} disabled={!canEdit} max={scheduleDueDate || null} />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-[11px] font-medium text-ink-500">Due Date</label>
+                      <DatePicker value={scheduleDueDate} onChange={(value) => setScheduleDueDate(value ?? "")} disabled={!canEdit} min={scheduleStartDate || null} />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-medium text-ink-500">Estimate</label>
+                    <div className="flex items-center gap-2">
+                      <input type="number" min="0" inputMode="numeric" value={estimateHours} onChange={(event) => setEstimateHours(event.target.value)} disabled={!canEdit || scheduleSaving} placeholder="00" aria-label="Estimated hours" className="w-14 border-0 border-b border-ink-300 bg-transparent px-1 py-1 text-center text-sm font-semibold text-ink-800 outline-none focus:border-brand-500 disabled:text-ink-400" />
+                      <span className="text-xs font-medium text-ink-500">H :</span>
+                      <input type="number" min="0" max="59" inputMode="numeric" value={estimateMinutes} onChange={(event) => setEstimateMinutes(event.target.value)} disabled={!canEdit || scheduleSaving} placeholder="00" aria-label="Estimated minutes" className="w-14 border-0 border-b border-ink-300 bg-transparent px-1 py-1 text-center text-sm font-semibold text-ink-800 outline-none focus:border-brand-500 disabled:text-ink-400" />
+                      <span className="text-xs font-medium text-ink-500">M</span>
+                      {canEdit && (estimateHours || estimateMinutes) && <button type="button" onClick={() => { setEstimateHours(""); setEstimateMinutes(""); }} disabled={scheduleSaving} className="rounded-md p-1 text-ink-400 hover:bg-white hover:text-danger-600" title="Clear estimate"><X size={14} /></button>}
+                      <span className="ml-auto flex h-8 w-8 items-center justify-center rounded-full border border-ink-200 bg-white text-ink-500" title="Task estimate"><AlarmClock size={15} /></span>
+                    </div>
+                  </div>
+                  {localTask.status !== "done" && localTask.estimatedMinutes === 0 && !scheduleDirty && (
+                    <p className="text-xs font-medium text-warning-700">No estimate — this task won't appear in the Resource Planner until it has one.</p>
+                  )}
+                  {scheduleError && <p className="text-xs font-medium text-danger-600">{scheduleError}</p>}
+                  {canEdit && (
+                    <div className="flex justify-end">
+                      <Button size="sm" onClick={saveSchedule} disabled={scheduleSaving || !scheduleDirty}>{scheduleSaving ? "Saving…" : "Save schedule"}</Button>
+                    </div>
+                  )}
                 </div>
               </TaskRow>
               <TaskRow icon={<Users size={15} />} label="Task Followers">
