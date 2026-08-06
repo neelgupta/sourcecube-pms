@@ -726,7 +726,7 @@ export function isCompanyUser(user: PlatformOrCompanyUser): user is CompanyUser 
 
 export type ChatChannelType = "project" | "group" | "dm" | "announcement";
 export type ChatAttachmentType = "file" | "voice_note";
-export type NotificationType = "mention" | "announcement" | "channel_invite" | "message" | "task_overdue_review" | "task_review_resolved";
+export type NotificationType = "mention" | "announcement" | "channel_invite" | "message" | "task_assigned" | "task_overdue_review" | "task_review_resolved";
 
 export interface ChatUser {
   id: ID;

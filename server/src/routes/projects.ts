@@ -1277,8 +1277,10 @@ projectsRouter.patch("/:id/tasks/:taskId", requirePermission("tasks", "edit"), a
     await createNotification({
       tenantId: tid,
       userId: data.assigneeId,
-      type: "message",
+      type: "task_assigned",
       title: `You were assigned to #${task.code} ${task.name}`,
+      taskId: task.id,
+      projectId,
       actorId: uid,
     });
   }
