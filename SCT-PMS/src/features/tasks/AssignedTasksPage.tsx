@@ -113,7 +113,7 @@ export function AssignedTasksPage() {
   const [tasks, setTasks] = useState<AssignedTask[]>([]);
   const [taskFilters, setTaskFilters] = useState<AssignedTaskFilters>(() => {
     const estimated = searchParams.get("estimated");
-    return estimated === "unestimated" ? { ...defaultTaskFilters, estimated } : defaultTaskFilters;
+return estimated === "unestimated" ? { ...defaultTaskFilters, estimated } : defaultTaskFilters;
   });
   const [filterOptions, setFilterOptions] = useState<AssignedTaskFilterOptions>({ projects: [], assignees: [], worklogUsers: [] });
   const [loading, setLoading] = useState(true);
@@ -132,6 +132,18 @@ export function AssignedTasksPage() {
   const canSeeBreakdown = session?.user.kind === "company" && session.user.roles.some((role) => breakdownRoles.has(role));
   const hasBroadVisibility = session?.user.kind === "company" && session.user.roles.some((role) => broadVisibilityRoles.has(role));
   const currentUserId = session?.user.kind === "company" ? session.user.id : "";
+  /** Mirrors canEditSchedule in ProjectDetailPage.tsx (and the backend's schedule-lock guard in
+   *  PATCH /:id/tasks/:taskId): a plain employee can only schedule a task they're assigned to up
+   *  until it's fully scheduled (estimate + start + due date all set). Once every schedule field
+   *  is populated the drawer's Schedule block is read-only for them, so the ETA hours and dates
+   *  stay under the project owner/manager's control. */
+  const isEmployeeOnly = session?.user.kind === "company" && session.user.roles.every((role) => role === "employee");
+  function canEditSchedule(task: AssignedTask | null): boolean {
+    if (!task) return false;
+    if (!canEditTaskPermission) return false;
+    const taskIsFullyScheduled = Boolean(task.assigneeId) && task.estimatedMinutes > 0 && Boolean(task.startDate) && Boolean(task.dueDate);
+    return !(isEmployeeOnly && taskIsFullyScheduled);
+  }
 
   function load(activeFilters = taskFilters) {
     setLoading(true);
@@ -281,7 +293,7 @@ export function AssignedTasksPage() {
                   tasks={myTasks}
                   emptyLabel={hasBroadVisibility ? "No tasks found." : "No tasks assigned to you yet."}
                   onOpenTask={openTaskDrawer}
-                  activeTimer={activeTimer}
+activeTimer={activeTimer}
                   now={now}
                   timerBusy={timerBusy}
                   canEditTimer={canEditTaskPermission}
@@ -309,6 +321,7 @@ export function AssignedTasksPage() {
         taskActivities={[]}
         currentUserId={currentUserId}
         canEdit={canEditTaskPermission}
+        canEditSchedule={canEditSchedule(openTask)}
         // "My Tasks" is a personal cross-project list — this page has no per-project access
         // level to check (unlike ProjectDetailPage, which knows currentUserAccess for the one
         // project it's showing), so reassignment is disabled here entirely rather than risk
