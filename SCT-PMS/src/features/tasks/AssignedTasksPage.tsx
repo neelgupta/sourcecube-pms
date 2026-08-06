@@ -85,11 +85,11 @@ function isOverdue(task: AssignedTask) {
   return task.status !== "done" && Boolean(task.dueDate) && new Date(task.dueDate as string).getTime() < Date.now();
 }
 
-type AssignedDateBucket = "yesterday" | "today" | "tomorrow";
+type AssignedDateBucket ="today"| "yesterday"  | "tomorrow";
 
 const assignedDateBucketLabels: Record<AssignedDateBucket, string> = {
-  yesterday: "Assigned Yesterday",
   today: "Assigned Today",
+  yesterday: "Assigned Yesterday",
   tomorrow: "Assigned Tomorrow",
 };
 
@@ -523,7 +523,7 @@ function TaskGridRow({ task, onOpenTask, activeTimer, now, timerBusy, canEditTim
   );
 }
 
-const assignedDateBucketOrder: AssignedDateBucket[] = ["yesterday", "today", "tomorrow"];
+const assignedDateBucketOrder: AssignedDateBucket[] = ["today", "yesterday", "tomorrow"];
 
 function TaskGrid({ tasks, ...rowProps }: TaskGridRowProps & { tasks: AssignedTask[] }) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
