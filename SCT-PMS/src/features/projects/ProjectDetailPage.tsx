@@ -433,9 +433,20 @@ export function ProjectDetailPage() {
    *  The "employee"-only role check mirrors canReassignTasks in server/src/routes/projects.ts:
    *  a plain employee can't reassign tasks even if a manager granted them "edit" project-member
    *  access for other reasons — reassignment is a distinct, higher-trust capability. */
-  const isEmployeeOnly = session?.user.kind === "company" && session.user.roles.every((role) => role === "employee");
+const isEmployeeOnly = session?.user.kind === "company" && session.user.roles.every((role) => role === "employee");
   function canReassignTask(_task: WorkspaceTask): boolean {
     return canEditTaskPermission && projectHasEditAccess && !isEmployeeOnly;
+  }
+  /** A plain employee may only schedule a task they're assigned to up until it's fully scheduled
+   *  (estimate + start + due dates all set). Once every schedule field is populated, the schedule
+   *  is locked for them — changing the ETA hours or dates is a planning decision that belongs to
+   *  the project owner/manager. Mirrors the backend's PATCH /:id/tasks/:taskId guard in
+   *  server/src/routes/projects.ts. This gates the drawer's whole Schedule block (Start Date +
+   *  Due Date + Estimate), which is saved together in one action. */
+  function canEditSchedule(task: WorkspaceTask): boolean {
+    if (!canEditTask(task)) return false;
+    const taskIsFullyScheduled = Boolean(task.assigneeId) && task.estimatedMinutes > 0 && Boolean(task.startDate) && Boolean(task.dueDate);
+    return !(isEmployeeOnly && taskIsFullyScheduled);
   }
   const tasks = sections.flatMap((section) => section.tasks);
   const visibleSections = sections.map((section) => ({
@@ -636,8 +647,9 @@ export function ProjectDetailPage() {
         employees={companyUsers}
         milestones={milestones}
         taskActivities={workspace.activities.filter((activity) => activity.targetId === selectedTask?.id)}
-        currentUserId={currentUserId}
+currentUserId={currentUserId}
         canEdit={selectedTask ? canEditTask(selectedTask) : false}
+        canEditSchedule={selectedTask ? canEditSchedule(selectedTask) : false}
         canReassign={selectedTask ? canReassignTask(selectedTask) : false}
         canDelete={canDeleteTaskPermission}
         onTaskChanged={syncWorkspaceTask}
@@ -2543,8 +2555,9 @@ export function TaskWorkspaceDrawer({
   employees,
   milestones,
   taskActivities,
-  currentUserId,
+currentUserId,
   canEdit,
+  canEditSchedule,
   canReassign,
   canDelete,
   onTaskChanged,
@@ -2561,6 +2574,7 @@ export function TaskWorkspaceDrawer({
   taskActivities: AuditLogEntry[];
   currentUserId: string;
   canEdit: boolean;
+  canEditSchedule: boolean;
   canReassign: boolean;
   canDelete: boolean;
   onTaskChanged: (task: WorkspaceTask) => void;
@@ -3033,26 +3047,26 @@ export function TaskWorkspaceDrawer({
               <TaskRow icon={<Users size={15} />} label="Assignee">
                 <EmployeePicker employees={activeEmployees} value={localTask.assigneeId} onChange={(employeeId) => updateTask({ assigneeId: employeeId })} disabled={!canReassign || saving} placeholder="Unassigned" allowClear />
               </TaskRow>
-              <TaskRow icon={<CalendarDays size={15} />} label="Schedule">
+<TaskRow icon={<CalendarDays size={15} />} label="Schedule">
                 <div className="max-w-md space-y-2 rounded-lg bg-surface-subtle p-3">
                   <div className="flex flex-wrap items-center gap-3">
                     <div>
                       <label className="mb-1 block text-[11px] font-medium text-ink-500">Start Date</label>
-                      <DatePicker value={scheduleStartDate} onChange={(value) => setScheduleStartDate(value ?? "")} disabled={!canEdit} max={scheduleDueDate || null} />
+                      <DatePicker value={scheduleStartDate} onChange={(value) => setScheduleStartDate(value ?? "")} disabled={!canEditSchedule} max={scheduleDueDate || null} />
                     </div>
                     <div>
                       <label className="mb-1 block text-[11px] font-medium text-ink-500">Due Date</label>
-                      <DatePicker value={scheduleDueDate} onChange={(value) => setScheduleDueDate(value ?? "")} disabled={!canEdit} min={scheduleStartDate || null} />
+                      <DatePicker value={scheduleDueDate} onChange={(value) => setScheduleDueDate(value ?? "")} disabled={!canEditSchedule} min={scheduleStartDate || null} />
                     </div>
                   </div>
                   <div>
                     <label className="mb-1 block text-[11px] font-medium text-ink-500">Estimate</label>
                     <div className="flex items-center gap-2">
-                      <input type="number" min="0" inputMode="numeric" value={estimateHours} onChange={(event) => setEstimateHours(event.target.value)} disabled={!canEdit || scheduleSaving} placeholder="00" aria-label="Estimated hours" className="w-14 border-0 border-b border-ink-300 bg-transparent px-1 py-1 text-center text-sm font-semibold text-ink-800 outline-none focus:border-brand-500 disabled:text-ink-400" />
+                      <input type="number" min="0" inputMode="numeric" value={estimateHours} onChange={(event) => setEstimateHours(event.target.value)} disabled={!canEditSchedule || scheduleSaving} placeholder="00" aria-label="Estimated hours" className="w-14 border-0 border-b border-ink-300 bg-transparent px-1 py-1 text-center text-sm font-semibold text-ink-800 outline-none focus:border-brand-500 disabled:text-ink-400" />
                       <span className="text-xs font-medium text-ink-500">H :</span>
-                      <input type="number" min="0" max="59" inputMode="numeric" value={estimateMinutes} onChange={(event) => setEstimateMinutes(event.target.value)} disabled={!canEdit || scheduleSaving} placeholder="00" aria-label="Estimated minutes" className="w-14 border-0 border-b border-ink-300 bg-transparent px-1 py-1 text-center text-sm font-semibold text-ink-800 outline-none focus:border-brand-500 disabled:text-ink-400" />
+                      <input type="number" min="0" max="59" inputMode="numeric" value={estimateMinutes} onChange={(event) => setEstimateMinutes(event.target.value)} disabled={!canEditSchedule || scheduleSaving} placeholder="00" aria-label="Estimated minutes" className="w-14 border-0 border-b border-ink-300 bg-transparent px-1 py-1 text-center text-sm font-semibold text-ink-800 outline-none focus:border-brand-500 disabled:text-ink-400" />
                       <span className="text-xs font-medium text-ink-500">M</span>
-                      {canEdit && (estimateHours || estimateMinutes) && <button type="button" onClick={() => { setEstimateHours(""); setEstimateMinutes(""); }} disabled={scheduleSaving} className="rounded-md p-1 text-ink-400 hover:bg-white hover:text-danger-600" title="Clear estimate"><X size={14} /></button>}
+                      {canEditSchedule && (estimateHours || estimateMinutes) && <button type="button" onClick={() => { setEstimateHours(""); setEstimateMinutes(""); }} disabled={scheduleSaving} className="rounded-md p-1 text-ink-400 hover:bg-white hover:text-danger-600" title="Clear estimate"><X size={14} /></button>}
                       <span className="ml-auto flex h-8 w-8 items-center justify-center rounded-full border border-ink-200 bg-white text-ink-500" title="Task estimate"><AlarmClock size={15} /></span>
                     </div>
                   </div>
@@ -3060,7 +3074,7 @@ export function TaskWorkspaceDrawer({
                     <p className="text-xs font-medium text-warning-700">No estimate — this task won't appear in the Resource Planner until it has one.</p>
                   )}
                   {scheduleError && <p className="text-xs font-medium text-danger-600">{scheduleError}</p>}
-                  {canEdit && (
+                  {canEditSchedule && (
                     <div className="flex justify-end">
                       <Button size="sm" onClick={saveSchedule} disabled={scheduleSaving || !scheduleDirty}>{scheduleSaving ? "Saving…" : "Save schedule"}</Button>
                     </div>

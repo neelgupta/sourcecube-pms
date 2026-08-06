@@ -427,6 +427,7 @@ enum NotificationType {
   announcement
   channel_invite
   message
+  task_assigned
   task_overdue_review
   task_review_resolved
 }
