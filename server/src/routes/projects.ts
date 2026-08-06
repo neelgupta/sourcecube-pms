@@ -1147,11 +1147,24 @@ projectsRouter.patch("/:id/tasks/:taskId", requirePermission("tasks", "edit"), a
     res.status(404).json({ error: "Task not found" });
     return;
   }
-  if (!(await canEditTaskForProject(tid, uid, projectId, task.assigneeId))) {
+if (!(await canEditTaskForProject(tid, uid, projectId, task.assigneeId))) {
     res.status(403).json({ error: "You do not have edit access to this task" });
     return;
   }
   const data = parsed.data;
+  // A plain employee may only schedule a task they're assigned to up until it's fully scheduled
+  // (estimate + start + due dates all set). Once every schedule field is populated, the schedule
+  // is locked for them — changing the ETA hours or dates is a planning decision that belongs to
+  // the project owner/manager. This mirrors canEditSchedule in ProjectDetailPage.tsx, which
+  // renders the drawer's Schedule block read-only for employees on fully-scheduled tasks. The
+  // check uses the task's *existing* schedule state (not the incoming payload) so an employee can
+  // still fill in whichever fields are missing, but can't alter them once the task is complete.
+  const isEmployeeOnly = (await getCompanyUserRoles(tid, uid)).every((role) => role === "employee");
+  const taskIsFullyScheduled = Boolean(task.assigneeId) && task.estimatedMinutes > 0 && Boolean(task.startDate) && Boolean(task.dueDate);
+  if (isEmployeeOnly && taskIsFullyScheduled && (data.estimatedMinutes !== undefined || data.dueDate !== undefined || data.startDate !== undefined)) {
+    res.status(403).json({ error: "This task is already scheduled — only a project owner or manager can change its estimate or dates" });
+    return;
+  }
   // The self-assignee carve-out in canEditTaskForProject lets someone with no real project
   // access edit their own task's status/progress/etc — but reassigning it to somebody else
   // (or unassigning themselves) is a project-management action, not self-editing, so it must
