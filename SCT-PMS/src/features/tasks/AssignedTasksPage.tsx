@@ -85,25 +85,24 @@ function isOverdue(task: AssignedTask) {
   return task.status !== "done" && Boolean(task.dueDate) && new Date(task.dueDate as string).getTime() < Date.now();
 }
 
-type AssignedDateBucket = "yesterday" | "today" | "tomorrow" | "other";
+type AssignedDateBucket = "yesterday" | "today" | "tomorrow";
 
 const assignedDateBucketLabels: Record<AssignedDateBucket, string> = {
   yesterday: "Assigned Yesterday",
   today: "Assigned Today",
   tomorrow: "Assigned Tomorrow",
-  other: "Other",
 };
 
-function assignedDateBucket(task: AssignedTask): AssignedDateBucket {
-  if (!task.createdAt) return "other";
+function assignedDateBucket(task: AssignedTask): AssignedDateBucket | null {
+  if (!task.startDate) return null;
   const startOfDay = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate());
-  const assignedDay = startOfDay(new Date(task.createdAt));
+  const taskDay = startOfDay(new Date(task.startDate));
   const today = startOfDay(new Date());
-  const diffDays = Math.round((assignedDay.getTime() - today.getTime()) / 86_400_000);
+  const diffDays = Math.round((taskDay.getTime() - today.getTime()) / 86_400_000);
   if (diffDays === -1) return "yesterday";
   if (diffDays === 0) return "today";
   if (diffDays === 1) return "tomorrow";
-  return "other";
+  return null;
 }
 
 export function AssignedTasksPage() {
@@ -511,7 +510,7 @@ function TaskGridRow({ task, onOpenTask, activeTimer, now, timerBusy, canEditTim
   );
 }
 
-const assignedDateBucketOrder: AssignedDateBucket[] = ["yesterday", "today", "tomorrow", "other"];
+const assignedDateBucketOrder: AssignedDateBucket[] = ["yesterday", "today", "tomorrow"];
 
 function TaskGrid({ tasks, ...rowProps }: TaskGridRowProps & { tasks: AssignedTask[] }) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
@@ -520,13 +519,12 @@ function TaskGrid({ tasks, ...rowProps }: TaskGridRowProps & { tasks: AssignedTa
     const byBucket = new Map<AssignedDateBucket, AssignedTask[]>();
     for (const task of tasks) {
       const bucket = assignedDateBucket(task);
+      if (!bucket) continue;
       const group = byBucket.get(bucket) ?? [];
       group.push(task);
       byBucket.set(bucket, group);
     }
-    return assignedDateBucketOrder
-      .map((bucket) => ({ bucket, tasks: byBucket.get(bucket) ?? [] }))
-      .filter((group) => group.tasks.length > 0);
+    return assignedDateBucketOrder.map((bucket) => ({ bucket, tasks: byBucket.get(bucket) ?? [] }));
   }, [tasks]);
 
   return (
