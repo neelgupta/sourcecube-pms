@@ -30,6 +30,7 @@ import type {
   TaskBreakdownRow,
   ProjectMilestone,
   AllMilestone,
+  ProjectEvent,
   TaskTimeEntry,
   TaskComment,
   TaskChecklistItem,
@@ -509,6 +510,25 @@ export const api = {
   deleteProjectMilestone: (projectId: string, milestoneId: string) =>
     request<void>(`/projects/${projectId}/milestones/${milestoneId}`, { method: "DELETE" }),
   listAllMilestones: () => request<{ milestones: AllMilestone[] }>("/projects/milestones/all"),
+  createProjectEvent: (
+    projectId: string,
+    input: { title: string; date: string; description?: string | null },
+  ) =>
+    request<{ event: ProjectEvent }>(`/projects/${projectId}/events`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  updateProjectEvent: (
+    projectId: string,
+    eventId: string,
+    input: Partial<{ title: string; date: string; description: string | null }>,
+  ) =>
+    request<{ event: ProjectEvent }>(`/projects/${projectId}/events/${eventId}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+  deleteProjectEvent: (projectId: string, eventId: string) =>
+    request<void>(`/projects/${projectId}/events/${eventId}`, { method: "DELETE" }),
   getActiveTaskTimer: (projectId: string) =>
     request<{ entry: (TaskTimeEntry & { task?: { id: string; code: number; name: string; projectId: string }; project?: { id: string; name: string } }) | null }>(`/projects/${projectId}/timer/active`),
   startTaskTimer: (

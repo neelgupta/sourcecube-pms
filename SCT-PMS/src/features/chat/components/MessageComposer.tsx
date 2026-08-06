@@ -57,6 +57,7 @@ export function MessageComposer({
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [mentionQuery, setMentionQuery] = useState<{ query: string; start: number } | null>(null);
+  const [mentionHighlight, setMentionHighlight] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -90,6 +91,7 @@ export function MessageComposer({
     const uptoCaret = value.slice(0, caret);
     const match = uptoCaret.match(/@([a-zA-Z0-9._ ]{0,30})$/);
     setMentionQuery(match ? { query: match[1], start: caret - match[0].length } : null);
+    setMentionHighlight(0);
   }
 
   function pickMention(user: MentionCandidate) {
@@ -139,8 +141,13 @@ export function MessageComposer({
     <div className="relative border-t border-ink-200 bg-white p-3">
       {mentionQuery && mentionCandidates.length > 0 && (
         <div className="absolute bottom-full left-3 z-20 mb-1 max-h-72 w-72 overflow-y-auto rounded-xl border border-ink-200 bg-white py-1 shadow-popover">
-          {mentionCandidates.map((user) => (
-            <button key={user.id} onClick={() => pickMention(user)} className="flex w-full min-w-0 items-center gap-2 px-3 py-2 text-left text-sm hover:bg-brand-50">
+          {mentionCandidates.map((user, index) => (
+            <button
+              key={user.id}
+              onClick={() => pickMention(user)}
+              onMouseEnter={() => setMentionHighlight(index)}
+              className={cn("flex w-full min-w-0 items-center gap-2 px-3 py-2 text-left text-sm", index === mentionHighlight ? "bg-brand-50" : "hover:bg-brand-50")}
+            >
               <span className="shrink-0 font-medium text-brand-700">@{user.name}</span>
               <span className="min-w-0 truncate text-xs text-ink-400">{user.email}</span>
             </button>
@@ -165,6 +172,12 @@ export function MessageComposer({
           value={text}
           onChange={handleChange}
           onKeyDown={(event) => {
+            if (mentionQuery && mentionCandidates.length > 0) {
+              if (event.key === "ArrowDown") { event.preventDefault(); setMentionHighlight((current) => (current + 1) % mentionCandidates.length); return; }
+              if (event.key === "ArrowUp") { event.preventDefault(); setMentionHighlight((current) => (current - 1 + mentionCandidates.length) % mentionCandidates.length); return; }
+              if (event.key === "Enter" || event.key === "Tab") { event.preventDefault(); pickMention(mentionCandidates[Math.min(mentionHighlight, mentionCandidates.length - 1)]); return; }
+              if (event.key === "Escape") { event.preventDefault(); setMentionQuery(null); return; }
+            }
             if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(); }
             if (event.key === "Escape" && replyTo) onCancelReply?.();
           }}

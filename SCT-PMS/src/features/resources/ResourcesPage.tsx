@@ -412,14 +412,19 @@ function AllocationEditor({
     }
   }
 
+  // Only tasks actually assigned to this employee can be planned/saved on their day — a
+  // collaborator task (someone logged time or has an allocation on this employee's day for a
+  // task assigned to someone else, see resources.ts's loggedOrAllocatedTaskIds) is shown
+  // read-only. Submitting it in the PUT allocations payload gets the whole save rejected by the
+  // backend's ownership check, silently failing the entire day's plan — see isOwnTask.
   function startEditing() {
-    setHours(Object.fromEntries(detail.tasks.filter((task) => task.status !== "done").map((task) => [task.id, hoursFromMinutes(task.plannedMinutes)])));
+    setHours(Object.fromEntries(detail.tasks.filter((task) => task.status !== "done" && task.isOwnTask).map((task) => [task.id, hoursFromMinutes(task.plannedMinutes)])));
     setError(null);
     setEditing(true);
   }
 
   const runningTotalMinutes = editing
-    ? detail.tasks.filter((task) => task.status !== "done").reduce((total, task) => total + Math.round((Number(hours[task.id]) || 0) * 60), 0)
+    ? detail.tasks.filter((task) => task.status !== "done" && task.isOwnTask).reduce((total, task) => total + Math.round((Number(hours[task.id]) || 0) * 60), 0)
     : detail.plannedMinutes;
   const load = detail.capacityMinutes ? runningTotalMinutes / detail.capacityMinutes : 0;
 
@@ -427,7 +432,7 @@ function AllocationEditor({
     setSaving(true);
     setError(null);
     try {
-      const allocations = detail.tasks.filter((task) => task.status !== "done").map((task) => ({ taskId: task.id, plannedMinutes: Math.round((Number(hours[task.id]) || 0) * 60) }));
+      const allocations = detail.tasks.filter((task) => task.status !== "done" && task.isOwnTask).map((task) => ({ taskId: task.id, plannedMinutes: Math.round((Number(hours[task.id]) || 0) * 60) }));
       const next = await api.saveResourcePlannerDayAllocations(employeeId, date, allocations);
       onSaved(next);
       setEditing(false);
@@ -448,7 +453,7 @@ function AllocationEditor({
     <section className="mt-6">
       <div className="mb-2 flex items-center justify-between">
         <div className="flex items-center gap-2"><ListChecks size={16} className="text-brand-600" /><h3 className="font-semibold text-ink-900">Assigned task progress ({detail.tasks.length})</h3></div>
-        {canEdit && detail.tasks.some((task) => task.status !== "done") && !editing && (
+        {canEdit && detail.tasks.some((task) => task.status !== "done" && task.isOwnTask) && !editing && (
           isFullyPlanned
             ? <span className="text-xs font-medium text-ink-400" title="This day is already fully planned">Day fully planned</span>
             : <button onClick={startEditing} className="text-xs font-semibold text-brand-600 hover:text-brand-700">Edit today's plan</button>
@@ -472,7 +477,7 @@ function AllocationEditor({
                 </div>
                 <Badge tone={task.status === "done" ? "green" : task.status === "in_progress" ? "amber" : "blue"}>{task.progress}%</Badge>
               </button>
-              {editing && task.status !== "done" ? (
+              {editing && task.status !== "done" && task.isOwnTask ? (
                 <div className="mt-2 flex items-center gap-2" onClick={(event) => event.stopPropagation()}>
                   <input type="number" min="0" step="0.25" value={hours[task.id] ?? "0"} onChange={(event) => setHours((current) => ({ ...current, [task.id]: event.target.value }))} className="h-8 w-24 rounded-md border border-ink-200 px-2 text-sm outline-none focus:border-brand-500" />
                   <span className="text-xs text-ink-500">hours planned today</span>
@@ -502,13 +507,15 @@ function AllocationEditor({
                   <span className="font-semibold text-ink-700">{hoursFromMinutes(task.remainingMinutes)}h remaining</span>
                   <span>{hoursFromMinutes(task.estimatedMinutes)}h total estimate</span>
                   <span>{durationLabel(task.trackedSeconds)} total tracked</span>
-                  <button
-                    onClick={(event) => { event.stopPropagation(); markDone(task); }}
-                    disabled={markingDone === task.id}
-                    className="ml-auto rounded-md border border-ink-200 px-2 py-1 text-[11px] font-semibold text-ink-600 hover:border-success-300 hover:text-success-700 disabled:opacity-50"
-                  >
-                    {markingDone === task.id ? "Marking done…" : "Mark done"}
-                  </button>
+                  {task.isOwnTask && (
+                    <button
+                      onClick={(event) => { event.stopPropagation(); markDone(task); }}
+                      disabled={markingDone === task.id}
+                      className="ml-auto rounded-md border border-ink-200 px-2 py-1 text-[11px] font-semibold text-ink-600 hover:border-success-300 hover:text-success-700 disabled:opacity-50"
+                    >
+                      {markingDone === task.id ? "Marking done…" : "Mark done"}
+                    </button>
+                  )}
                 </div>
               )}
             </div>

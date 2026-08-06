@@ -635,7 +635,7 @@ function WorkLogCell({
   onToggle: () => void;
 }) {
   const displaySeconds = isRunning ? task.trackedSeconds + runningSeconds : task.trackedSeconds;
-  if (!canEdit) return <span className="font-mono text-xs text-ink-600">{formatSeconds(displaySeconds)}</span>;
+  if (!canEdit || task.status === "done") return <span className="font-mono text-xs text-ink-600">{formatSeconds(displaySeconds)}</span>;
   return (
     <div className="flex items-center gap-2">
       <button
