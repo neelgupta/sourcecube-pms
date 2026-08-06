@@ -2117,6 +2117,101 @@ projectsRouter.post("/:id/tasks/:taskId/timer/log", requirePermission("tasks", "
   });
 });
 
+const editTimeEntrySchema = z.object({
+  durationMinutes: z.number().int().positive("Duration must be greater than 0"),
+  activityType: z.string().trim().min(1, "Activity is required").max(100),
+  billable: z.boolean(),
+  note: z.string().trim().min(1, "Description is required").max(2000),
+});
+
+/** Correcting an existing work log is a management action, not self-editing — a plain employee
+ *  (role set is exactly ["employee"]) may not edit their own logged hours even though they can
+ *  create them. Only team leads, project managers, department heads, and admins (any non-
+ *  "employee"-only role) with task edit access may fix a logged entry. Mirrors the
+ *  role-overrides-membership rule used by canReassignTasks: non-employee roles with real project
+ *  access inherit the capability, while a manager granting a plain employee "edit" project-member
+ *  access deliberately does NOT hand them the ability to alter work logs. */
+projectsRouter.patch("/:id/tasks/:taskId/timer/:entryId", requirePermission("tasks", "edit"), async (req, res) => {
+  const parsed = editTimeEntrySchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.issues.map((issue) => issue.message).join(", ") });
+    return;
+  }
+  const tid = tenantId(req);
+  const uid = userId(req);
+  const id = req.params.id as string;
+  const taskId = req.params.taskId as string;
+  const entryId = req.params.entryId as string;
+  const task = await prisma.projectTask.findFirst({ where: { id: taskId, projectId: id, tenantId: tid } });
+  if (!task) {
+    res.status(404).json({ error: "Task not found" });
+    return;
+  }
+  if (!(await canEditTaskForProject(tid, uid, id, task.assigneeId))) {
+    res.status(403).json({ error: "You do not have edit access to this task" });
+    return;
+  }
+  const roles = await getCompanyUserRoles(tid, uid);
+  if (roles.every((role) => role === "employee")) {
+    res.status(403).json({ error: "Only team leads, project managers, and admins can edit work logs" });
+    return;
+  }
+  const entry = await prisma.taskTimeEntry.findFirst({
+    where: { id: entryId, taskId, projectId: id, tenantId: tid },
+    include: { user: { select: userSelect } },
+  });
+  if (!entry) {
+    res.status(404).json({ error: "Work log not found" });
+    return;
+  }
+  if (!entry.endedAt) {
+    res.status(400).json({ error: "A running timer cannot be edited — stop it first" });
+    return;
+  }
+  const newDurationSeconds = parsed.data.durationMinutes * 60;
+  const durationDelta = newDurationSeconds - entry.durationSeconds;
+  const [updatedEntry, updatedTask, updatedProject] = await prisma.$transaction([
+    prisma.taskTimeEntry.update({
+      where: { id: entry.id },
+      data: {
+        durationSeconds: newDurationSeconds,
+        activityType: parsed.data.activityType,
+        billable: parsed.data.billable,
+        note: parsed.data.note,
+      },
+      include: { user: { select: userSelect } },
+    }),
+    prisma.projectTask.update({
+      where: { id: taskId },
+      data: { trackedSeconds: { increment: durationDelta }, updatedBy: uid },
+    }),
+    prisma.project.update({
+      where: { id },
+      data: { trackedSeconds: { increment: durationDelta }, updatedBy: uid },
+    }),
+  ]);
+  await recordAudit({
+    actor: req.auth!,
+    action: "project.task.timer.updated",
+    tenantId: tid,
+    targetType: "ProjectTask",
+    targetId: taskId,
+    metadata: {
+      projectId: id,
+      timeEntryId: entry.id,
+      previousDurationSeconds: entry.durationSeconds,
+      newDurationSeconds,
+      activityType: parsed.data.activityType,
+      billable: parsed.data.billable,
+    },
+  });
+  res.json({
+    entry: updatedEntry,
+    taskTrackedSeconds: updatedTask.trackedSeconds,
+    projectTrackedSeconds: updatedProject.trackedSeconds,
+  });
+});
+
 projectsRouter.delete("/:id/tasks/:taskId/timer", requirePermission("tasks", "edit"), async (req, res) => {
   const tid = tenantId(req);
   const uid = userId(req);

@@ -553,7 +553,7 @@ export const api = {
     ),
   discardTaskTimer: (projectId: string, taskId: string) =>
     request<void>(`/projects/${projectId}/tasks/${taskId}/timer`, { method: "DELETE" }),
-  logTaskTime: (
+logTaskTime: (
     projectId: string,
     taskId: string,
     input: { date: string; durationMinutes: number; startTime?: string; activityType: string; billable: boolean; note: string },
@@ -561,6 +561,16 @@ export const api = {
     request<{ entry: TaskTimeEntry; taskTrackedSeconds: number; projectTrackedSeconds: number }>(
       `/projects/${projectId}/tasks/${taskId}/timer/log`,
       { method: "POST", body: JSON.stringify(input) },
+    ),
+  editTaskTimeEntry: (
+    projectId: string,
+    taskId: string,
+    entryId: string,
+    input: { durationMinutes: number; activityType: string; billable: boolean; note: string },
+  ) =>
+    request<{ entry: TaskTimeEntry; taskTrackedSeconds: number; projectTrackedSeconds: number }>(
+      `/projects/${projectId}/tasks/${taskId}/timer/${entryId}`,
+      { method: "PATCH", body: JSON.stringify(input) },
     ),
 
   // ---- Chat ----

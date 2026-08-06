@@ -2619,9 +2619,17 @@ currentUserId,
   const [logActivity, setLogActivity] = useState("");
   const [logBillable, setLogBillable] = useState(false);
   const [logNote, setLogNote] = useState("");
-  const [logSaving, setLogSaving] = useState(false);
+const [logSaving, setLogSaving] = useState(false);
   const [logError, setLogError] = useState<string | null>(null);
   const [workingHours, setWorkingHours] = useState<{ startTime: string; endTime: string; breakStartTime: string; breakEndTime: string } | null>(null);
+  const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
+  const [editEntryHours, setEditEntryHours] = useState("");
+  const [editEntryMinutes, setEditEntryMinutes] = useState("");
+  const [editEntryActivity, setEditEntryActivity] = useState("");
+  const [editEntryBillable, setEditEntryBillable] = useState(false);
+  const [editEntryNote, setEditEntryNote] = useState("");
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!showLogForm || workingHours) return;
@@ -2784,6 +2792,47 @@ currentUserId,
       setLogError(err instanceof ApiError ? err.message : "Time log could not be saved");
     } finally {
       setLogSaving(false);
+    }
+  }
+
+function startEditEntry(entry: TaskTimeEntry) {
+    const durationSeconds = entry.durationSeconds;
+    setEditEntryHours(String(Math.floor(durationSeconds / 3600)));
+    setEditEntryMinutes(String(Math.floor((durationSeconds % 3600) / 60)));
+    setEditEntryActivity(entry.activityType);
+    setEditEntryBillable(entry.billable);
+    setEditEntryNote(entry.note ?? "");
+    setEditError(null);
+    setEditingEntryId(entry.id);
+  }
+
+  async function saveEditEntry() {
+    if (!canEdit || !editingEntryId) return;
+    const hours = Math.max(0, Math.floor(Number(editEntryHours || 0)));
+    const minutes = Math.max(0, Math.floor(Number(editEntryMinutes || 0)));
+    const durationMinutes = hours * 60 + minutes;
+    if (durationMinutes <= 0) { setEditError("Duration must be greater than 0"); return; }
+    if (!editEntryActivity) { setEditError("Please select an activity"); return; }
+    if (!editEntryNote.trim()) { setEditError("Please add a description"); return; }
+    setEditSaving(true);
+    setEditError(null);
+    try {
+      const result = await api.editTaskTimeEntry(projectId, taskId, editingEntryId, {
+        durationMinutes,
+        activityType: editEntryActivity,
+        billable: editEntryBillable,
+        note: editEntryNote.trim(),
+      });
+      const nextEntries = entries.map((entry) => entry.id === result.entry.id ? result.entry : entry);
+      setEntries(nextEntries);
+      setTrackedSeconds(result.taskTrackedSeconds);
+      onTaskChanged({ ...currentTask, trackedSeconds: result.taskTrackedSeconds, timeEntries: nextEntries });
+      if (result.entry.projectId === projectId) onProjectTimeChanged(result.projectTrackedSeconds);
+      setEditingEntryId(null);
+    } catch (err) {
+      setEditError(err instanceof ApiError ? err.message : "Work log could not be updated");
+    } finally {
+      setEditSaving(false);
     }
   }
 
@@ -3190,7 +3239,55 @@ currentUserId,
                     <Button size="sm" variant="outline" onClick={() => setShowLogForm(true)}><Plus size={14} className="mr-1.5" />Add time log</Button>
                   )
                 )}
-                {entries.length === 0 ? <p>No work logs recorded yet.</p> : entries.map((entry) => <Card key={entry.id} className="p-3"><div className="flex justify-between"><b>{entry.user.name}</b><span className="font-mono">{entry.endedAt ? formatSeconds(entry.durationSeconds) : "Running"}</span></div><p className="mt-1 text-xs text-ink-500">{entry.activityType} · {entry.billable ? "Billable" : "Non-billable"} · {formatDateTime(entry.startedAt, timezone)}{entry.endedAt ? ` – ${formatTimeOnly(entry.endedAt, timezone)}` : ""}</p>{entry.note && <p className="mt-2 text-xs">{entry.note}</p>}</Card>)}
+{entries.length === 0 ? <p>No work logs recorded yet.</p> : entries.map((entry) => {
+                  const isEditing = editingEntryId === entry.id;
+                  return (
+                    <Card key={entry.id} className="p-3">
+                      <div className="flex justify-between">
+                        <b>{entry.user.name}</b>
+                        <span className="flex items-center gap-2">
+                          <span className="font-mono">{entry.endedAt ? formatSeconds(entry.durationSeconds) : "Running"}</span>
+                          {canEdit && entry.endedAt && !isEditing && (
+                            <button type="button" onClick={() => startEditEntry(entry)} title="Edit work log" className="rounded p-1 text-ink-400 hover:bg-ink-100 hover:text-ink-900"><Pencil size={13} /></button>
+                          )}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-ink-500">{entry.activityType} · {entry.billable ? "Billable" : "Non-billable"} · {formatDateTime(entry.startedAt, timezone)}{entry.endedAt ? ` – ${formatTimeOnly(entry.endedAt, timezone)}` : ""}</p>
+                      {entry.note && !isEditing && <p className="mt-2 text-xs">{entry.note}</p>}
+                      {isEditing && (
+                        <div className="mt-3 space-y-2 rounded-lg border border-ink-200 bg-surface-subtle p-3">
+                          <p className="text-xs font-semibold text-ink-900">Edit work log</p>
+                          <div className="grid grid-cols-2 gap-2">
+                            <label className="flex h-10 min-w-0 items-center rounded-lg border border-ink-200 bg-white px-2 focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-100">
+                              <input type="number" min="0" inputMode="numeric" value={editEntryHours} onChange={(event) => setEditEntryHours(event.target.value)} placeholder="00" aria-label="Edit worklog hours" className="min-w-0 flex-1 border-0 bg-transparent text-sm text-ink-900 outline-none placeholder:text-ink-400" />
+                              <span className="ml-1 shrink-0 text-xs font-semibold text-ink-500">H</span>
+                            </label>
+                            <label className="flex h-10 min-w-0 items-center rounded-lg border border-ink-200 bg-white px-2 focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-100">
+                              <input type="number" min="0" max="59" inputMode="numeric" value={editEntryMinutes} onChange={(event) => setEditEntryMinutes(event.target.value)} placeholder="00" aria-label="Edit worklog minutes" className="min-w-0 flex-1 border-0 bg-transparent text-sm text-ink-900 outline-none placeholder:text-ink-400" />
+                              <span className="ml-1 shrink-0 text-xs font-semibold text-ink-500">M</span>
+                            </label>
+                          </div>
+                          <FilterSelect
+                            value={editEntryActivity}
+                            onChange={setEditEntryActivity}
+                            options={[{ value: "", label: "Select activity" }, ...timerActivityOptions.map((activity) => ({ value: activity, label: activity }))]}
+                          />
+                          <FilterSelect
+                            value={editEntryBillable ? "billable" : "non_billable"}
+                            onChange={(value) => setEditEntryBillable(value === "billable")}
+                            options={[{ value: "non_billable", label: "Non-billable" }, { value: "billable", label: "Billable" }]}
+                          />
+                          <Textarea value={editEntryNote} onChange={(event) => setEditEntryNote(event.target.value)} rows={2} placeholder="What did you work on?" />
+                          {editError && <p className="text-xs text-danger-600">{editError}</p>}
+                          <div className="flex justify-end gap-2">
+                            <Button size="sm" variant="outline" onClick={() => { setEditingEntryId(null); setEditError(null); }} disabled={editSaving}>Cancel</Button>
+                            <Button size="sm" onClick={saveEditEntry} disabled={editSaving}>{editSaving ? "Saving…" : "Save"}</Button>
+                          </div>
+                        </div>
+                      )}
+                    </Card>
+                  );
+                })}
               </div>
             )}
             {panel === "approval" && <div className="rounded-lg border border-dashed border-ink-200 p-6 text-center"><CheckCircle2 className="mx-auto text-ink-300" /><p className="mt-2">No approvals requested for this task.</p></div>}
