@@ -266,6 +266,14 @@ async function buildDayDetail(tid: string, employee: { id: string; name: string;
     // 2h planned" (not worked today) per task, instead of only ever showing the lifetime total.
     const todayTrackedSeconds = relevantEntries.filter((entry) => entry.taskId === task.id).reduce((total, entry) => total + durationSeconds(entry), 0);
     const plannedMinutes = explicit?.plannedMinutes ?? 0;
+    // Compute sum of committed allocations for this task up to and including this date so
+    // the UI can show a "remaining" figure that reflects what has already been planned
+    // (not just what was actually tracked). This helps team leads distribute remaining
+    // estimate across days: a planned allocation on an earlier day reduces the remaining
+    // minutes shown on later days even if the employee hasn't logged the time yet.
+    // NOTE: This is a display-only adjustment inside the day panel; it does not mutate
+    // task estimates or affect carry-forward logic elsewhere which relies on tracked time.
+    const allocatedBeforeOrOnThisDate = 0; // placeholder updated below
     // A task is "locked" on this day — shown with its planned hours, but not offered as an
     // editable input in "Edit Today's Plan" — in two cases: (1) it's an urgent same-day task
     // (startDate = dueDate = this date), auto-planned in full by autoPlanIfUrgentSameDay and not
@@ -295,6 +303,9 @@ async function buildDayDetail(tid: string, employee: { id: string; name: string;
       // remainingMinutes already reflects the *full* logged time against estimatedMinutes,
       // regardless of what was planned for today — working over-plan on a task still counts
       // fully toward shrinking its remaining hours, exactly like on-plan or unplanned work does.
+      // Subtract any allocations already committed on or before this date from the
+      // task's remaining minutes (which is estimate minus tracked minutes). Use the
+      // pre-computed allocation sum map below (filled after mapping) when available.
       remainingMinutes: remainingMinutesFor(task),
       plannedMinutes,
       todayTrackedSeconds,
@@ -311,6 +322,27 @@ async function buildDayDetail(tid: string, employee: { id: string; name: string;
       isLocked: isSameDayUrgent || isCarriedForward,
     };
   });
+  // Fetch all allocations for the tasks shown on this panel so we can reduce the
+  // displayed remainingMinutes by allocations already committed up to the current date.
+  if (tasksWithPlan.length > 0) {
+    const allocs = await prisma.taskDailyAllocation.findMany({
+      where: { tenantId: tid, userId: employee.id, taskId: { in: tasksWithPlan.map((t) => t.id) } },
+      select: { taskId: true, plannedMinutes: true, date: true },
+    });
+    const sumByTask: Record<string, number> = {};
+    for (const a of allocs) {
+      const keyDate = a.date.toISOString().slice(0, 10);
+      if (keyDate <= date) sumByTask[a.taskId] = (sumByTask[a.taskId] ?? 0) + a.plannedMinutes;
+    }
+    for (const p of tasksWithPlan) {
+      const already = sumByTask[p.id] ?? 0;
+      // remainingMinutesFor(task) returns minutes remaining after tracked time; subtract
+      // already-planned minutes to present the post-plan remaining figure.
+      // Ensure non-negative.
+      // eslint-disable-next-line no-param-reassign
+      (p as any).remainingMinutes = Math.max(0, remainingMinutesFor(p) - already);
+    }
+  }
   const plannedMinutes = tasksWithPlan.reduce((total, task) => total + task.plannedMinutes, 0);
   const trackedSeconds = relevantEntries.reduce((total, entry) => total + durationSeconds(entry), 0);
   const isWorkingDay = workingDays.includes(dateFromKey(date).getUTCDay()) && (!holiday || holiday.optional);
@@ -539,7 +571,8 @@ const resolveReviewSchema = z.object({
   newEstimatedMinutes: z.number().int().positive().optional(),
   newDueDate: z.string().optional(),
   newAssigneeId: z.string().optional(),
-}).refine((data) => data.newEstimatedMinutes !== undefined || data.newDueDate !== undefined || data.newAssigneeId !== undefined, { message: "Provide a new estimate, a new due date, or a new assignee" });
+  carryToNextWorkingDay: z.boolean().optional(),
+}).refine((data) => data.newEstimatedMinutes !== undefined || data.newDueDate !== undefined || data.newAssigneeId !== undefined || data.carryToNextWorkingDay !== undefined, { message: "Provide a new estimate, a new due date, a new assignee, or a carryToNextWorkingDay flag" });
 resourcesRouter.post("/overdue-reviews/:reviewId/resolve", requirePermission("tasks", "approve"), async (req, res) => {
   const parsed = resolveReviewSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.issues.map((issue) => issue.message).join(", ") }); return; }
@@ -613,6 +646,67 @@ resourcesRouter.post("/overdue-reviews/:reviewId/resolve", requirePermission("ta
   if (newEstimatedMinutes !== undefined || newDueDate !== undefined || newAssigneeId !== undefined) {
     const resolvedTask = await prisma.projectTask.findUnique({ where: { id: review.taskId } });
     if (resolvedTask) await autoPlanIfUrgentSameDay(tid, req.auth!, resolvedTask);
+  }
+
+  // If approver requested to carry leftover planned minutes from the missed/overdue date to
+  // the next company working day, compute the unworked portion and create/update an
+  // allocation on the next working day. This respects company schedule and holidays and
+  // will not create allocations beyond the task's due date.
+  try {
+    if (parsed.data.carryToNextWorkingDay) {
+      // Reload company schedule + holidays to compute working days
+      const [company, schedule, holidays] = await Promise.all([
+        prisma.company.findUniqueOrThrow({ where: { id: tid }, select: { timezone: true } }),
+        prisma.workingSchedule.findFirst({ where: { tenantId: tid }, orderBy: { createdAt: "asc" } }),
+        prisma.holiday.findMany({ where: { tenantId: tid } }),
+      ]);
+      const workingDays = schedule?.workingDays ?? [1, 2, 3, 4, 5];
+      const sourceDateKey = review.originalDueDate ? localDateKey(review.originalDueDate, company.timezone) : null;
+      const taskAssigneeId = review.task.assigneeId;
+      if (sourceDateKey && taskAssigneeId) {
+        // find allocation that was planned on the source date
+        const sourceAlloc = await prisma.taskDailyAllocation.findUnique({
+          where: { taskId_userId_date: { taskId: review.task.id, userId: taskAssigneeId, date: new Date(`${sourceDateKey}T00:00:00.000Z`) } },
+          select: { plannedMinutes: true },
+        });
+        if (sourceAlloc && sourceAlloc.plannedMinutes > 0) {
+          // compute tracked seconds for that task on the source date
+          const start = new Date(`${sourceDateKey}T00:00:00.000Z`);
+          const end = new Date(`${addDays(sourceDateKey, 1)}T00:00:00.000Z`);
+          const entries = await prisma.taskTimeEntry.findMany({ where: { tenantId: tid, userId: taskAssigneeId, taskId: review.task.id, startedAt: { gte: start, lt: end } }, select: { durationSeconds: true } });
+          const trackedSeconds = entries.reduce((total, e) => total + (e.durationSeconds ?? 0), 0);
+          const unworked = Math.max(0, sourceAlloc.plannedMinutes - Math.floor(trackedSeconds / 60));
+          if (unworked > 0) {
+            // find next working day after sourceDateKey
+            let cursor = addDays(sourceDateKey, 1);
+            const holidayByDate = new Map(holidays.map((h) => [localDateKey(h.date, company.timezone), h]));
+            const maxLookAhead = 90; // safety
+            let found = null;
+            for (let i = 0; i < maxLookAhead; i++) {
+              const holiday = holidayByDate.get(cursor);
+              const isWorkingDay = workingDays.includes(dateFromKey(cursor).getUTCDay()) && (!holiday || holiday.optional);
+              if (isWorkingDay) { found = cursor; break; }
+              cursor = addDays(cursor, 1);
+            }
+            if (found) {
+              // Ensure we don't place allocation beyond the task's (possibly updated) due date
+              const updatedTask = await prisma.projectTask.findUnique({ where: { id: review.task.id }, select: { dueDate: true } });
+              if (!updatedTask?.dueDate || localDateKey(updatedTask.dueDate, company.timezone) >= found) {
+                const targetDateValue = new Date(`${found}T00:00:00.000Z`);
+                await prisma.taskDailyAllocation.upsert({
+                  where: { taskId_userId_date: { taskId: review.task.id, userId: taskAssigneeId, date: targetDateValue } },
+                  update: { plannedMinutes: unworked, note: carryForwardNote, updatedBy: uid },
+                  create: { tenantId: tid, taskId: review.task.id, userId: taskAssigneeId, date: targetDateValue, plannedMinutes: unworked, note: carryForwardNote, createdBy: uid, updatedBy: uid },
+                });
+              }
+            }
+          }
+        }
+      }
+    }
+  } catch (err) {
+    // don't fail the whole resolve if carry logic has an issue — log and continue
+    console.error("Carry-to-next-working-day failed:", err);
   }
   res.json({ review: updatedReview });
 });

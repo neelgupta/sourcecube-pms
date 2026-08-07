@@ -19,6 +19,7 @@ function ReviewRow({ review, employees, onResolved }: { review: TaskOverdueRevie
   const [estimateHours, setEstimateHours] = useState("");
   const [dueDate, setDueDate] = useState<string | null>(null);
   const [newAssigneeId, setNewAssigneeId] = useState<string | null>(null);
+  const [carryToNextWorkingDay, setCarryToNextWorkingDay] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -33,7 +34,7 @@ function ReviewRow({ review, employees, onResolved }: { review: TaskOverdueRevie
     setSaving(true);
     setError(null);
     try {
-      const { review: updated } = await api.resolveOverdueReview(review.id, { newEstimatedMinutes, newDueDate: dueDate ?? undefined, newAssigneeId: newAssigneeId ?? undefined });
+      const { review: updated } = await api.resolveOverdueReview(review.id, { newEstimatedMinutes, newDueDate: dueDate ?? undefined, newAssigneeId: newAssigneeId ?? undefined, carryToNextWorkingDay });
       onResolved(updated);
       setResolving(false);
     } catch (err) {
@@ -82,6 +83,12 @@ function ReviewRow({ review, employees, onResolved }: { review: TaskOverdueRevie
               clearLabel="Keep current assignee"
               placeholder="Keep current assignee"
             />
+          </Field>
+          <Field label="Carry leftover planned hours" hint="Move any unworked planned minutes from the missed day to the next company working day">
+            <label className="inline-flex items-center gap-2">
+              <input type="checkbox" checked={carryToNextWorkingDay} onChange={(e) => setCarryToNextWorkingDay(e.target.checked)} />
+              <span className="text-sm text-ink-700">Carry leftover planned hours to next working day</span>
+            </label>
           </Field>
           {error && <p className="text-xs text-danger-600">{error}</p>}
           <div className="flex justify-end gap-2">

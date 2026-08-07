@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, type NavigateFunction } from "react-router-dom";
-import { AlertTriangle, AtSign, Bell, BellRing, CheckCircle2, Clock, List, Megaphone, MessageCircle, UserPlus } from "lucide-react";
+import { AlertTriangle, AlarmClock, AtSign, Bell, BellRing, CheckCircle2, Clock, List, Megaphone, MessageCircle, UserPlus } from "lucide-react";
 import { api } from "@/lib/api";
 import { getChatSocket } from "@/lib/chatSocket";
 import {
+  APP_NOTIFICATION_EVENT,
   getDesktopNotificationPermission,
   isDesktopNotificationSupported,
   requestDesktopNotificationPermission,
@@ -27,6 +28,7 @@ const typeIcons: Record<NotificationType, React.ReactNode> = {
   task_reestimate_resolved: <CheckCircle2 size={14} className="text-success-600" />,
   task_timelog_change_request: <Clock size={14} className="text-warning-600" />,
   task_timelog_change_resolved: <CheckCircle2 size={14} className="text-success-600" />,
+  timer_warning: <AlarmClock size={14} className="text-warning-600" />,
 };
 
 /** Sends the user to whatever the notification is actually about — a chat message/mention
@@ -39,12 +41,30 @@ async function goToNotificationTarget(navigate: NavigateFunction, notification: 
     try {
       const result = await api.getProject(notification.projectId);
       navigate(`${projectWorkspacePath(result.project)}?task=${notification.taskId}`);
+      return;
     } catch {
       navigate(`/projects/${notification.projectId}?task=${notification.taskId}`);
+      return;
     }
+  }
+
+  if (notification.projectId) {
+    try {
+      const result = await api.getProject(notification.projectId);
+      navigate(projectWorkspacePath(result.project));
+      return;
+    } catch {
+      navigate(`/projects/${notification.projectId}`);
+      return;
+    }
+  }
+
+  if (notification.channelId) {
+    navigate(`/chat?channel=${notification.channelId}`);
     return;
   }
-  navigate(notification.channelId ? `/chat?channel=${notification.channelId}` : "/chat");
+
+  navigate("/chat");
 }
 
 
@@ -87,11 +107,18 @@ export function NotificationBell() {
     function onUpdated(notification: Notification) {
       setNotifications((current) => current.map((item) => (item.id === notification.id ? notification : item)));
     }
+    function onAppNotification(event: Event) {
+      const customEvent = event as CustomEvent<Notification>;
+      const timerNotification = customEvent.detail;
+      setNotifications((current) => [timerNotification, ...current.filter((item) => item.id !== timerNotification.id)].slice(0, 8));
+    }
     socket.on("notification:new", onNew);
     socket.on("notification:updated", onUpdated);
+    window.addEventListener(APP_NOTIFICATION_EVENT, onAppNotification as EventListener);
     return () => {
       socket.off("notification:new", onNew);
       socket.off("notification:updated", onUpdated);
+      window.removeEventListener(APP_NOTIFICATION_EVENT, onAppNotification as EventListener);
     };
   }, [canUseChat, navigate]);
 
