@@ -42,6 +42,8 @@ import type {
   ResourcePlannerDayDetail,
   TaskDailyAllocationEntry,
   TaskOverdueReview,
+  TaskReestimateRequest,
+  TaskTimeEntryChangeRequest,
   TeamProductivityReport,
   TeamMemberProductivityReport,
   ProjectPerformanceReport,
@@ -204,6 +206,18 @@ export const api = {
   listOverdueReviews: () => request<{ reviews: TaskOverdueReview[] }>("/resources/overdue-reviews"),
   resolveOverdueReview: (reviewId: string, input: { newEstimatedMinutes?: number; newDueDate?: string; newAssigneeId?: string }) =>
     request<{ review: TaskOverdueReview }>(`/resources/overdue-reviews/${reviewId}/resolve`, { method: "POST", body: JSON.stringify(input) }),
+  requestReestimate: (projectId: string, taskId: string, input: { requestedMinutes: number; reason: string }) =>
+    request<{ request: TaskReestimateRequest }>(`/projects/${projectId}/tasks/${taskId}/reestimate-request`, { method: "POST", body: JSON.stringify(input) }),
+  listTaskReestimateRequests: (projectId: string, taskId: string) =>
+    request<{ requests: TaskReestimateRequest[] }>(`/projects/${projectId}/tasks/${taskId}/reestimate-requests`),
+  listReestimateRequests: () => request<{ requests: TaskReestimateRequest[] }>("/projects/reestimate-requests"),
+  resolveReestimateRequest: (requestId: string, input: { action: "approve" | "reject"; approvedMinutes?: number }) =>
+    request<{ request: TaskReestimateRequest; task: WorkspaceTask | null }>(`/projects/reestimate-requests/${requestId}/resolve`, { method: "POST", body: JSON.stringify(input) }),
+  listTimelogChangeRequests: () => request<{ requests: TaskTimeEntryChangeRequest[] }>("/projects/timelog-change-requests"),
+  resolveTimelogChangeRequest: (requestId: string, action: "approve" | "reject") =>
+    request<{ request: TaskTimeEntryChangeRequest }>(`/projects/timelog-change-requests/${requestId}/resolve`, { method: "POST", body: JSON.stringify({ action }) }),
+  listTimeEntryChangeRequests: (projectId: string, taskId: string, entryId: string) =>
+    request<{ requests: TaskTimeEntryChangeRequest[] }>(`/projects/${projectId}/tasks/${taskId}/timer/${entryId}/change-requests`),
   getTeamProductivityReport: (input: { start: string; end: string; teamId?: string; search?: string }) => {
     const params = new URLSearchParams();
     Object.entries(input).forEach(([key, value]) => { if (value) params.set(key, value); });
@@ -566,12 +580,12 @@ logTaskTime: (
     projectId: string,
     taskId: string,
     entryId: string,
-    input: { durationMinutes: number; activityType: string; billable: boolean; note: string },
+    input: { durationMinutes: number; activityType: string; billable: boolean; note: string; reason?: string },
   ) =>
-    request<{ entry: TaskTimeEntry; taskTrackedSeconds: number; projectTrackedSeconds: number }>(
-      `/projects/${projectId}/tasks/${taskId}/timer/${entryId}`,
-      { method: "PATCH", body: JSON.stringify(input) },
-    ),
+    request<
+      | { entry: TaskTimeEntry; taskTrackedSeconds: number; projectTrackedSeconds: number; pending: false }
+      | { request: TaskTimeEntryChangeRequest; pending: true }
+    >(`/projects/${projectId}/tasks/${taskId}/timer/${entryId}`, { method: "PATCH", body: JSON.stringify(input) }),
 
   // ---- Chat ----
   listChatUsers: () => request<{ users: ChatUser[] }>("/chat/users"),

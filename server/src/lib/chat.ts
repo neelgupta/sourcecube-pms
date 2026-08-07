@@ -44,7 +44,18 @@ export async function ensureProjectChatMembers(tenantId: string, projectId: stri
 export async function createNotification(params: {
   tenantId: string;
   userId: string;
-  type: "mention" | "announcement" | "channel_invite" | "message" | "task_assigned" | "task_overdue_review" | "task_review_resolved";
+  type:
+    | "mention"
+    | "announcement"
+    | "channel_invite"
+    | "message"
+    | "task_assigned"
+    | "task_overdue_review"
+    | "task_review_resolved"
+    | "task_reestimate_request"
+    | "task_reestimate_resolved"
+    | "task_timelog_change_request"
+    | "task_timelog_change_resolved";
   title: string;
   body?: string;
   channelId?: string;

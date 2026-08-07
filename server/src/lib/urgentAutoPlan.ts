@@ -2,6 +2,8 @@ import { prisma } from "./prisma.js";
 import { recordAudit } from "./audit.js";
 import type { AuthTokenPayload } from "./jwt.js";
 
+const urgentAutoPlanNote = "Auto-planned: urgent same-day task";
+
 /** Mirrors localDateKey in routes/resources.ts — a task's/day's date expressed as the company's
  *  own local calendar day (YYYY-MM-DD), not the server process's timezone. */
 function localDateKey(value: Date, timezone: string): string {
@@ -46,14 +48,33 @@ export async function autoPlanIfUrgentSameDay(
   actor: AuthTokenPayload,
   task: { id: string; code: number; name: string; assigneeId: string | null; startDate: Date | null; dueDate: Date | null; estimatedMinutes: number; trackedSeconds: number },
 ): Promise<void> {
-  if (!task.assigneeId || !task.startDate || !task.dueDate) return;
+  if (!task.assigneeId) return;
 
   const company = await prisma.company.findUnique({ where: { id: tid }, select: { timezone: true } });
   if (!company) return;
 
-  const startKey = localDateKey(task.startDate, company.timezone);
-  const dueKey = localDateKey(task.dueDate, company.timezone);
-  if (startKey !== dueKey) return;
+  const startKey = task.startDate ? localDateKey(task.startDate, company.timezone) : null;
+  const dueKey = task.dueDate ? localDateKey(task.dueDate, company.timezone) : null;
+  const isSingleDay = Boolean(startKey && dueKey && startKey === dueKey);
+
+  // A task can arrive here no longer qualifying as same-day-urgent (its dates were widened into
+  // a multi-day span, cleared, or moved) even though an earlier call auto-planned and locked a
+  // whole day for it under the old single-day dates. Left behind, that stale row would keep
+  // consuming a full day's worth of hours under a task that's no longer urgent — clean up any
+  // row this same mechanism previously wrote that ISN'T the task's current single day (if it
+  // still has one), so editing a task's schedule always leaves its planner state consistent with
+  // its current dates rather than accumulating orphaned auto-plans from earlier edits.
+  await prisma.taskDailyAllocation.deleteMany({
+    where: {
+      tenantId: tid,
+      taskId: task.id,
+      userId: task.assigneeId,
+      note: urgentAutoPlanNote,
+      ...(isSingleDay ? { date: { not: new Date(`${startKey}T00:00:00.000Z`) } } : {}),
+    },
+  });
+
+  if (!isSingleDay || !startKey) return;
 
   const todayKey = localDateKey(new Date(), company.timezone);
   if (startKey < todayKey) return; // its single day has already passed — let overdue-review handle it, not a backdated plan
@@ -64,14 +85,14 @@ export async function autoPlanIfUrgentSameDay(
   const dateValue = new Date(`${startKey}T00:00:00.000Z`);
   await prisma.taskDailyAllocation.upsert({
     where: { taskId_userId_date: { taskId: task.id, userId: task.assigneeId, date: dateValue } },
-    update: { plannedMinutes, note: "Auto-planned: urgent same-day task", updatedBy: actor.userId },
+    update: { plannedMinutes, note: urgentAutoPlanNote, updatedBy: actor.userId },
     create: {
       tenantId: tid,
       taskId: task.id,
       userId: task.assigneeId,
       date: dateValue,
       plannedMinutes,
-      note: "Auto-planned: urgent same-day task",
+      note: urgentAutoPlanNote,
       createdBy: actor.userId,
       updatedBy: actor.userId,
     },

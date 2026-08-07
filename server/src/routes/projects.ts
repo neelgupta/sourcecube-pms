@@ -7,6 +7,7 @@ import { recordAudit } from "../lib/audit.js";
 import { createNotification, ensureProjectChatMembers, extractMentionIds } from "../lib/chat.js";
 import { flagNewlyOverdueTasks } from "../lib/overdueReview.js";
 import { autoPlanIfUrgentSameDay } from "../lib/urgentAutoPlan.js";
+import { resolveApprover, resolveTeamLead } from "../lib/approvers.js";
 
 export const projectsRouter = Router();
 projectsRouter.use(requireAuth, requireCompany);
@@ -393,6 +394,163 @@ projectsRouter.get("/milestones/all", requirePermission("projects", "view"), asy
     trackedSeconds: tasks.reduce((sum, task) => sum + task.trackedSeconds, 0),
   }));
   res.json({ milestones: rows });
+});
+
+// NOTE: these two routes have no :id segment and must stay registered before GET "/:id" below,
+// otherwise Express would match "/reestimate-requests" as a project id lookup.
+projectsRouter.get("/reestimate-requests", requirePermission("tasks", "approve"), async (req, res) => {
+  const tid = tenantId(req);
+  const uid = userId(req);
+  const requests = await prisma.taskReestimateRequest.findMany({
+    where: { tenantId: tid, approverId: uid, status: "pending_review" },
+    orderBy: { createdAt: "asc" },
+    include: {
+      task: {
+        select: {
+          id: true, code: true, name: true, projectId: true, estimatedMinutes: true, trackedSeconds: true,
+          project: { select: { id: true, name: true } },
+          assignee: { select: userSelect },
+        },
+      },
+    },
+  });
+  res.json({ requests });
+});
+
+const resolveReestimateSchema = z.object({
+  action: z.enum(["approve", "reject"]),
+  approvedMinutes: z.number().int().positive().optional(),
+});
+
+projectsRouter.post("/reestimate-requests/:requestId/resolve", requirePermission("tasks", "approve"), async (req, res) => {
+  const parsed = resolveReestimateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.issues.map((issue) => issue.message).join(", ") });
+    return;
+  }
+  const tid = tenantId(req);
+  const uid = userId(req);
+  const requestId = req.params.requestId as string;
+  const request = await prisma.taskReestimateRequest.findFirst({ where: { id: requestId, tenantId: tid }, include: { task: true } });
+  if (!request) {
+    res.status(404).json({ error: "Request not found" });
+    return;
+  }
+  if (request.approverId !== uid) {
+    res.status(403).json({ error: "You are not the approver for this request" });
+    return;
+  }
+  if (request.status !== "pending_review") {
+    res.status(400).json({ error: "This request has already been resolved" });
+    return;
+  }
+  const approvedMinutes = parsed.data.action === "approve" ? (parsed.data.approvedMinutes ?? request.requestedEstimatedMinutes) : null;
+  await prisma.$transaction(async (tx) => {
+    if (parsed.data.action === "approve" && approvedMinutes !== null) {
+      await tx.projectTask.update({ where: { id: request.taskId }, data: { estimatedMinutes: approvedMinutes, updatedBy: uid } });
+    }
+    await tx.taskReestimateRequest.update({
+      where: { id: requestId },
+      data: { status: "resolved", resolvedAt: new Date(), resolvedBy: uid, approvedEstimatedMinutes: approvedMinutes },
+    });
+  });
+  await recordAudit({
+    actor: req.auth!, action: `task.reestimate_${parsed.data.action}d`, tenantId: tid, targetType: "ProjectTask", targetId: request.taskId,
+    metadata: { projectId: request.task.projectId, requestId, approvedMinutes },
+  });
+  await createNotification({
+    tenantId: tid, userId: request.requestedBy, type: "task_reestimate_resolved",
+    title: parsed.data.action === "approve"
+      ? `Your re-estimate request for #${request.task.code} ${request.task.name} was approved`
+      : `Your re-estimate request for #${request.task.code} ${request.task.name} was rejected`,
+    taskId: request.taskId, projectId: request.task.projectId, actorId: uid,
+  });
+  const updatedTask = parsed.data.action === "approve" ? await prisma.projectTask.findUnique({ where: { id: request.taskId } }) : null;
+  // An approved re-estimate can change a task's remaining minutes on a day it's already
+  // auto-planned/locked for (same-day-urgent) — without this, the locked allocation would stay
+  // stuck at the pre-approval estimate (e.g. locked at 1h even though the task was just approved
+  // for 4h), which is exactly what autoPlanIfUrgentSameDay's upsert exists to keep in sync.
+  if (updatedTask) {
+    await autoPlanIfUrgentSameDay(tid, req.auth!, updatedTask);
+  }
+  res.json({ request: await prisma.taskReestimateRequest.findUniqueOrThrow({ where: { id: requestId } }), task: updatedTask });
+});
+
+projectsRouter.get("/timelog-change-requests", requirePermission("tasks", "approve"), async (req, res) => {
+  const tid = tenantId(req);
+  const uid = userId(req);
+  const requests = await prisma.taskTimeEntryChangeRequest.findMany({
+    where: { tenantId: tid, approverId: uid, status: "pending_review" },
+    orderBy: { createdAt: "asc" },
+    include: {
+      entry: {
+        select: {
+          id: true, taskId: true, projectId: true, userId: true, startedAt: true, endedAt: true,
+          user: { select: userSelect },
+          task: { select: { id: true, code: true, name: true } },
+          project: { select: { id: true, name: true } },
+        },
+      },
+    },
+  });
+  res.json({ requests });
+});
+
+const resolveTimelogChangeSchema = z.object({ action: z.enum(["approve", "reject"]) });
+
+projectsRouter.post("/timelog-change-requests/:requestId/resolve", requirePermission("tasks", "approve"), async (req, res) => {
+  const parsed = resolveTimelogChangeSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.issues.map((issue) => issue.message).join(", ") });
+    return;
+  }
+  const tid = tenantId(req);
+  const uid = userId(req);
+  const requestId = req.params.requestId as string;
+  const request = await prisma.taskTimeEntryChangeRequest.findFirst({ where: { id: requestId, tenantId: tid }, include: { entry: { include: { task: true } } } });
+  if (!request) {
+    res.status(404).json({ error: "Request not found" });
+    return;
+  }
+  if (request.approverId !== uid) {
+    res.status(403).json({ error: "You are not the approver for this request" });
+    return;
+  }
+  if (request.status !== "pending_review") {
+    res.status(400).json({ error: "This request has already been resolved" });
+    return;
+  }
+  if (parsed.data.action === "approve") {
+    const durationDelta = request.requestedDurationSeconds - request.previousDurationSeconds;
+    await prisma.$transaction(async (tx) => {
+      await tx.taskTimeEntry.update({
+        where: { id: request.entryId },
+        data: {
+          durationSeconds: request.requestedDurationSeconds,
+          activityType: request.requestedActivityType,
+          billable: request.requestedBillable,
+          note: request.requestedNote,
+        },
+      });
+      await tx.projectTask.update({ where: { id: request.entry.taskId }, data: { trackedSeconds: { increment: durationDelta } } });
+      await tx.project.update({ where: { id: request.entry.projectId }, data: { trackedSeconds: { increment: durationDelta } } });
+      await tx.taskTimeEntryChangeRequest.update({ where: { id: requestId }, data: { status: "resolved", resolvedAt: new Date(), resolvedBy: uid } });
+    });
+  } else {
+    await prisma.taskTimeEntryChangeRequest.update({ where: { id: requestId }, data: { status: "resolved", resolvedAt: new Date(), resolvedBy: uid } });
+  }
+  await recordAudit({
+    actor: req.auth!, action: `task.timelog.change_${parsed.data.action}d`, tenantId: tid, targetType: "ProjectTask", targetId: request.entry.taskId,
+    metadata: { projectId: request.entry.projectId, requestId, entryId: request.entryId },
+  });
+  await createNotification({
+    tenantId: tid, userId: request.requestedBy, type: "task_timelog_change_resolved",
+    title: parsed.data.action === "approve"
+      ? `Your work log change request for #${request.entry.task.code} ${request.entry.task.name} was approved`
+      : `Your work log change request for #${request.entry.task.code} ${request.entry.task.name} was rejected`,
+    taskId: request.entry.taskId, projectId: request.entry.projectId, actorId: uid,
+  });
+  res.json({ request: await prisma.taskTimeEntryChangeRequest.findUniqueOrThrow({ where: { id: requestId } }) });
 });
 
 projectsRouter.get("/:id", requirePermission("projects", "view"), async (req, res) => {
@@ -1132,6 +1290,13 @@ function taskDatesAreValid(startDate?: string | null, dueDate?: string | null) {
   return new Date(startDate).getTime() <= new Date(dueDate).getTime();
 }
 
+/** A task is "fully scheduled" once it has an assignee, a positive estimate, and both dates —
+ *  at that point a plain employee can no longer change the schedule directly (see the PATCH
+ *  handler below) and must go through a TaskReestimateRequest instead for the estimate. */
+function isFullyScheduled(task: { assigneeId: string | null; estimatedMinutes: number; startDate: Date | null; dueDate: Date | null }): boolean {
+  return Boolean(task.assigneeId) && task.estimatedMinutes > 0 && Boolean(task.startDate) && Boolean(task.dueDate);
+}
+
 projectsRouter.patch("/:id/tasks/:taskId", requirePermission("tasks", "edit"), async (req, res) => {
   const parsed = taskUpdateSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -1160,7 +1325,7 @@ if (!(await canEditTaskForProject(tid, uid, projectId, task.assigneeId))) {
   // check uses the task's *existing* schedule state (not the incoming payload) so an employee can
   // still fill in whichever fields are missing, but can't alter them once the task is complete.
   const isEmployeeOnly = (await getCompanyUserRoles(tid, uid)).every((role) => role === "employee");
-  const taskIsFullyScheduled = Boolean(task.assigneeId) && task.estimatedMinutes > 0 && Boolean(task.startDate) && Boolean(task.dueDate);
+  const taskIsFullyScheduled = isFullyScheduled(task);
   if (isEmployeeOnly && taskIsFullyScheduled && (data.estimatedMinutes !== undefined || data.dueDate !== undefined || data.startDate !== undefined)) {
     res.status(403).json({ error: "This task is already scheduled — only a project owner or manager can change its estimate or dates" });
     return;
@@ -1308,6 +1473,85 @@ if (!(await canEditTaskForProject(tid, uid, projectId, task.assigneeId))) {
     await autoPlanIfUrgentSameDay(tid, req.auth!, updated);
   }
   res.json({ task: updated });
+});
+
+const reestimateRequestSchema = z.object({
+  requestedMinutes: z.number().int().positive(),
+  reason: z.string().trim().min(1).max(2000),
+});
+
+// Once a task is fully scheduled, only a project editor / the assignee's team lead can change
+// its estimate directly (see the 403 in the PATCH handler above). This is the assignee's channel
+// to ask for a change instead of being dead-ended — it routes to the same approver as an overdue
+// review (creator, falling back to team lead, falling back to super admin) via resolveApprover.
+projectsRouter.post("/:id/tasks/:taskId/reestimate-request", requirePermission("tasks", "edit"), async (req, res) => {
+  const parsed = reestimateRequestSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.issues.map((issue) => issue.message).join(", ") });
+    return;
+  }
+  const tid = tenantId(req);
+  const uid = userId(req);
+  const projectId = req.params.id as string;
+  const taskId = req.params.taskId as string;
+  const task = await prisma.projectTask.findFirst({ where: { id: taskId, projectId, tenantId: tid } });
+  if (!task) {
+    res.status(404).json({ error: "Task not found" });
+    return;
+  }
+  if (task.assigneeId !== uid) {
+    res.status(403).json({ error: "Only the task's assignee can request a re-estimate" });
+    return;
+  }
+  if (!isFullyScheduled(task)) {
+    res.status(400).json({ error: "This task isn't fully scheduled yet — you can edit its estimate directly" });
+    return;
+  }
+  const existingPending = await prisma.taskReestimateRequest.findFirst({ where: { taskId, tenantId: tid, status: "pending_review" } });
+  if (existingPending) {
+    res.status(400).json({ error: "A re-estimate request for this task is already pending" });
+    return;
+  }
+  const approverId = await resolveApprover(tid, task);
+  if (!approverId) {
+    res.status(400).json({ error: "No approver could be found for this request — contact your admin" });
+    return;
+  }
+  const request = await prisma.taskReestimateRequest.create({
+    data: {
+      tenantId: tid,
+      taskId,
+      requestedBy: uid,
+      approverId,
+      previousEstimatedMinutes: task.estimatedMinutes,
+      requestedEstimatedMinutes: parsed.data.requestedMinutes,
+      reason: parsed.data.reason,
+    },
+  });
+  await recordAudit({
+    actor: req.auth!, action: "task.reestimate_requested", tenantId: tid, targetType: "ProjectTask", targetId: taskId,
+    metadata: { projectId, requestId: request.id, previousEstimatedMinutes: task.estimatedMinutes, requestedEstimatedMinutes: parsed.data.requestedMinutes },
+  });
+  await createNotification({
+    tenantId: tid, userId: approverId, type: "task_reestimate_request",
+    title: `Re-estimate requested for #${task.code} ${task.name}`, taskId, projectId, actorId: uid,
+  });
+  res.status(201).json({ request });
+});
+
+// Every resolved-or-pending re-estimate request for a task, newest first — powers the "was Xh,
+// now Yh" history line shown under the Estimate field regardless of who's viewing it.
+projectsRouter.get("/:id/tasks/:taskId/reestimate-requests", requirePermission("tasks", "view"), async (req, res) => {
+  const tid = tenantId(req);
+  const projectId = req.params.id as string;
+  const taskId = req.params.taskId as string;
+  const task = await prisma.projectTask.findFirst({ where: { id: taskId, projectId, tenantId: tid } });
+  if (!task) {
+    res.status(404).json({ error: "Task not found" });
+    return;
+  }
+  const requests = await prisma.taskReestimateRequest.findMany({ where: { taskId, tenantId: tid }, orderBy: { createdAt: "desc" } });
+  res.json({ requests });
 });
 
 projectsRouter.delete("/:id/tasks/:taskId", requirePermission("tasks", "manage"), async (req, res) => {
@@ -2122,15 +2366,20 @@ const editTimeEntrySchema = z.object({
   activityType: z.string().trim().min(1, "Activity is required").max(100),
   billable: z.boolean(),
   note: z.string().trim().min(1, "Description is required").max(2000),
+  reason: z.string().trim().max(2000).optional(),
 });
 
-/** Correcting an existing work log is a management action, not self-editing — a plain employee
- *  (role set is exactly ["employee"]) may not edit their own logged hours even though they can
- *  create them. Only team leads, project managers, department heads, and admins (any non-
- *  "employee"-only role) with task edit access may fix a logged entry. Mirrors the
- *  role-overrides-membership rule used by canReassignTasks: non-employee roles with real project
- *  access inherit the capability, while a manager granting a plain employee "edit" project-member
- *  access deliberately does NOT hand them the ability to alter work logs. */
+/** Correcting someone ELSE's work log is a management action — a plain employee (role set is
+ *  exactly ["employee"]) may not directly edit another employee's logged hours. Only team leads,
+ *  project managers, department heads, and admins (any non-"employee"-only role) with task edit
+ *  access may fix someone else's entry directly, exactly as before.
+ *
+ *  Correcting your OWN entry is different: everyone, employee or not, can now request a change
+ *  to their own logged time (e.g. forgot to stop a timer), but it never writes directly — it
+ *  always creates a TaskTimeEntryChangeRequest and routes to the entry owner's team lead for
+ *  approval, so ProjectTask/Project.trackedSeconds (and therefore the Resource Planner's
+ *  remainingMinutesFor) never move until someone with authority signs off. This keeps a clean,
+ *  uniform audit trail — no self-approval loophole even for a TL editing their own log. */
 projectsRouter.patch("/:id/tasks/:taskId/timer/:entryId", requirePermission("tasks", "edit"), async (req, res) => {
   const parsed = editTimeEntrySchema.safeParse(req.body);
   if (!parsed.success) {
@@ -2151,11 +2400,6 @@ projectsRouter.patch("/:id/tasks/:taskId/timer/:entryId", requirePermission("tas
     res.status(403).json({ error: "You do not have edit access to this task" });
     return;
   }
-  const roles = await getCompanyUserRoles(tid, uid);
-  if (roles.every((role) => role === "employee")) {
-    res.status(403).json({ error: "Only team leads, project managers, and admins can edit work logs" });
-    return;
-  }
   const entry = await prisma.taskTimeEntry.findFirst({
     where: { id: entryId, taskId, projectId: id, tenantId: tid },
     include: { user: { select: userSelect } },
@@ -2169,6 +2413,57 @@ projectsRouter.patch("/:id/tasks/:taskId/timer/:entryId", requirePermission("tas
     return;
   }
   const newDurationSeconds = parsed.data.durationMinutes * 60;
+  const isOwnEntry = entry.userId === uid;
+
+  if (isOwnEntry) {
+    if (!parsed.data.reason) {
+      res.status(400).json({ error: "A reason is required to request a change to your own work log" });
+      return;
+    }
+    const existingPending = await prisma.taskTimeEntryChangeRequest.findFirst({ where: { entryId, tenantId: tid, status: "pending_review" } });
+    if (existingPending) {
+      res.status(400).json({ error: "A change request for this entry is already pending" });
+      return;
+    }
+    const approverId = await resolveTeamLead(tid, entry.userId);
+    if (!approverId) {
+      res.status(400).json({ error: "No approver could be found for this request — contact your admin" });
+      return;
+    }
+    const request = await prisma.taskTimeEntryChangeRequest.create({
+      data: {
+        tenantId: tid,
+        entryId,
+        requestedBy: uid,
+        approverId,
+        previousDurationSeconds: entry.durationSeconds,
+        requestedDurationSeconds: newDurationSeconds,
+        previousActivityType: entry.activityType,
+        requestedActivityType: parsed.data.activityType,
+        previousBillable: entry.billable,
+        requestedBillable: parsed.data.billable,
+        previousNote: entry.note,
+        requestedNote: parsed.data.note,
+        reason: parsed.data.reason,
+      },
+    });
+    await recordAudit({
+      actor: req.auth!, action: "task.timelog.change_requested", tenantId: tid, targetType: "ProjectTask", targetId: taskId,
+      metadata: { projectId: id, timeEntryId: entry.id, requestId: request.id, previousDurationSeconds: entry.durationSeconds, requestedDurationSeconds: newDurationSeconds },
+    });
+    await createNotification({
+      tenantId: tid, userId: approverId, type: "task_timelog_change_request",
+      title: `${entry.user.name} requested a work log change on #${task.code} ${task.name}`, taskId, projectId: id, actorId: uid,
+    });
+    res.status(202).json({ request, pending: true });
+    return;
+  }
+
+  const roles = await getCompanyUserRoles(tid, uid);
+  if (roles.every((role) => role === "employee")) {
+    res.status(403).json({ error: "Only team leads, project managers, and admins can edit another employee's work log" });
+    return;
+  }
   const durationDelta = newDurationSeconds - entry.durationSeconds;
   const [updatedEntry, updatedTask, updatedProject] = await prisma.$transaction([
     prisma.taskTimeEntry.update({
@@ -2209,7 +2504,23 @@ projectsRouter.patch("/:id/tasks/:taskId/timer/:entryId", requirePermission("tas
     entry: updatedEntry,
     taskTrackedSeconds: updatedTask.trackedSeconds,
     projectTrackedSeconds: updatedProject.trackedSeconds,
+    pending: false,
   });
+});
+
+// Every resolved-or-pending change request for a work log entry, newest first.
+projectsRouter.get("/:id/tasks/:taskId/timer/:entryId/change-requests", requirePermission("tasks", "view"), async (req, res) => {
+  const tid = tenantId(req);
+  const id = req.params.id as string;
+  const taskId = req.params.taskId as string;
+  const entryId = req.params.entryId as string;
+  const entry = await prisma.taskTimeEntry.findFirst({ where: { id: entryId, taskId, projectId: id, tenantId: tid } });
+  if (!entry) {
+    res.status(404).json({ error: "Work log not found" });
+    return;
+  }
+  const requests = await prisma.taskTimeEntryChangeRequest.findMany({ where: { entryId, tenantId: tid }, orderBy: { createdAt: "desc" } });
+  res.json({ requests });
 });
 
 projectsRouter.delete("/:id/tasks/:taskId/timer", requirePermission("tasks", "edit"), async (req, res) => {

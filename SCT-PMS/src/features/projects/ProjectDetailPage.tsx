@@ -81,6 +81,7 @@ import type {
   AuditLogEntry,
   TaskTimeEntry,
   TaskComment,
+  TaskReestimateRequest,
   WorkspaceTask,
 } from "@/types/tenant";
 
@@ -2547,6 +2548,85 @@ function OverdueReasonBanner({ taskId }: { taskId: string }) {
   );
 }
 
+/** Once a task is fully scheduled, a plain employee assignee can no longer change the estimate
+ *  directly (see canEditSchedule above) — this is their channel to ask for a change instead of
+ *  being dead-ended. Mirrors OverdueReasonBanner's collapsed-button -> expanded-form ->
+ *  submitted-state shape. Only rendered for the current assignee when the schedule is locked and
+ *  there's no already-pending request (checked via the passed-in `pendingRequest`). */
+function ReestimateRequestPanel({
+  projectId,
+  taskId,
+  pendingRequest,
+  onRequested,
+}: {
+  projectId: string;
+  taskId: string;
+  pendingRequest: TaskReestimateRequest | null;
+  onRequested: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [hours, setHours] = useState("");
+  const [minutes, setMinutes] = useState("");
+  const [reason, setReason] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (pendingRequest) {
+    return (
+      <p className="mt-1.5 text-xs font-medium text-warning-700">
+        Re-estimate requested: {formatMinutes(pendingRequest.requestedEstimatedMinutes)} — awaiting approval.
+      </p>
+    );
+  }
+  if (submitted) {
+    return <p className="mt-1.5 text-xs font-medium text-success-700">Request sent — awaiting approval.</p>;
+  }
+  if (!open) {
+    return (
+      <button type="button" onClick={() => setOpen(true)} className="mt-1.5 text-xs font-semibold text-brand-600 hover:underline">
+        Request re-estimate
+      </button>
+    );
+  }
+
+  async function submit() {
+    const h = Math.max(0, Math.floor(Number(hours || 0)));
+    const m = Math.max(0, Math.floor(Number(minutes || 0)));
+    const requestedMinutes = h * 60 + m;
+    if (requestedMinutes <= 0) { setError("Enter the hours you actually need"); return; }
+    if (!reason.trim()) { setError("Please explain why the estimate needs to change"); return; }
+    setSubmitting(true);
+    setError(null);
+    try {
+      await api.requestReestimate(projectId, taskId, { requestedMinutes, reason: reason.trim() });
+      setSubmitted(true);
+      onRequested();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not submit the request");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="mt-2 space-y-2 rounded-lg border border-warning-200 bg-warning-50 p-2.5">
+      <div className="flex items-center gap-2">
+        <input type="number" min="0" inputMode="numeric" value={hours} onChange={(event) => setHours(event.target.value)} placeholder="00" aria-label="Requested hours" className="w-12 rounded border border-ink-200 bg-white px-1 py-1 text-center text-xs font-semibold text-ink-800 outline-none focus:border-brand-500" />
+        <span className="text-xs text-ink-500">H :</span>
+        <input type="number" min="0" max="59" inputMode="numeric" value={minutes} onChange={(event) => setMinutes(event.target.value)} placeholder="00" aria-label="Requested minutes" className="w-12 rounded border border-ink-200 bg-white px-1 py-1 text-center text-xs font-semibold text-ink-800 outline-none focus:border-brand-500" />
+        <span className="text-xs text-ink-500">M</span>
+      </div>
+      <Textarea value={reason} onChange={(event) => setReason(event.target.value)} rows={2} placeholder="Why do you need more/less time?" className="text-xs" />
+      {error && <p className="text-xs text-danger-600">{error}</p>}
+      <div className="flex justify-end gap-2">
+        <Button size="sm" variant="outline" onClick={() => setOpen(false)} disabled={submitting}>Cancel</Button>
+        <Button size="sm" onClick={submit} disabled={submitting}>{submitting ? "Sending…" : "Send request"}</Button>
+      </div>
+    </div>
+  );
+}
+
 export function TaskWorkspaceDrawer({
   task,
   projectId,
@@ -2600,6 +2680,16 @@ currentUserId,
   const [tagText, setTagText] = useState(task?.tags.join(", ") ?? "");
   const [estimateHours, setEstimateHours] = useState(task?.estimatedMinutes ? String(Math.floor(task.estimatedMinutes / 60)) : "");
   const [estimateMinutes, setEstimateMinutes] = useState(task?.estimatedMinutes ? String(task.estimatedMinutes % 60).padStart(2, "0") : "");
+  const [reestimateRequests, setReestimateRequests] = useState<TaskReestimateRequest[]>([]);
+
+  useEffect(() => {
+    if (!localTask) return;
+    let cancelled = false;
+    api.listTaskReestimateRequests(projectId, localTask.id).then((result) => {
+      if (!cancelled) setReestimateRequests(result.requests);
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [projectId, localTask?.id]);
   const [scheduleStartDate, setScheduleStartDate] = useState(task?.startDate ? task.startDate.slice(0, 10) : "");
   const [scheduleDueDate, setScheduleDueDate] = useState(task?.dueDate ? task.dueDate.slice(0, 10) : "");
   const [scheduleSaving, setScheduleSaving] = useState(false);
@@ -2628,8 +2718,10 @@ const [logSaving, setLogSaving] = useState(false);
   const [editEntryActivity, setEditEntryActivity] = useState("");
   const [editEntryBillable, setEditEntryBillable] = useState(false);
   const [editEntryNote, setEditEntryNote] = useState("");
+  const [editEntryReason, setEditEntryReason] = useState("");
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
+  const [editRequestSentFor, setEditRequestSentFor] = useState<string | null>(null);
 
   useEffect(() => {
     if (!showLogForm || workingHours) return;
@@ -2802,18 +2894,28 @@ function startEditEntry(entry: TaskTimeEntry) {
     setEditEntryActivity(entry.activityType);
     setEditEntryBillable(entry.billable);
     setEditEntryNote(entry.note ?? "");
+    setEditEntryReason("");
     setEditError(null);
     setEditingEntryId(entry.id);
   }
 
+  // Editing your OWN entry never writes directly — it always submits a change request that
+  // routes to your team lead, so the estimate/tracked-time totals the Resource Planner relies on
+  // never move until someone with authority approves it. Editing someone else's entry (as a
+  // TL/PM/admin with edit access) still saves immediately, exactly as before.
   async function saveEditEntry() {
-    if (!canEdit || !editingEntryId) return;
+    if (!editingEntryId) return;
+    const entry = entries.find((candidate) => candidate.id === editingEntryId);
+    if (!entry) return;
+    const isOwnEntry = entry.userId === currentUserId;
+    if (!isOwnEntry && !canEdit) return;
     const hours = Math.max(0, Math.floor(Number(editEntryHours || 0)));
     const minutes = Math.max(0, Math.floor(Number(editEntryMinutes || 0)));
     const durationMinutes = hours * 60 + minutes;
     if (durationMinutes <= 0) { setEditError("Duration must be greater than 0"); return; }
     if (!editEntryActivity) { setEditError("Please select an activity"); return; }
     if (!editEntryNote.trim()) { setEditError("Please add a description"); return; }
+    if (isOwnEntry && !editEntryReason.trim()) { setEditError("Please explain why you're requesting this change"); return; }
     setEditSaving(true);
     setEditError(null);
     try {
@@ -2822,13 +2924,19 @@ function startEditEntry(entry: TaskTimeEntry) {
         activityType: editEntryActivity,
         billable: editEntryBillable,
         note: editEntryNote.trim(),
+        ...(isOwnEntry ? { reason: editEntryReason.trim() } : {}),
       });
-      const nextEntries = entries.map((entry) => entry.id === result.entry.id ? result.entry : entry);
-      setEntries(nextEntries);
-      setTrackedSeconds(result.taskTrackedSeconds);
-      onTaskChanged({ ...currentTask, trackedSeconds: result.taskTrackedSeconds, timeEntries: nextEntries });
-      if (result.entry.projectId === projectId) onProjectTimeChanged(result.projectTrackedSeconds);
-      setEditingEntryId(null);
+      if (result.pending) {
+        setEditingEntryId(null);
+        setEditRequestSentFor(entry.id);
+      } else {
+        const nextEntries = entries.map((candidate) => candidate.id === result.entry.id ? result.entry : candidate);
+        setEntries(nextEntries);
+        setTrackedSeconds(result.taskTrackedSeconds);
+        onTaskChanged({ ...currentTask, trackedSeconds: result.taskTrackedSeconds, timeEntries: nextEntries });
+        if (result.entry.projectId === projectId) onProjectTimeChanged(result.projectTrackedSeconds);
+        setEditingEntryId(null);
+      }
     } catch (err) {
       setEditError(err instanceof ApiError ? err.message : "Work log could not be updated");
     } finally {
@@ -3122,6 +3230,22 @@ function startEditEntry(entry: TaskTimeEntry) {
                   {localTask.status !== "done" && localTask.estimatedMinutes === 0 && !scheduleDirty && (
                     <p className="text-xs font-medium text-warning-700">No estimate — this task won't appear in the Resource Planner until it has one.</p>
                   )}
+                  {(() => {
+                    const resolved = reestimateRequests.find((request) => request.status === "resolved" && request.approvedEstimatedMinutes);
+                    return resolved ? (
+                      <p className="text-xs text-ink-500">
+                        Originally estimated {formatMinutes(resolved.previousEstimatedMinutes)} — now {formatMinutes(resolved.approvedEstimatedMinutes as number)} (re-estimated on request)
+                      </p>
+                    ) : null;
+                  })()}
+                  {!canEditSchedule && localTask.assigneeId === currentUserId && (
+                    <ReestimateRequestPanel
+                      projectId={projectId}
+                      taskId={localTask.id}
+                      pendingRequest={reestimateRequests.find((request) => request.status === "pending_review") ?? null}
+                      onRequested={() => { api.listTaskReestimateRequests(projectId, localTask.id).then((result) => setReestimateRequests(result.requests)).catch(() => undefined); }}
+                    />
+                  )}
                   {scheduleError && <p className="text-xs font-medium text-danger-600">{scheduleError}</p>}
                   {canEditSchedule && (
                     <div className="flex justify-end">
@@ -3241,19 +3365,24 @@ function startEditEntry(entry: TaskTimeEntry) {
                 )}
 {entries.length === 0 ? <p>No work logs recorded yet.</p> : entries.map((entry) => {
                   const isEditing = editingEntryId === entry.id;
+                  const isOwnEntry = entry.userId === currentUserId;
+                  const canOpenEdit = entry.endedAt && (canEdit || isOwnEntry);
                   return (
                     <Card key={entry.id} className="p-3">
                       <div className="flex justify-between">
                         <b>{entry.user.name}</b>
                         <span className="flex items-center gap-2">
                           <span className="font-mono">{entry.endedAt ? formatSeconds(entry.durationSeconds) : "Running"}</span>
-                          {canEdit && entry.endedAt && !isEditing && (
+                          {canOpenEdit && !isEditing && (
                             <button type="button" onClick={() => startEditEntry(entry)} title="Edit work log" className="rounded p-1 text-ink-400 hover:bg-ink-100 hover:text-ink-900"><Pencil size={13} /></button>
                           )}
                         </span>
                       </div>
                       <p className="mt-1 text-xs text-ink-500">{entry.activityType} · {entry.billable ? "Billable" : "Non-billable"} · {formatDateTime(entry.startedAt, timezone)}{entry.endedAt ? ` – ${formatTimeOnly(entry.endedAt, timezone)}` : ""}</p>
                       {entry.note && !isEditing && <p className="mt-2 text-xs">{entry.note}</p>}
+                      {editRequestSentFor === entry.id && (
+                        <p className="mt-2 rounded-md bg-warning-50 px-2 py-1.5 text-xs text-warning-700">Change request sent — awaiting your team lead's approval.</p>
+                      )}
                       {isEditing && (
                         <div className="mt-3 space-y-2 rounded-lg border border-ink-200 bg-surface-subtle p-3">
                           <p className="text-xs font-semibold text-ink-900">Edit work log</p>
@@ -3278,10 +3407,13 @@ function startEditEntry(entry: TaskTimeEntry) {
                             options={[{ value: "non_billable", label: "Non-billable" }, { value: "billable", label: "Billable" }]}
                           />
                           <Textarea value={editEntryNote} onChange={(event) => setEditEntryNote(event.target.value)} rows={2} placeholder="What did you work on?" />
+                          {isOwnEntry && (
+                            <Textarea value={editEntryReason} onChange={(event) => setEditEntryReason(event.target.value)} rows={2} placeholder="Why are you requesting this change? (required)" />
+                          )}
                           {editError && <p className="text-xs text-danger-600">{editError}</p>}
                           <div className="flex justify-end gap-2">
                             <Button size="sm" variant="outline" onClick={() => { setEditingEntryId(null); setEditError(null); }} disabled={editSaving}>Cancel</Button>
-                            <Button size="sm" onClick={saveEditEntry} disabled={editSaving}>{editSaving ? "Saving…" : "Save"}</Button>
+                            <Button size="sm" onClick={saveEditEntry} disabled={editSaving}>{editSaving ? "Saving…" : isOwnEntry ? "Send request" : "Save"}</Button>
                           </div>
                         </div>
                       )}

@@ -6,6 +6,7 @@ import { requireAuth, requireCompany, requirePermission } from "../middleware/au
 import type { AuthTokenPayload } from "../lib/jwt.js";
 import { createNotification } from "../lib/chat.js";
 import { flagNewlyOverdueTasks, resolveOverdueApprover } from "../lib/overdueReview.js";
+import { autoPlanIfUrgentSameDay } from "../lib/urgentAutoPlan.js";
 
 export const resourcesRouter = Router();
 resourcesRouter.use(requireAuth, requireCompany);
@@ -298,8 +299,11 @@ async function buildDayDetail(tid: string, employee: { id: string; name: string;
       // Per-task overrun: how much of today's tracked time on this task exceeded what was
       // planned for it today. Mirrors the day-level extraPlannedSeconds but scoped to one task,
       // so overrunning one task while staying on-plan on the rest is visible per task, not just
-      // blended into the day's aggregate "extra" number.
-      extraTrackedSeconds: Math.max(0, todayTrackedSeconds - plannedMinutes * 60),
+      // blended into the day's aggregate "extra" number. Only meaningful when there WAS a plan —
+      // a task with 0h planned that gets worked on isn't "over plan," there's simply no plan to
+      // be over, so it reports 0 extra rather than counting all of today's tracked time as
+      // "overrun" (which would misleadingly read as an overrun badge on totally unplanned work).
+      extraTrackedSeconds: plannedMinutes > 0 ? Math.max(0, todayTrackedSeconds - plannedMinutes * 60) : 0,
       hasExplicitAllocation: Boolean(explicit),
       allocationNote: explicit?.note ?? null,
       isLocked: isSameDayUrgent || isCarriedForward,
@@ -371,6 +375,14 @@ async function carryForwardRemainingToDueDate(
 ) {
   const taskById = new Map(tasks.map((task) => [task.id, task]));
   for (const row of allocations) {
+    // The frontend resubmits every editable own-task shown for the day on every save, not just
+    // the ones the person actually changed — so a task the person never intended to plan today
+    // still arrives here with plannedMinutes: 0. Without this guard, that incidental 0 would read
+    // as "0h planned today, so the ENTIRE remaining estimate is leftover," dumping and locking a
+    // multi-day task's full estimate onto its due date the moment anyone edits a different task's
+    // hours on any day before it. Only a task the person deliberately gave a nonzero plan today
+    // can have a genuine "leftover after today" to carry forward.
+    if (row.plannedMinutes <= 0) continue;
     const task = taskById.get(row.taskId);
     if (!task || !task.dueDate) continue;
     const dueKey = localDateKey(task.dueDate, timezone);
@@ -592,6 +604,13 @@ resourcesRouter.post("/overdue-reviews/:reviewId/resolve", requirePermission("ta
       projectId: review.task.projectId,
       actorId: uid,
     });
+  }
+  // A resolution can reschedule/re-estimate/reassign a task into a fresh same-day-urgent state
+  // (e.g. rescheduled to a new single day going forward) — re-check exactly like every other
+  // estimate/date/assignee mutation does, rather than leaving this path as a silent exception.
+  if (newEstimatedMinutes !== undefined || newDueDate !== undefined || newAssigneeId !== undefined) {
+    const resolvedTask = await prisma.projectTask.findUnique({ where: { id: review.taskId } });
+    if (resolvedTask) await autoPlanIfUrgentSameDay(tid, req.auth!, resolvedTask);
   }
   res.json({ review: updatedReview });
 });

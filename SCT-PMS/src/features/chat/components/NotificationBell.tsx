@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, type NavigateFunction } from "react-router-dom";
-import { AlertTriangle, AtSign, Bell, BellRing, CheckCircle2, List, Megaphone, MessageCircle, UserPlus } from "lucide-react";
+import { AlertTriangle, AtSign, Bell, BellRing, CheckCircle2, Clock, List, Megaphone, MessageCircle, UserPlus } from "lucide-react";
 import { api } from "@/lib/api";
 import { getChatSocket } from "@/lib/chatSocket";
 import {
@@ -23,6 +23,10 @@ const typeIcons: Record<NotificationType, React.ReactNode> = {
   task_overdue_review: <AlertTriangle size={14} className="text-danger-600" />,
   task_review_resolved: <CheckCircle2 size={14} className="text-success-600" />,
   task_assigned: <List size={14} className="text-blue-600" />,
+  task_reestimate_request: <Clock size={14} className="text-warning-600" />,
+  task_reestimate_resolved: <CheckCircle2 size={14} className="text-success-600" />,
+  task_timelog_change_request: <Clock size={14} className="text-warning-600" />,
+  task_timelog_change_resolved: <CheckCircle2 size={14} className="text-success-600" />,
 };
 
 /** Sends the user to whatever the notification is actually about — a chat message/mention
