@@ -3,6 +3,10 @@ import { recordAudit } from "./audit.js";
 import type { AuthTokenPayload } from "./jwt.js";
 
 const urgentAutoPlanNote = "Auto-planned: urgent same-day task";
+/** Mirrors carryForwardNote in routes/resources.ts — kept as a literal copy rather than a shared
+ *  import to avoid a routes -> lib -> routes circular import; both sides must stay in sync if
+ *  this string ever changes. */
+export const carryForwardNote = "Auto-planned: remaining hours carried to due date";
 
 /** Mirrors localDateKey in routes/resources.ts — a task's/day's date expressed as the company's
  *  own local calendar day (YYYY-MM-DD), not the server process's timezone. */
@@ -71,6 +75,23 @@ export async function autoPlanIfUrgentSameDay(
       userId: task.assigneeId,
       note: urgentAutoPlanNote,
       ...(isSingleDay ? { date: { not: new Date(`${startKey}T00:00:00.000Z`) } } : {}),
+    },
+  });
+
+  // Same problem, different mechanism: carryForwardRemainingToDueDate (routes/resources.ts)
+  // locks a leftover-hours row onto a task's due date once a plan for an earlier day is saved.
+  // If the task's due date is later moved, that row stays locked on the OLD due date forever —
+  // this is the systemic version of the bug already fixed once for urgentAutoPlanNote rows above;
+  // both allocation-locking mechanisms need the same "reschedule releases the old lock" cleanup,
+  // not just the same-day one. Delete any carry-forward row that isn't the task's current due
+  // date (or delete all of them if the task no longer has a due date at all).
+  await prisma.taskDailyAllocation.deleteMany({
+    where: {
+      tenantId: tid,
+      taskId: task.id,
+      userId: task.assigneeId,
+      note: carryForwardNote,
+      ...(dueKey ? { date: { not: new Date(`${dueKey}T00:00:00.000Z`) } } : {}),
     },
   });
 

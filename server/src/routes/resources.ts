@@ -6,7 +6,7 @@ import { requireAuth, requireCompany, requirePermission } from "../middleware/au
 import type { AuthTokenPayload } from "../lib/jwt.js";
 import { createNotification } from "../lib/chat.js";
 import { flagNewlyOverdueTasks, resolveOverdueApprover } from "../lib/overdueReview.js";
-import { autoPlanIfUrgentSameDay } from "../lib/urgentAutoPlan.js";
+import { autoPlanIfUrgentSameDay, carryForwardNote } from "../lib/urgentAutoPlan.js";
 
 export const resourcesRouter = Router();
 resourcesRouter.use(requireAuth, requireCompany);
@@ -89,10 +89,6 @@ function durationSeconds(entry: { durationSeconds: number; startedAt: Date; ende
 function remainingMinutesFor(task: { estimatedMinutes: number; trackedSeconds: number }) {
   return Math.max(0, task.estimatedMinutes - Math.round(task.trackedSeconds / 60));
 }
-
-/** Marks a TaskDailyAllocation row as system-written by carryForwardRemainingToDueDate, so
- *  buildDayDetail can tell it apart from a manually-set allocation and lock it from editing. */
-const carryForwardNote = "Auto-planned: remaining hours carried to due date";
 
 
 const plannerQuery = z.object({
@@ -250,10 +246,16 @@ async function buildDayDetail(tid: string, employee: { id: string; name: string;
   // same-day-urgent task (or any task whose due date has come and gone) keeps reappearing as a
   // fresh, plannable row on every later day's panel forever, which both misrepresents its status
   // and lets someone re-plan hours for a task that should have gone to overdue review instead.
+  // Tasks without an estimate still need to show up once their start date arrives so the user can
+  // see and schedule them for the appropriate day.
   const relevantTasks = tasks.filter((task) => {
     const dueKey = task.dueDate ? localDateKey(task.dueDate, company.timezone) : null;
+    const startKey = task.startDate ? localDateKey(task.startDate, company.timezone) : null;
     const isWithinDueWindow = !dueKey || dueKey >= date;
-    return (task.status !== "done" && task.overdueReviewStatus === null && isWithinDueWindow && remainingMinutesFor(task) > 0) ||
+    const isWithinStartWindow = !startKey || startKey <= date;
+    const isReasonablyVisible = isWithinDueWindow && isWithinStartWindow;
+    const isUnestimatedStartTask = task.estimatedMinutes === 0 && Boolean(startKey) && isReasonablyVisible;
+    return (task.status !== "done" && task.overdueReviewStatus === null && isReasonablyVisible && (remainingMinutesFor(task) > 0 || isUnestimatedStartTask)) ||
       loggedTaskIds.has(task.id) ||
       allocationByTaskId.has(task.id);
   });

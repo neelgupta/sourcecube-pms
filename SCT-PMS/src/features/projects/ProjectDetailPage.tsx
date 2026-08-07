@@ -84,6 +84,14 @@ import type {
   TaskReestimateRequest,
   WorkspaceTask,
 } from "@/types/tenant";
+import { groupByOptionLabels, groupTasks, type GroupByOption as TaskGroupByOption } from "@/features/tasks/taskGrouping";
+
+/** The project List view keeps its existing default (real, drag-and-drop-orderable
+ *  ProjectSection records) as its own distinct grouping option, alongside the same
+ *  Status/Dates/Priority/Developer options the standalone Tasks page offers — "section" isn't
+ *  part of the shared GroupByOption union since it's specific to project-scoped task lists. */
+type GroupByOption = "section" | TaskGroupByOption;
+const projectGroupByLabels: Record<GroupByOption, string> = { section: "Section (default)", ...groupByOptionLabels };
 
 type ViewId =
   | "dashboard"
@@ -242,6 +250,7 @@ export function ProjectDetailPage() {
   const [filterLoading, setFilterLoading] = useState(false);
   const [filterRevision, setFilterRevision] = useState(0);
   const [collapseSubtasks, setCollapseSubtasks] = useState(true);
+  const [groupBy, setGroupBy] = useState<GroupByOption>("section");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [memberDrawer, setMemberDrawer] = useState(false);
@@ -568,6 +577,8 @@ const isEmployeeOnly = session?.user.kind === "company" && session.user.roles.ev
             const first = sections[0];
             if (first) document.getElementById(`add-task-${first.id}`)?.focus();
           }}
+          groupBy={groupBy}
+          onGroupByChange={setGroupBy}
         />
       )}
 
@@ -586,6 +597,7 @@ const isEmployeeOnly = session?.user.kind === "company" && session.user.roles.ev
             onProjectTimeChanged={syncProjectTrackedSeconds}
             onSelectTask={setSelectedTask}
             collapseSubtasks={collapseSubtasks}
+            groupBy={groupBy}
           />
         )}
         {activeView === "kanban" && (
@@ -686,6 +698,8 @@ function WorkspaceToolbar({
   resultCount,
   canCreateTask,
   onAddTask,
+  groupBy,
+  onGroupByChange,
 }: {
   search: string;
   onSearch: (value: string) => void;
@@ -702,6 +716,8 @@ function WorkspaceToolbar({
   resultCount: number;
   canCreateTask: boolean;
   onAddTask: () => void;
+  groupBy: GroupByOption;
+  onGroupByChange: (value: GroupByOption) => void;
 }) {
   const activeCount = Object.values(filters).filter((value) => value !== undefined && value !== "" && value !== false).length;
   const update = <K extends keyof ProjectTaskFilters>(key: K, value: ProjectTaskFilters[K] | undefined) => {
@@ -736,7 +752,12 @@ function WorkspaceToolbar({
         </div>
       </div>
       <div className="flex items-center gap-2 overflow-x-auto border-t border-ink-100 px-4 py-2 scrollbar-none">
-        <button className="shrink-0 rounded-md border border-brand-200 bg-brand-50 px-3 py-1.5 text-xs text-brand-700">Group By: Section (default)</button>
+        <FilterSelect
+          value={groupBy}
+          onChange={(value) => onGroupByChange(value as GroupByOption)}
+          options={(Object.keys(projectGroupByLabels) as GroupByOption[]).map((option) => ({ value: option, label: `Group by: ${projectGroupByLabels[option]}` }))}
+          className="w-44 shrink-0 [&_button]:h-8 [&_button]:rounded-md [&_button]:text-xs"
+        />
         <button onClick={onCollapseSubtasks} className={cn("shrink-0 rounded-md border px-3 py-1.5 text-xs", collapseSubtasks ? "border-brand-200 bg-brand-50 text-brand-700" : "border-ink-200 bg-white text-ink-600")}>Subtasks: {collapseSubtasks ? "Collapse all" : "Expanded"}</button>
         <button onClick={() => update("incomplete", filters.incomplete ? undefined : true)} className={cn("shrink-0 rounded-md border px-3 py-1.5 text-xs", filters.incomplete ? "border-brand-300 bg-brand-50 text-brand-700" : "border-ink-200 bg-white text-ink-600")}>Incomplete Tasks</button>
         <button onClick={() => update("estimated", filters.estimated ? undefined : "unestimated")} title="Tasks with no estimate won't appear in the Resource Planner" className={cn("shrink-0 rounded-md border px-3 py-1.5 text-xs", filters.estimated ? "border-warning-300 bg-warning-50 text-warning-700" : "border-ink-200 bg-white text-ink-600")}>No Estimate</button>
@@ -777,6 +798,7 @@ function TaskListWorkspace({
   onProjectTimeChanged,
   onSelectTask,
   collapseSubtasks,
+  groupBy,
 }: {
   projectId: string;
   sections: ProjectSection[];
@@ -789,6 +811,7 @@ function TaskListWorkspace({
   onProjectTimeChanged: (trackedSeconds: number) => void;
   onSelectTask: (task: WorkspaceTask) => void;
   collapseSubtasks: boolean;
+  groupBy: GroupByOption;
 }) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [collapsedTasks, setCollapsedTasks] = useState<Record<string, boolean>>({});
@@ -987,6 +1010,18 @@ function TaskListWorkspace({
 
   const headers = ["Task Name", "Assignee", "Due Date", "Task Type", "Milestone", "Task Status", "Tags", "Estimation Hours", "Work Logs"];
 
+  // Section is the only grouping backed by a real, independently-orderable DB record — every
+  // other option (Status/Dates/Priority/Developer) is a purely client-side view over the same
+  // flat task list, so it renders read-only: no drag handle, no drop target, and no inline
+  // "Add Task" row (which requires a real sectionId to create into). Per-cell inline edits
+  // (assignee/due date/status/etc, all independent of which group a task visually sits in) still
+  // work in every grouping since they only ever call patchTask(task.id, ...), never anything
+  // section-scoped.
+  const isSectionGrouping = groupBy === "section";
+  const displayGroups = isSectionGrouping
+    ? sections.map((section) => ({ id: section.id, name: section.name, owner: section.owner, tasks: section.tasks }))
+    : groupTasks(sections.flatMap((section) => section.tasks), groupBy).map((group) => ({ id: group.key, name: group.label, owner: null, tasks: group.tasks }));
+
   return (
     <>
     <div className="h-full overflow-auto bg-white">
@@ -1026,29 +1061,31 @@ function TaskListWorkspace({
           </tr>
         </thead>
         <tbody>
-          {sections.map((section) => (
+          {displayGroups.map((section) => (
             <Fragment key={section.id}>
               <tr
-                onDragOver={(event) => { if (draggingTask && canEditTask(draggingTask)) { event.preventDefault(); setDragOverSection(section.id); } }}
+                onDragOver={(event) => { if (isSectionGrouping && draggingTask && canEditTask(draggingTask)) { event.preventDefault(); setDragOverSection(section.id); } }}
                 onDragLeave={() => setDragOverSection((current) => (current === section.id ? null : current))}
-                onDrop={(event) => { event.preventDefault(); moveTask(section.id); }}
+                onDrop={(event) => { if (isSectionGrouping) { event.preventDefault(); moveTask(section.id); } }}
                 className={cn("border-b border-ink-200 bg-surface-muted transition-colors", dragOverSection === section.id && "bg-brand-50/60")}
               >
                 <td className="border-r border-ink-200 px-3 py-2.5" />
                 <td colSpan={headers.length} className="px-3 py-2.5">
                   <div className="flex items-center gap-2">
-                    <GripVertical size={15} className="text-ink-400" />
+                    {isSectionGrouping && <GripVertical size={15} className="text-ink-400" />}
                     <button onClick={() => setCollapsed((value) => ({ ...value, [section.id]: !value[section.id] }))}>
                       {collapsed[section.id] ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
                     </button>
                     <span className="font-semibold text-ink-900">{section.name}</span>
                     <span className="text-xs text-ink-400">({section.tasks.length})</span>
-                    <button className="rounded border border-ink-200 bg-white p-0.5 text-ink-500"><Plus size={13} /></button>
-                    <MoreHorizontal size={16} className="text-ink-500" />
+                    {isSectionGrouping && <button className="rounded border border-ink-200 bg-white p-0.5 text-ink-500"><Plus size={13} /></button>}
+                    {isSectionGrouping && <MoreHorizontal size={16} className="text-ink-500" />}
+                    {isSectionGrouping && (
                     <div className="ml-auto flex items-center gap-2 text-xs font-medium text-ink-700">
                       Section Owner:
                       {section.owner ? <MemberAvatar id={section.owner.id} name={section.owner.name} size="xs" status={section.owner.accountStatus === "active" ? "active" : "inactive"} /> : <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white"><UserPlus size={12} /></span>}
                     </div>
+                    )}
                   </div>
                 </td>
               </tr>
@@ -1056,8 +1093,8 @@ function TaskListWorkspace({
                 <Fragment key={task.id}>
                 <tr
                   onClick={() => onSelectTask(task)}
-                  onDragOver={(event) => { if (draggingTask && canDragTask(draggingTask)) { event.preventDefault(); setDragOverSection(section.id); } }}
-                  onDrop={(event) => { event.preventDefault(); moveTask(section.id); }}
+                  onDragOver={(event) => { if (isSectionGrouping && draggingTask && canDragTask(draggingTask)) { event.preventDefault(); setDragOverSection(section.id); } }}
+                  onDrop={(event) => { if (isSectionGrouping) { event.preventDefault(); moveTask(section.id); } }}
                   className={cn("cursor-pointer border-b border-ink-100 hover:bg-brand-50/30", draggingTask?.id === task.id && "opacity-50")}
                 >
                   <td className="border-r border-ink-200 px-3 py-2.5" onClick={(event) => event.stopPropagation()}>
@@ -1065,6 +1102,7 @@ function TaskListWorkspace({
                   </td>
                   <td className="px-3 py-2.5">
                     <div className="flex items-center gap-2" style={{ paddingLeft: `${depth * 28}px` }}>
+                      {isSectionGrouping && (
                       <span
                         draggable={canDragTask(task)}
                         onDragStart={(event) => { event.stopPropagation(); if (canDragTask(task)) setDraggingTask(task); }}
@@ -1075,6 +1113,7 @@ function TaskListWorkspace({
                       >
                         <GripVertical size={14} />
                       </span>
+                      )}
                       <span className="w-12 text-right text-xs text-ink-500">{displayCode}</span>
                       {childCount > 0 ? <button onClick={(event) => { event.stopPropagation(); setCollapsedTasks((value) => ({ ...value, [task.id]: !value[task.id] })); }} className="rounded bg-ink-100 p-0.5">{collapsedTasks[task.id] ? <ChevronRight size={12} /> : <ChevronDown size={12} />}</button> : <span className="w-4" />}
                       <CheckCircle2 size={16} className={task.status === "done" ? "text-success-500" : "text-ink-400"} />
@@ -1083,7 +1122,7 @@ function TaskListWorkspace({
                         <span title="No estimate — won't appear in the Resource Planner until an estimate is set" className="whitespace-nowrap rounded bg-warning-50 px-1.5 py-0.5 text-[10px] font-medium text-warning-700">No estimate</span>
                       )}
                       {childCount > 0 && <span className="rounded bg-ink-100 px-1.5 py-0.5 text-[10px] text-ink-600">{childCount} subtask{childCount === 1 ? "" : "s"}</span>}
-                      {canCreate && <button title="Add subtask" onClick={(event) => { event.stopPropagation(); setSubtaskParent(task.id); setCollapsedTasks((value) => ({ ...value, [task.id]: false })); }} className="rounded p-1 text-ink-400 hover:bg-brand-50 hover:text-brand-600"><Plus size={13} /></button>}
+                      {isSectionGrouping && canCreate && <button title="Add subtask" onClick={(event) => { event.stopPropagation(); setSubtaskParent(task.id); setCollapsedTasks((value) => ({ ...value, [task.id]: false })); }} className="rounded p-1 text-ink-400 hover:bg-brand-50 hover:text-brand-600"><Plus size={13} /></button>}
                     </div>
                   </td>
                   <td className="px-3 py-2.5" onClick={(event) => event.stopPropagation()}>
@@ -1162,12 +1201,12 @@ function TaskListWorkspace({
                     />
                   </td>
                 </tr>
-                {subtaskParent === task.id && (
+                {isSectionGrouping && subtaskParent === task.id && (
                   <tr className="border-b border-ink-100 bg-brand-50/20">
                     <td colSpan={headers.length + 1} className="py-2 pr-4" style={{ paddingLeft: `${92 + (depth + 1) * 28}px` }}>
                       <div className="flex max-w-xl items-center gap-2">
                         <span className="text-xs text-ink-400">↳</span>
-                        <input autoFocus value={drafts[`sub-${task.id}`] ?? ""} onChange={(event) => setDrafts((value) => ({ ...value, [`sub-${task.id}`]: event.target.value }))} onKeyDown={(event) => { if (event.key === "Enter") addTask(section, task.id); if (event.key === "Escape") setSubtaskParent(null); }} placeholder={`Add subtask under ${task.name}`} className="h-8 flex-1 rounded-md border border-ink-200 bg-white px-3 text-sm outline-none focus:border-brand-500" />
+                        <input autoFocus value={drafts[`sub-${task.id}`] ?? ""} onChange={(event) => setDrafts((value) => ({ ...value, [`sub-${task.id}`]: event.target.value }))} onKeyDown={(event) => { if (event.key === "Enter") addTask(section as ProjectSection, task.id); if (event.key === "Escape") setSubtaskParent(null); }} placeholder={`Add subtask under ${task.name}`} className="h-8 flex-1 rounded-md border border-ink-200 bg-white px-3 text-sm outline-none focus:border-brand-500" />
                         <FilterSelect
                           value={draftPriorities[`sub-${task.id}`] ?? "medium"}
                           onChange={(value) => setDraftPriorities((current) => ({ ...current, [`sub-${task.id}`]: value as ProjectPriority }))}
@@ -1179,7 +1218,7 @@ function TaskListWorkspace({
                             { value: "critical", label: "Critical" },
                           ]}
                         />
-                        <Button size="sm" onClick={() => addTask(section, task.id)} disabled={saving === `sub-${task.id}`}>Add Subtask</Button>
+                        <Button size="sm" onClick={() => addTask(section as ProjectSection, task.id)} disabled={saving === `sub-${task.id}`}>Add Subtask</Button>
                         <button onClick={() => setSubtaskParent(null)} className="p-1 text-ink-400"><X size={14} /></button>
                       </div>
                     </td>
@@ -1187,7 +1226,7 @@ function TaskListWorkspace({
                 )}
                 </Fragment>
               ))}
-              {!collapsed[section.id] && canCreate && (
+              {isSectionGrouping && !collapsed[section.id] && canCreate && (
                 <tr className="border-b border-ink-100">
                   <td colSpan={headers.length + 1} className="px-4 py-2">
                     <div className="flex max-w-lg items-center gap-2">
@@ -1196,7 +1235,7 @@ function TaskListWorkspace({
                         id={`add-task-${section.id}`}
                         value={drafts[section.id] ?? ""}
                         onChange={(event) => setDrafts((value) => ({ ...value, [section.id]: event.target.value }))}
-                        onKeyDown={(event) => event.key === "Enter" && addTask(section)}
+                        onKeyDown={(event) => event.key === "Enter" && addTask(section as ProjectSection)}
                         placeholder="Add Task"
                         className="h-8 flex-1 bg-transparent text-sm outline-none placeholder:text-ink-500"
                       />
@@ -1213,7 +1252,7 @@ function TaskListWorkspace({
                           ]}
                         />
                       )}
-                      {drafts[section.id] && <Button size="sm" onClick={() => addTask(section)} disabled={saving === section.id}>Add</Button>}
+                      {drafts[section.id] && <Button size="sm" onClick={() => addTask(section as ProjectSection)} disabled={saving === section.id}>Add</Button>}
                     </div>
                   </td>
                 </tr>
