@@ -538,7 +538,7 @@ export interface RealProject {
   remindersEnabled: boolean;
   trackedSeconds: number;
   managerId?: ID | null;
-  manager?: TeamMemberSummary | null;
+manager?: TeamMemberSummary | null;
   ownerId?: ID | null;
   owner?: TeamMemberSummary | null;
   departmentId?: ID | null;
@@ -547,6 +547,9 @@ export interface RealProject {
   currentUserAccess?: "view" | "edit" | "manage" | null;
   isArchived: boolean;
   createdAt: string;
+  /** Most recent activity across the project and its children (tasks, time logs, milestones,
+   *  events) — used by the Projects page to surface "projects not worked on in the last week". */
+  lastActivityAt?: string | null;
   taskCount: number;
   completedTaskCount: number;
 }

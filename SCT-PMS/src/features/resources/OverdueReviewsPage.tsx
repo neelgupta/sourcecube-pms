@@ -7,6 +7,7 @@ import { projectWorkspacePath } from "@/features/projects/projectRoutes";
 import { formatDateOnly, formatDateTime } from "@/lib/formatDate";
 import { useCompanyTimezone } from "@/lib/session";
 import type { CompanyUser, TaskOverdueReview, TaskReestimateRequest, TaskTimeEntryChangeRequest } from "@/types/tenant";
+import { notifyApprovalsChanged } from "./usePendingApprovalsCount";
 
 function hoursFromMinutes(minutes: number) {
   return (minutes / 60).toFixed(1).replace(/\.0$/, "");
@@ -219,6 +220,10 @@ export function OverdueReviewsPage() {
         setReestimateRequests(reestimates);
         setTimelogRequests(timelogs);
         setError(null);
+        // Correct the sidebar badge to match this page's authoritative fetch — covers the case
+        // where the badge went stale (e.g. resolved in another tab/session) and the person opens
+        // this page directly rather than via the notification/badge itself.
+        notifyApprovalsChanged();
       })
       .catch((err) => setError(err instanceof ApiError ? err.message : "Approvals could not be loaded"))
       .finally(() => setLoading(false));
@@ -232,12 +237,15 @@ export function OverdueReviewsPage() {
 
   function onResolved(review: TaskOverdueReview) {
     setReviews((current) => current.filter((row) => row.id !== review.id));
+    notifyApprovalsChanged();
   }
   function onReestimateResolved(requestId: string) {
     setReestimateRequests((current) => current.filter((row) => row.id !== requestId));
+    notifyApprovalsChanged();
   }
   function onTimelogResolved(requestId: string) {
     setTimelogRequests((current) => current.filter((row) => row.id !== requestId));
+    notifyApprovalsChanged();
   }
 
   const totalPending = reviews.length + reestimateRequests.length + timelogRequests.length;

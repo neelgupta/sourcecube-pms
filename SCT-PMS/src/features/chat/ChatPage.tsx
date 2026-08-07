@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Users } from "lucide-react";
 import { api } from "@/lib/api";
+import { cn } from "@/lib/cn";
 import { usePermission, useSession } from "@/lib/session";
 import type { ChatChannel, ChatUser } from "@/types/tenant";
 import { useChatData } from "./useChatData";
@@ -19,6 +20,11 @@ export function ChatPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedChannelId = searchParams.get("channel");
   const [activeChannelId, setActiveChannelId] = useState<string | null>(requestedChannelId);
+  // Distinguishes "nothing selected yet on initial load" (auto-select the first channel) from
+  // "the person tapped Back on a narrow screen to return to the channel list" (respect that
+  // choice) — both states look identical as activeChannelId === null, so without this flag the
+  // auto-select effect below immediately re-opened the very thread Back was meant to leave.
+  const [deselected, setDeselected] = useState(false);
   const { channels, loading, error, currentUserId, onlineUserIds, reloadChannels, clearUnread, createChannel, updateChannel, setChannelFavorite } = useChatData(activeChannelId);
   const [showDirectory, setShowDirectory] = useState(false);
   const [showNewChannel, setShowNewChannel] = useState(false);
@@ -40,14 +46,15 @@ export function ChatPage() {
   }, [requestedChannelId]);
 
   useEffect(() => {
-    if (!activeChannelId && channels.length > 0) selectChannel(channels[0]);
+    if (!activeChannelId && !deselected && channels.length > 0) selectChannel(channels[0]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [channels, activeChannelId]);
+  }, [channels, activeChannelId, deselected]);
 
   const activeChannel: ChatChannel | undefined = channels.find((channel) => channel.id === activeChannelId);
 
   function selectChannel(channel: ChatChannel) {
     setShowDirectory(false);
+    setDeselected(false);
     setActiveChannelId(channel.id);
     if (requestedChannelId) setSearchParams((params) => { params.delete("channel"); return params; }, { replace: true });
   }
@@ -62,6 +69,13 @@ export function ChatPage() {
     return <div className="flex h-full items-center justify-center text-sm text-ink-500">Loading chat…</div>;
   }
 
+  // Below md, the 88px main sidebar plus this 288px channel list left almost no room for the
+  // thread itself (single words were wrapping one letter per line) — there was no responsive
+  // handling at all, both panels stayed put regardless of viewport width. Now, on narrow screens,
+  // exactly one of {channel list, active thread/directory} shows at a time: the list is visible
+  // only when nothing is selected, and picking a channel (or Back in MessageThread's header)
+  // toggles which one is shown. At md+ both panels sit side by side as before.
+  const showThreadPane = showDirectory || Boolean(activeChannel);
   return (
     <div className="flex h-full min-h-0 bg-white">
       <ChannelList
@@ -73,9 +87,10 @@ export function ChatPage() {
         onSelect={selectChannel}
         onCreateNew={() => setShowNewChannel(true)}
         onToggleFavorite={setChannelFavorite}
+        className={cn(showThreadPane && "hidden md:flex")}
       />
 
-      <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
+      <div className={cn("h-full min-h-0 min-w-0 flex-1 flex-col", showThreadPane ? "flex" : "hidden md:flex")}>
         <div className="flex items-center gap-1 border-b border-ink-200 px-3 py-1.5">
           <button
             onClick={() => setShowDirectory(true)}
@@ -100,6 +115,7 @@ export function ChatPage() {
             onlineUserIds={onlineUserIds}
             onChannelUpdated={updateChannel}
             onRead={clearUnread}
+            onBack={() => { setDeselected(true); setActiveChannelId(null); }}
           />
         ) : (
           <div className="flex flex-1 items-center justify-center text-sm text-ink-500">

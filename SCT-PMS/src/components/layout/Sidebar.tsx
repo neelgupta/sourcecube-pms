@@ -17,13 +17,13 @@ import {
   Users,
   Users2,
   // Workflow,
-  X,
 } from "lucide-react";
 import { LogoMark } from "@/components/common/Logo";
 import { cn } from "@/lib/cn";
 import { useSession } from "@/lib/session";
 import { hasPermission, type Action, type Module } from "@/lib/permissions";
 import { useUnreadChatCount } from "@/features/chat/useUnreadChatCount";
+import { usePendingApprovalsCount } from "@/features/resources/usePendingApprovalsCount";
 
 interface NavItem {
   to: string;
@@ -63,6 +63,8 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
   const { session } = useSession();
   const canUseChat = session?.user.kind === "company" && hasPermission(session.user.roles, "chat", "view");
   const unreadChatCount = useUnreadChatCount(canUseChat);
+  const canApprove = session?.user.kind === "company" && hasPermission(session.user.roles, "tasks", "approve");
+  const pendingApprovalsCount = usePendingApprovalsCount(canApprove);
   const navItems =
     session?.user.kind === "platform"
       ? platformNavItems
@@ -85,12 +87,6 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
       >
         <div className="flex h-16 shrink-0 items-center justify-center border-b border-ink-200">
           <LogoMark size={36} />
-          <button
-            onClick={onClose}
-            className="absolute right-2 top-5 rounded-lg p-1 text-ink-500 hover:bg-ink-100 lg:hidden"
-          >
-            <X size={16} />
-          </button>
         </div>
 
         <nav className="flex-1 overflow-y-auto scrollbar-none py-3">
@@ -119,6 +115,11 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                     {to === "/chat" && unreadChatCount > 0 && (
                       <span className="absolute -right-2 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-danger-500 px-1 text-[9px] font-semibold leading-none text-white ring-2 ring-white">
                         {unreadChatCount > 99 ? "99+" : unreadChatCount}
+                      </span>
+                    )}
+                    {to === "/overdue-reviews" && pendingApprovalsCount > 0 && (
+                      <span className="absolute -right-2 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-danger-500 px-1 text-[9px] font-semibold leading-none text-white ring-2 ring-white">
+                        {pendingApprovalsCount > 99 ? "99+" : pendingApprovalsCount}
                       </span>
                     )}
                   </span>

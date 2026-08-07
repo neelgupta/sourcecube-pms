@@ -41,6 +41,11 @@ const statusOptions: { value: string; label: string }[] = [
   { value: "cancelled", label: "Cancelled" },
 ];
 
+const activityOptions: { value: string; label: string }[] = [
+  { value: "all", label: "All Activity" },
+  { value: "inactive", label: "Inactive (7+ days)" },
+];
+
 const statusLabel: Record<RealProjectStatus, string> = {
   new: "New",
   planning: "Planning",
@@ -74,6 +79,7 @@ export function ProjectsPage() {
   const [view, setView] = useState<"grid" | "list">("grid");
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
+  const [activity, setActivity] = useState("all");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [detailsProject, setDetailsProject] = useState<RealProject | null>(null);
   const [editingProject, setEditingProject] = useState<RealProject | null>(null);
@@ -112,9 +118,13 @@ export function ProjectsPage() {
           p.name.toLowerCase().includes(search.toLowerCase()) ||
           (p.clientName ?? "").toLowerCase().includes(search.toLowerCase());
         const matchesStatus = status === "all" || p.status === (status as RealProjectStatus);
-        return matchesSearch && matchesStatus;
+        const matchesActivity =
+          activity === "all" ||
+          (activity === "inactive" &&
+            (!p.lastActivityAt || new Date(p.lastActivityAt).getTime() < Date.now() - 7 * 24 * 60 * 60 * 1000));
+        return matchesSearch && matchesStatus && matchesActivity;
       }),
-    [projects, search, status],
+    [projects, search, status, activity],
   );
 
   const favourites = filtered.filter((p) => p.favourite);
@@ -275,6 +285,14 @@ export function ProjectsPage() {
             className="w-40"
           />
 
+          <FilterSelect
+            value={activity}
+            options={activityOptions}
+            onChange={setActivity}
+            icon={<SlidersHorizontal size={14} />}
+            className="w-44"
+          />
+
           {canExport && (
             <Button variant="outline" size="icon" title="Export">
               <Download size={16} />
@@ -343,9 +361,9 @@ export function ProjectsPage() {
                 onEdit={openEdit}
                 onArchiveToggle={handleArchiveToggle}
                 onDelete={setDeletingProject}
-                  canEdit={canEdit}
-                  canArchiveOrDelete={canArchiveOrDelete}
-                />
+                canEdit={canEdit}
+                canArchiveOrDelete={canArchiveOrDelete}
+              />
             </section>
           </div>
         ) : (

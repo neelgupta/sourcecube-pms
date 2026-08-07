@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, UserMinus, UserPlus, X } from "lucide-react";
+import { ArrowLeft, ChevronDown, UserMinus, UserPlus, X } from "lucide-react";
 import { Button, EmptyState, MemberAvatar, Modal } from "@/components/common";
 import { api, ApiError } from "@/lib/api";
 import { getChatSocket } from "@/lib/chatSocket";
@@ -19,6 +19,7 @@ export function MessageThread({
   onlineUserIds,
   onChannelUpdated,
   onRead,
+  onBack,
 }: {
   channel: ChatChannel;
   users: ChatUser[];
@@ -29,6 +30,9 @@ export function MessageThread({
   onlineUserIds: Set<string>;
   onChannelUpdated?: (channel: ChatChannel) => void;
   onRead?: (channelId: string) => void;
+  /** Present only on narrow viewports, where the channel list is hidden while a thread is open
+   *  (see ChatPage) — lets the person get back to it instead of being stuck on this thread. */
+  onBack?: () => void;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(true);
@@ -227,6 +231,11 @@ export function MessageThread({
     <div className="flex h-full min-h-0 min-w-0 flex-1">
       <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
         <header className="relative flex items-start gap-3 border-b border-ink-200 px-4 py-3">
+          {onBack && (
+            <button onClick={onBack} title="Back to channels" className="mt-0.5 shrink-0 rounded-lg p-1.5 text-ink-500 hover:bg-ink-100 hover:text-ink-900 md:hidden">
+              <ArrowLeft size={18} />
+            </button>
+          )}
           <div ref={memberMenuRef} className="min-w-0 flex-1">
             <p className="truncate font-semibold text-ink-900">{channelTitle(channel, currentUserId)}</p>
             <HeaderMembers channel={channel} currentUserId={currentUserId} onlineUserIds={onlineUserIds} onToggle={() => setShowMemberList((value) => !value)} />
