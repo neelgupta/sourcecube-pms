@@ -102,6 +102,8 @@ model Company {
   chatChannels         ChatChannel[]
   taskDailyAllocations TaskDailyAllocation[]
   taskOverdueReviews   TaskOverdueReview[]
+  reestimateRequests   TaskReestimateRequest[]
+  timeEntryChangeRequests TaskTimeEntryChangeRequest[]
   smtpEmailSetting     SmtpEmailSetting?
 }
 
@@ -430,6 +432,10 @@ enum NotificationType {
   task_assigned
   task_overdue_review
   task_review_resolved
+  task_reestimate_request
+  task_reestimate_resolved
+  task_timelog_change_request
+  task_timelog_change_resolved
 }
 
 enum OverdueReviewStatus {
@@ -614,6 +620,7 @@ model ProjectTask {
   dailyAllocations    TaskDailyAllocation[] @relation("TaskAllocations")
   overdueReviewStatus OverdueReviewStatus?
   overdueReviews      TaskOverdueReview[]
+  reestimateRequests  TaskReestimateRequest[]
 
   @@unique([projectId, code])
   @@index([parentTaskId])
@@ -729,9 +736,71 @@ model TaskTimeEntry {
   note            String?
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
+  changeRequests  TaskTimeEntryChangeRequest[]
 
   @@index([tenantId, projectId, taskId])
   @@index([userId, endedAt])
+}
+
+/// An assignee's request to change a fully-scheduled task's estimatedMinutes, since once a task
+/// is fully scheduled (assignee + estimate + both dates set) only a project editor or the
+/// assignee's team lead can change the estimate directly (see canEditTaskForProject /
+/// isFullyScheduled in routes/projects.ts). Routes to the same approver as TaskOverdueReview
+/// (task creator, falling back to team lead, falling back to company_super_admin) via the shared
+/// resolveApprover helper. Kept as a separate model (not fields on ProjectTask) so re-estimate
+/// history survives multiple requests over a task's lifetime.
+model TaskReestimateRequest {
+  id                        String              @id @default(cuid())
+  tenantId                  String
+  company                   Company             @relation(fields: [tenantId], references: [id])
+  taskId                    String
+  task                      ProjectTask         @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  requestedBy                String
+  approverId                 String
+  previousEstimatedMinutes  Int
+  requestedEstimatedMinutes Int
+  reason                    String
+  status                    OverdueReviewStatus @default(pending_review)
+  resolvedAt                 DateTime?
+  resolvedBy                 String?
+  approvedEstimatedMinutes  Int?
+  createdAt                  DateTime            @default(now())
+
+  @@index([tenantId, taskId])
+  @@index([tenantId, approverId, status])
+}
+
+/// An employee's request to change the duration/activity/billable/note of their OWN
+/// TaskTimeEntry. Unlike a TL/PM/admin editing someone else's entry (which still writes
+/// directly, see PATCH /:id/tasks/:taskId/timer/:entryId), an entry owner editing their own
+/// entry always creates one of these instead of writing TaskTimeEntry directly -- so a pending
+/// request never perturbs ProjectTask.trackedSeconds / Project.trackedSeconds (and therefore
+/// never perturbs remainingMinutesFor/Resource Planner) until approved. Routes to the entry
+/// owner's team lead specifically (resolveTeamLead), not the task creator.
+model TaskTimeEntryChangeRequest {
+  id                        String              @id @default(cuid())
+  tenantId                  String
+  company                   Company             @relation(fields: [tenantId], references: [id])
+  entryId                   String
+  entry                     TaskTimeEntry       @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  requestedBy                String
+  approverId                 String
+  previousDurationSeconds   Int
+  requestedDurationSeconds  Int
+  previousActivityType      String
+  requestedActivityType     String
+  previousBillable          Boolean
+  requestedBillable         Boolean
+  previousNote               String?
+  requestedNote               String?
+  reason                    String
+  status                    OverdueReviewStatus @default(pending_review)
+  resolvedAt                 DateTime?
+  resolvedBy                 String?
+  createdAt                  DateTime            @default(now())
+
+  @@index([tenantId, entryId])
+  @@index([tenantId, approverId, status])
 }
 
 model ProjectMilestone {

@@ -438,6 +438,27 @@ export interface TaskOverdueReview {
     project: { id: ID; name: string; key: string };
   };
 }
+
+export interface TaskReestimateRequest {
+  id: ID;
+  taskId: ID;
+  requestedBy: ID;
+  approverId: ID;
+  previousEstimatedMinutes: number;
+  requestedEstimatedMinutes: number;
+  reason: string;
+  status: "pending_review" | "resolved";
+  resolvedAt?: string | null;
+  resolvedBy?: ID | null;
+  approvedEstimatedMinutes?: number | null;
+  createdAt: string;
+  task?: {
+    id: ID; code: number; name: string; projectId: ID; estimatedMinutes: number; trackedSeconds: number;
+    project: { id: ID; name: string };
+    assignee?: { id: ID; name: string; email: string } | null;
+  };
+}
+
 export interface OnboardingState {
   tenantId: ID;
   steps: Record<string, boolean>;
@@ -660,6 +681,32 @@ export interface TaskTimeEntry {
   note?: string | null;
 }
 
+export interface TaskTimeEntryChangeRequest {
+  id: ID;
+  entryId: ID;
+  requestedBy: ID;
+  approverId: ID;
+  previousDurationSeconds: number;
+  requestedDurationSeconds: number;
+  previousActivityType: string;
+  requestedActivityType: string;
+  previousBillable: boolean;
+  requestedBillable: boolean;
+  previousNote?: string | null;
+  requestedNote?: string | null;
+  reason: string;
+  status: "pending_review" | "resolved";
+  resolvedAt?: string | null;
+  resolvedBy?: ID | null;
+  createdAt: string;
+  entry?: {
+    id: ID; taskId: ID; projectId: ID; userId: ID; startedAt: string; endedAt?: string | null;
+    user: TeamMemberSummary;
+    task: { id: ID; code: number; name: string };
+    project: { id: ID; name: string };
+  };
+}
+
 export interface ProjectSection {
   id: ID;
   name: string;
@@ -726,7 +773,18 @@ export function isCompanyUser(user: PlatformOrCompanyUser): user is CompanyUser 
 
 export type ChatChannelType = "project" | "group" | "dm" | "announcement";
 export type ChatAttachmentType = "file" | "voice_note";
-export type NotificationType = "mention" | "announcement" | "channel_invite" | "message" | "task_assigned" | "task_overdue_review" | "task_review_resolved";
+export type NotificationType =
+  | "mention"
+  | "announcement"
+  | "channel_invite"
+  | "message"
+  | "task_assigned"
+  | "task_overdue_review"
+  | "task_review_resolved"
+  | "task_reestimate_request"
+  | "task_reestimate_resolved"
+  | "task_timelog_change_request"
+  | "task_timelog_change_resolved";
 
 export interface ChatUser {
   id: ID;
