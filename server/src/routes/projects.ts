@@ -163,15 +163,68 @@ projectsRouter.get("/", requirePermission("projects", "view"), async (req, res) 
   });
   const completedByProject = new Map(completedCounts.map((row) => [row.projectId, row._count._all]));
 
-  const rows = await Promise.all(projects.map(async (p) => ({
-    ...p,
-    favouritedBy: undefined,
-    _count: undefined,
-    favourite: p.favouritedBy.length > 0,
-    currentUserAccess: await projectAccessLevel(tid, uid, p),
-    taskCount: p._count.tasks,
-    completedTaskCount: completedByProject.get(p.id) ?? 0,
-  })));
+  // "Worked on" recency: the most recent activity across a project and its children. A project
+  // counts as recently worked on when anything happened in the last 7 days — a task created,
+  // moved or edited, time logged, a milestone created, or a project event added. Gathering the
+  // latest timestamps across each activity source lets us surface a `lastActivityAt` that the
+  // frontend can use for an "inactive projects" filter.
+  const projectIds = projects.map((p) => p.id);
+  const activitySourceRows = await Promise.all([
+    prisma.projectTask.groupBy({
+      by: ["projectId"],
+      where: { projectId: { in: projectIds } },
+      _max: { updatedAt: true, createdAt: true },
+    }),
+    prisma.taskTimeEntry.groupBy({
+      by: ["projectId"],
+      where: { projectId: { in: projectIds } },
+      _max: { createdAt: true, updatedAt: true },
+    }),
+    prisma.projectMilestone.groupBy({
+      by: ["projectId"],
+      where: { projectId: { in: projectIds } },
+      _max: { createdAt: true, updatedAt: true },
+    }),
+    prisma.projectEvent.groupBy({
+      by: ["projectId"],
+      where: { projectId: { in: projectIds } },
+      _max: { createdAt: true, updatedAt: true },
+    }),
+  ]);
+  const lastActiveByProject = new Map<string, Date>();
+  const captureLatest = (projectId: string, values: Array<Date | null | undefined>) => {
+    const latest = values
+      .filter((value): value is Date => Boolean(value))
+      .reduce<Date | null>((acc, value) => (acc === null || value > acc ? value : acc), null);
+    if (latest && (lastActiveByProject.get(projectId) === undefined || latest > lastActiveByProject.get(projectId)!)) {
+      lastActiveByProject.set(projectId, latest);
+    }
+  };
+  for (const group of activitySourceRows[0]) captureLatest(group.projectId, [group._max.updatedAt, group._max.createdAt]);
+  for (const group of activitySourceRows[1]) captureLatest(group.projectId, [group._max.createdAt, group._max.updatedAt]);
+  for (const group of activitySourceRows[2]) captureLatest(group.projectId, [group._max.createdAt, group._max.updatedAt]);
+  for (const group of activitySourceRows[3]) captureLatest(group.projectId, [group._max.createdAt, group._max.updatedAt]);
+
+  const rows = await Promise.all(projects.map(async (p) => {
+    const childLatest = lastActiveByProject.get(p.id);
+    const selfLatest = [p.createdAt, p.updatedAt].filter((value): value is Date => Boolean(value))
+      .reduce<Date | null>((acc, value) => (acc === null || value > acc ? value : acc), null);
+    const lastActivityAt =
+      childLatest == null ? selfLatest
+      : selfLatest == null ? childLatest
+      : childLatest > selfLatest ? childLatest
+      : selfLatest;
+    return {
+      ...p,
+      favouritedBy: undefined,
+      _count: undefined,
+      favourite: p.favouritedBy.length > 0,
+      currentUserAccess: await projectAccessLevel(tid, uid, p),
+      taskCount: p._count.tasks,
+      completedTaskCount: completedByProject.get(p.id) ?? 0,
+      lastActivityAt: lastActivityAt ? lastActivityAt.toISOString() : p.createdAt.toISOString(),
+    };
+  }));
   res.json({ projects: rows });
 });
 
