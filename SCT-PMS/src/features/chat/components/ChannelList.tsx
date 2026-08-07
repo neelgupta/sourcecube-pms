@@ -51,6 +51,7 @@ export function ChannelList({
   onSelect,
   onCreateNew,
   onToggleFavorite,
+  className,
 }: {
   channels: ChatChannel[];
   activeChannelId?: string;
@@ -60,6 +61,7 @@ export function ChannelList({
   onSelect: (channel: ChatChannel) => void;
   onCreateNew: () => void;
   onToggleFavorite: (channelId: string, isFavorite: boolean) => void;
+  className?: string;
 }) {
   const favorites = channels.filter((c) => c.isFavorite);
   const announcement = channels.filter((c) => c.type === "announcement");
@@ -68,7 +70,7 @@ export function ChannelList({
   const dms = channels.filter((c) => c.type === "dm");
 
   return (
-    <div className="flex h-full w-72 shrink-0 flex-col border-r border-ink-200 bg-white">
+    <div className={cn("flex h-full w-72 shrink-0 flex-col border-r border-ink-200 bg-white", className)}>
       <div className="flex items-center justify-between border-b border-ink-200 px-3 py-3">
         <p className="font-semibold text-ink-900">Chat</p>
         {canCreate && (

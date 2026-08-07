@@ -218,6 +218,8 @@ export const api = {
     request<{ request: TaskTimeEntryChangeRequest }>(`/projects/timelog-change-requests/${requestId}/resolve`, { method: "POST", body: JSON.stringify({ action }) }),
   listTimeEntryChangeRequests: (projectId: string, taskId: string, entryId: string) =>
     request<{ requests: TaskTimeEntryChangeRequest[] }>(`/projects/${projectId}/tasks/${taskId}/timer/${entryId}/change-requests`),
+  listTaskTimelogChangeRequests: (projectId: string, taskId: string) =>
+    request<{ requests: TaskTimeEntryChangeRequest[] }>(`/projects/${projectId}/tasks/${taskId}/timelog-change-requests`),
   getTeamProductivityReport: (input: { start: string; end: string; teamId?: string; search?: string }) => {
     const params = new URLSearchParams();
     Object.entries(input).forEach(([key, value]) => { if (value) params.set(key, value); });

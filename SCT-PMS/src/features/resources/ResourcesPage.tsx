@@ -245,7 +245,7 @@ export function ResourcesPage() {
                 className="w-64"
               />
             ) : (
-              <span className="flex items-center gap-2 rounded-lg border border-ink-200 bg-white px-3 py-1.5 text-sm font-medium text-ink-700"><CalendarDays size={15} className="text-ink-400" />{displayDate(selectedPeriod.start)} – {displayDate(selectedPeriod.end)}</span>
+              <span className="flex shrink-0 items-center gap-2 whitespace-nowrap rounded-lg border border-ink-200 bg-white px-3 py-1.5 text-sm font-medium text-ink-700"><CalendarDays size={15} className="shrink-0 text-ink-400" />{displayDate(selectedPeriod.start)} – {displayDate(selectedPeriod.end)}</span>
             )}
             <IconBtn title="Refresh" onClick={() => setRevision((value) => value + 1)}><RefreshCw size={15} className={loading ? "animate-spin" : ""} /></IconBtn>
           </div>
@@ -350,7 +350,7 @@ export function ResourcesPage() {
 
 function ResourceRow({ employee, days, onSelectDay }: { employee: ResourcePlannerEmployee; days: ResourcePlannerDay[]; onSelectDay: (date: string) => void }) {
   return <tr className="group border-b border-ink-100 transition-colors hover:bg-brand-50/30">
-    <td className="sticky left-0 z-30 w-[300px] min-w-[300px] max-w-[300px] overflow-hidden border-r border-ink-200 bg-white px-4 py-3 shadow-[4px_0_8px_-8px_rgba(15,23,42,0.35)] group-hover:bg-brand-50">
+    <td className="sticky left-0 z-10 w-[300px] min-w-[300px] max-w-[300px] overflow-hidden border-r border-ink-200 bg-white px-4 py-3 shadow-[4px_0_8px_-8px_rgba(15,23,42,0.35)] group-hover:bg-brand-50">
       <div className="flex w-full min-w-0 items-center gap-3 overflow-hidden"><MemberAvatar id={employee.id} name={employee.name} size="sm" status="active" className="shrink-0 ring-0" /><div className="min-w-0 flex-1 overflow-hidden"><p className="truncate font-medium text-ink-900">{employee.name}</p><p className="truncate text-[11px] text-ink-400">{employee.email}</p></div><span className={cn("ml-auto shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-semibold", employee.utilisationPercent === 0 ? "bg-ink-100 text-ink-500" : employee.utilisationPercent > 100 ? "bg-danger-50 text-danger-600" : "bg-success-50 text-success-600")}>{employee.utilisationPercent}%</span></div>
     </td>
     <td className="border-r border-ink-200 px-4 py-3 text-xs font-medium text-ink-500">{employee.employeeCode}</td>

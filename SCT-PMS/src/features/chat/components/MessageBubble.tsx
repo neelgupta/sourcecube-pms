@@ -168,7 +168,7 @@ export function MessageBubble({
     <div id={`chat-message-${message.id}`} className={cn("group flex items-end gap-2 px-4 py-1", isMine ? "flex-row-reverse" : "flex-row")}>
       {!isMine && <MemberAvatar id={message.authorId} name={message.author.name} size="sm" className="mb-4 shrink-0 ring-0" />}
 
-      <div className={cn("flex min-w-0 max-w-[78%] lg:max-w-[52rem] flex-col", isEditing ? "w-[85%] max-w-md" : "", isMine ? "items-end" : "items-start")}>
+      <div className={cn("flex w-fit min-w-0 max-w-[78%] lg:max-w-[52rem] flex-col", isEditing ? "w-[85%] max-w-md" : "", isMine ? "items-end" : "items-start")}>
         {!isMine && <span className="mb-0.5 px-1 text-xs font-semibold text-ink-500">{message.author.name}</span>}
 
         <div

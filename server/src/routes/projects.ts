@@ -1209,7 +1209,7 @@ projectsRouter.patch("/:id/tasks/:taskId/move", requirePermission("tasks", "edit
   const updated = await prisma.projectTask.update({
     where: { id: task.id },
     data: { sectionId: section.id, status: section.status, position, updatedBy: userId(req) },
-    include: { assignee: { select: userSelect } },
+    include: taskDetailInclude,
   });
   const hierarchy = await prisma.projectTask.findMany({
     where: { projectId: id },
@@ -1553,6 +1553,26 @@ projectsRouter.get("/:id/tasks/:taskId/reestimate-requests", requirePermission("
     return;
   }
   const requests = await prisma.taskReestimateRequest.findMany({ where: { taskId, tenantId: tid }, orderBy: { createdAt: "desc" } });
+  res.json({ requests });
+});
+
+// Every work-log change request across every time entry on this task, newest first — powers the
+// task drawer's Approval tab, which shows both request types for the task in one place rather
+// than requiring one call per individual work-log entry.
+projectsRouter.get("/:id/tasks/:taskId/timelog-change-requests", requirePermission("tasks", "view"), async (req, res) => {
+  const tid = tenantId(req);
+  const projectId = req.params.id as string;
+  const taskId = req.params.taskId as string;
+  const task = await prisma.projectTask.findFirst({ where: { id: taskId, projectId, tenantId: tid } });
+  if (!task) {
+    res.status(404).json({ error: "Task not found" });
+    return;
+  }
+  const requests = await prisma.taskTimeEntryChangeRequest.findMany({
+    where: { tenantId: tid, entry: { taskId } },
+    orderBy: { createdAt: "desc" },
+    include: { entry: { select: { id: true, taskId: true, projectId: true, userId: true, startedAt: true, endedAt: true, user: { select: userSelect } } } },
+  });
   res.json({ requests });
 });
 

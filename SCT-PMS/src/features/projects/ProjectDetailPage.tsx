@@ -82,6 +82,7 @@ import type {
   TaskTimeEntry,
   TaskComment,
   TaskReestimateRequest,
+  TaskTimeEntryChangeRequest,
   WorkspaceTask,
 } from "@/types/tenant";
 import { groupByOptionLabels, groupTasks, type GroupByOption as TaskGroupByOption } from "@/features/tasks/taskGrouping";
@@ -215,20 +216,43 @@ function renderLinkedDescription(text?: string | null) {
   return nodes.map((node, index) => <Fragment key={index}>{node}</Fragment>);
 }
 
-function flattenTasks(tasks: WorkspaceTask[], collapsed: Record<string, boolean>) {
-  const children = new Map<string | null, WorkspaceTask[]>();
-  for (const task of tasks) {
+/** Renders one section's task rows, including subtasks whose OWN status now lives in a
+ *  different section than their parent's — a subtask's status is independent of its parent
+ *  (changing it moves just that subtask, exactly like any top-level task), so a section's task
+ *  list can contain a subtask whose parentTaskId points to a task that's no longer in this
+ *  section at all. `allTasks` (every task across every section) is needed for those cases so the
+ *  subtask can still resolve its parent's real code and number itself "4.1" rather than either
+ *  vanishing (it's not reachable from a root in `sectionTasks` alone) or getting a
+ *  position-only number unrelated to its actual parent. */
+function flattenTasks(sectionTasks: WorkspaceTask[], allTasks: WorkspaceTask[], collapsed: Record<string, boolean>) {
+  const taskById = new Map(allTasks.map((task) => [task.id, task]));
+  const childrenInSection = new Map<string | null, WorkspaceTask[]>();
+  for (const task of sectionTasks) {
     const key = task.parentTaskId ?? null;
-    children.set(key, [...(children.get(key) ?? []), task]);
+    childrenInSection.set(key, [...(childrenInSection.get(key) ?? []), task]);
   }
+  const sectionTaskIds = new Set(sectionTasks.map((task) => task.id));
   const rows: { task: WorkspaceTask; depth: number; displayCode: string; childCount: number }[] = [];
+  const visited = new Set<string>();
   const visit = (task: WorkspaceTask, depth: number, displayCode: string) => {
-    const taskChildren = children.get(task.id) ?? [];
+    if (visited.has(task.id)) return;
+    visited.add(task.id);
+    const taskChildren = childrenInSection.get(task.id) ?? [];
     rows.push({ task, depth, displayCode, childCount: taskChildren.length });
     if (!collapsed[task.id]) taskChildren.forEach((child, index) => visit(child, depth + 1, `${displayCode}.${index + 1}`));
   };
-  const roots = children.get(null) ?? [];
-  roots.forEach((task, index) => visit(task, 0, String(index + 1)));
+  // True roots (no parent, or parent not present anywhere) render first, in this section's order.
+  const trueRoots = childrenInSection.get(null) ?? [];
+  trueRoots.forEach((task, index) => visit(task, 0, String(index + 1)));
+  // A subtask whose parent exists but sits in a DIFFERENT section: not reachable via the roots
+  // walk above (its parentTaskId isn't null, and its parent isn't in sectionTaskIds to visit
+  // it from). Render it as its own row here, numbered off the real parent's code/name context.
+  for (const task of sectionTasks) {
+    if (visited.has(task.id) || !task.parentTaskId || sectionTaskIds.has(task.parentTaskId)) continue;
+    const parent = taskById.get(task.parentTaskId);
+    const displayCode = parent ? `${parent.code}.${(childrenInSection.get(task.parentTaskId)?.indexOf(task) ?? 0) + 1}` : String(task.code);
+    visit(task, 0, displayCode);
+  }
   return rows;
 }
 
@@ -658,6 +682,7 @@ const isEmployeeOnly = session?.user.kind === "company" && session.user.roles.ev
         projectId={project.id}
         projectName={project.name}
         allTasks={tasks}
+        sections={sections}
         employees={companyUsers}
         milestones={milestones}
         taskActivities={workspace.activities.filter((activity) => activity.targetId === selectedTask?.id)}
@@ -825,9 +850,10 @@ function TaskListWorkspace({
   const [savingField, setSavingField] = useState<string | null>(null);
   const navigate = useNavigate();
   const { session } = useSession();
+  const isEmployeeOnlyViewer = session?.user.kind === "company" && session.user.roles.every((role) => role === "employee");
   const [activeTimer, setActiveTimer] = useState<ActiveTaskTimer | null>(null);
   const [stopTarget, setStopTarget] = useState<StopTimerTarget | null>(null);
-  const [pendingStatus, setPendingStatus] = useState<{ taskId: string; status: ProjectTaskStatus } | null>(null);
+  const [pendingSectionMove, setPendingSectionMove] = useState<{ taskId: string; sectionId: string; status: ProjectTaskStatus } | null>(null);
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set());
   const [bulkSaving, setBulkSaving] = useState(false);
   const [bulkError, setBulkError] = useState<string | null>(null);
@@ -963,12 +989,12 @@ function TaskListWorkspace({
       setActiveTimer(null);
       setStopTarget(null);
       if (nextTask) await startTimer(nextTask);
-      if (pendingStatus?.taskId === stoppedTaskId) {
-        const status = pendingStatus.status;
-        setPendingStatus(null);
-        await patchTask(stoppedTaskId, "status", { status });
+      if (pendingSectionMove?.taskId === stoppedTaskId) {
+        const sectionId = pendingSectionMove.sectionId;
+        setPendingSectionMove(null);
+        await patchTask(stoppedTaskId, "status", { sectionId });
       } else {
-        setPendingStatus(null);
+        setPendingSectionMove(null);
       }
     } finally {
       setTimerBusy(null);
@@ -985,12 +1011,12 @@ function TaskListWorkspace({
       setActiveTimer(null);
       setStopTarget(null);
       if (nextTask) await startTimer(nextTask);
-      if (pendingStatus?.taskId === stoppedTaskId) {
-        const status = pendingStatus.status;
-        setPendingStatus(null);
-        await patchTask(stoppedTaskId, "status", { status });
+      if (pendingSectionMove?.taskId === stoppedTaskId) {
+        const sectionId = pendingSectionMove.sectionId;
+        setPendingSectionMove(null);
+        await patchTask(stoppedTaskId, "status", { sectionId });
       } else {
-        setPendingStatus(null);
+        setPendingSectionMove(null);
       }
     } finally {
       setTimerBusy(null);
@@ -1182,7 +1208,7 @@ function TaskListWorkspace({
                   </div>
                 </td>
               </tr>
-              {!collapsed[section.id] && flattenTasks(section.tasks, collapsedTasks).map(({ task, depth, displayCode, childCount }) => (
+              {!collapsed[section.id] && flattenTasks(section.tasks, allVisibleTasks, collapsedTasks).map(({ task, depth, displayCode, childCount }) => (
                 <Fragment key={task.id}>
                 <tr
                   onClick={() => onSelectTask(task)}
@@ -1255,15 +1281,19 @@ function TaskListWorkspace({
                   <td className="px-3 py-2.5" onClick={(event) => event.stopPropagation()}>
                     <TaskStatusCell
                       task={task}
+                      sections={sections}
+                      isEmployeeOnlyViewer={isEmployeeOnlyViewer}
                       canEdit={canEditTask(task)}
                       saving={savingField === `${task.id}-status`}
-                      onChange={(status) => {
-                        if (status === "done" && activeTimer?.taskId === task.id) {
-                          setPendingStatus({ taskId: task.id, status });
+                      onChange={(sectionId) => {
+                        const nextSection = sections.find((candidate) => candidate.id === sectionId);
+                        if (!nextSection) return;
+                        if (nextSection.status === "done" && activeTimer?.taskId === task.id) {
+                          setPendingSectionMove({ taskId: task.id, sectionId, status: nextSection.status });
                           setStopTarget({ entry: activeTimer, task });
                           return;
                         }
-                        patchTask(task.id, "status", { status });
+                        patchTask(task.id, "status", { sectionId });
                       }}
                     />
                   </td>
@@ -1355,7 +1385,7 @@ function TaskListWorkspace({
         </tbody>
       </table>
     </div>
-    <TimerStopDialog target={stopTarget} busy={timerBusy !== null} onCancel={() => { setStopTarget(null); setPendingStatus(null); }} onSave={saveTimerLog} onDiscard={discardTimer} />
+    <TimerStopDialog target={stopTarget} busy={timerBusy !== null} onCancel={() => { setStopTarget(null); setPendingSectionMove(null); }} onSave={saveTimerLog} onDiscard={discardTimer} />
     </>
   );
 }
@@ -1552,14 +1582,21 @@ function BulkTaskActionBar({
 
 function TaskStatusCell({
   task,
+  sections,
+  isEmployeeOnlyViewer,
   canEdit,
   saving,
   onChange,
 }: {
   task: WorkspaceTask;
+  /** This project's actual Kanban sections — listed here (not the 3 generic New Request/In
+   *  Progress/Done labels) so a custom section like "On Hold" is a real selectable destination
+   *  from this quick-status cell too, matching the task drawer's own Status dropdown. */
+  sections: ProjectSection[];
+  isEmployeeOnlyViewer: boolean;
   canEdit: boolean;
   saving: boolean;
-  onChange: (status: ProjectTaskStatus) => void;
+  onChange: (sectionId: string) => void;
 }) {
   const display = <Badge tone={task.status === "done" ? "green" : task.status === "in_progress" ? "amber" : "blue"}>{task.status.replace("_", " ")}</Badge>;
   // Once a task is marked done, its status is final from this cell — no dropdown, just the
@@ -1567,9 +1604,11 @@ function TaskStatusCell({
   if (!canEdit || task.status === "done") return <div className="text-xs">{display}</div>;
   return (
     <FilterSelect
-      value={task.status}
-      onChange={(value) => onChange(value as ProjectTaskStatus)}
-      options={TASK_STATUS_OPTIONS}
+      value={task.sectionId}
+      onChange={onChange}
+      options={sections
+        .filter((section) => !isEmployeeOnlyViewer || section.name.trim().toLowerCase() !== "on hold")
+        .map((section) => ({ value: section.id, label: section.name }))}
       className={saving ? "opacity-50" : undefined}
     />
   );
@@ -2772,6 +2811,7 @@ export function TaskWorkspaceDrawer({
   projectId,
   projectName,
   allTasks,
+  sections,
   employees,
   milestones,
   taskActivities,
@@ -2789,6 +2829,10 @@ currentUserId,
   projectId: string;
   projectName: string;
   allTasks: WorkspaceTask[];
+  /** This project's actual Kanban sections — the Status dropdown lists these (not just the 3
+   *  generic New Request/In Progress/Done labels) so a custom section like "On Hold" is a real,
+   *  selectable destination, matching what dragging the task on the Kanban board would do. */
+  sections: ProjectSection[];
   employees: CompanyUser[];
   milestones: ProjectMilestone[];
   taskActivities: AuditLogEntry[];
@@ -2803,13 +2847,20 @@ currentUserId,
   onClose: () => void;
 }) {
   const timezone = useCompanyTimezone();
+  const { session } = useSession();
+  // A plain employee (no other role) should not see or be able to move a task into an "On Hold"
+  // section from this dropdown — On Hold is a planning/management decision, not something an
+  // individual contributor picks for their own task. Matched by name since On Hold isn't a real
+  // distinct database status (see the section's own `status` column), just a section whose
+  // status happens to be one of the three real values.
+  const isEmployeeOnlyViewer = session?.user.kind === "company" && session.user.roles.every((role) => role === "employee");
   const [localTask, setLocalTask] = useState<WorkspaceTask | null>(task);
   const [panel, setPanel] = useState<"activities" | "worklog" | "approval" | "planner">("activities");
   const [lowerTab, setLowerTab] = useState<"subtasks" | "checklist">("subtasks");
   const [entries, setEntries] = useState(task?.timeEntries ?? []);
   const [activeTimer, setActiveTimer] = useState<ActiveTaskTimer | null>(null);
   const [stopTarget, setStopTarget] = useState<StopTimerTarget | null>(null);
-  const [pendingStatus, setPendingStatus] = useState<WorkspaceTask["status"] | null>(null);
+  const [pendingSectionId, setPendingSectionId] = useState<string | null>(null);
   const [trackedSeconds, setTrackedSeconds] = useState(task?.trackedSeconds ?? 0);
   const [now, setNow] = useState(Date.now());
   const [timerBusy, setTimerBusy] = useState(false);
@@ -2821,6 +2872,7 @@ currentUserId,
   const [estimateHours, setEstimateHours] = useState(task?.estimatedMinutes ? String(Math.floor(task.estimatedMinutes / 60)) : "");
   const [estimateMinutes, setEstimateMinutes] = useState(task?.estimatedMinutes ? String(task.estimatedMinutes % 60).padStart(2, "0") : "");
   const [reestimateRequests, setReestimateRequests] = useState<TaskReestimateRequest[]>([]);
+  const [timelogChangeRequests, setTimelogChangeRequests] = useState<TaskTimeEntryChangeRequest[]>([]);
 
   useEffect(() => {
     if (!task) return;
@@ -2833,6 +2885,9 @@ currentUserId,
     // re-trigger an effect keyed on it.
     api.listTaskReestimateRequests(projectId, task.id).then((result) => {
       if (!cancelled) setReestimateRequests(result.requests);
+    }).catch(() => undefined);
+    api.listTaskTimelogChangeRequests(projectId, task.id).then((result) => {
+      if (!cancelled) setTimelogChangeRequests(result.requests);
     }).catch(() => undefined);
     return () => { cancelled = true; };
   }, [projectId, task]);
@@ -3170,12 +3225,12 @@ function startEditEntry(entry: TaskTimeEntry) {
       setActiveTimer(null);
       setStopTarget(null);
       setNow(Date.now());
-      if (wasThisTask && pendingStatus) {
-        const status = pendingStatus;
-        setPendingStatus(null);
-        await updateTask({ status });
+      if (wasThisTask && pendingSectionId) {
+        const sectionId = pendingSectionId;
+        setPendingSectionId(null);
+        await updateTask({ sectionId });
       } else {
-        setPendingStatus(null);
+        setPendingSectionId(null);
       }
     } finally {
       setTimerBusy(false);
@@ -3192,12 +3247,12 @@ function startEditEntry(entry: TaskTimeEntry) {
       setActiveTimer(null);
       setStopTarget(null);
       setNow(Date.now());
-      if (wasThisTask && pendingStatus) {
-        const status = pendingStatus;
-        setPendingStatus(null);
-        await updateTask({ status });
+      if (wasThisTask && pendingSectionId) {
+        const sectionId = pendingSectionId;
+        setPendingSectionId(null);
+        await updateTask({ sectionId });
       } else {
-        setPendingStatus(null);
+        setPendingSectionId(null);
       }
     } finally {
       setTimerBusy(false);
@@ -3296,22 +3351,21 @@ function startEditEntry(entry: TaskTimeEntry) {
                 </div>
               ) : (
                 <FilterSelect
-                  value={localTask.status}
+                  value={localTask.sectionId}
                   onChange={(value) => {
-                    const nextStatus = value as WorkspaceTask["status"];
-                    if (nextStatus === "done" && activeTimer?.taskId === taskId) {
-                      setPendingStatus(nextStatus);
+                    const nextSection = sections.find((section) => section.id === value);
+                    if (!nextSection) return;
+                    if (nextSection.status === "done" && activeTimer?.taskId === taskId) {
+                      setPendingSectionId(nextSection.id);
                       setStopTarget({ entry: activeTimer, task: currentTask });
                       return;
                     }
-                    updateTask({ status: nextStatus });
+                    updateTask({ sectionId: nextSection.id });
                   }}
                   disabled={!canEdit || saving}
-                  options={[
-                    { value: "new_request", label: "New Request" },
-                    { value: "in_progress", label: "In Progress" },
-                    { value: "done", label: "Completed" },
-                  ]}
+                  options={sections
+                    .filter((section) => !isEmployeeOnlyViewer || section.name.trim().toLowerCase() !== "on hold")
+                    .map((section) => ({ value: section.id, label: section.name }))}
                 />
               )}
             </div>
@@ -3607,7 +3661,58 @@ function startEditEntry(entry: TaskTimeEntry) {
                 })}
               </div>
             )}
-            {panel === "approval" && <div className="rounded-lg border border-dashed border-ink-200 p-6 text-center"><CheckCircle2 className="mx-auto text-ink-300" /><p className="mt-2">No approvals requested for this task.</p></div>}
+            {panel === "approval" && (
+              reestimateRequests.length === 0 && timelogChangeRequests.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-ink-200 p-6 text-center"><CheckCircle2 className="mx-auto text-ink-300" /><p className="mt-2">No approvals requested for this task.</p></div>
+              ) : (
+                <div className="space-y-4">
+                  {reestimateRequests.length > 0 && (
+                    <div>
+                      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-500">Re-estimate requests</p>
+                      <div className="space-y-2">
+                        {reestimateRequests.map((request) => (
+                          <div key={request.id} className="rounded-lg border border-ink-200 p-3 text-sm">
+                            <div className="flex items-center justify-between">
+                              <span className="font-medium text-ink-900">{formatMinutes(request.previousEstimatedMinutes)} → {formatMinutes(request.requestedEstimatedMinutes)}</span>
+                              {request.status === "pending_review" ? (
+                                <Badge tone="amber">Awaiting approval</Badge>
+                              ) : request.approvedEstimatedMinutes ? (
+                                <Badge tone="green">Approved{request.approvedEstimatedMinutes !== request.requestedEstimatedMinutes ? ` — ${formatMinutes(request.approvedEstimatedMinutes)}` : ""}</Badge>
+                              ) : (
+                                <Badge tone="red">Rejected</Badge>
+                              )}
+                            </div>
+                            <p className="mt-1 text-xs text-ink-500">{request.reason}</p>
+                            <p className="mt-1 text-[11px] text-ink-400">{formatDateTime(request.createdAt, timezone)}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {timelogChangeRequests.length > 0 && (
+                    <div>
+                      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-500">Work log change requests</p>
+                      <div className="space-y-2">
+                        {timelogChangeRequests.map((request) => (
+                          <div key={request.id} className="rounded-lg border border-ink-200 p-3 text-sm">
+                            <div className="flex items-center justify-between">
+                              <span className="font-medium text-ink-900">{formatSeconds(request.previousDurationSeconds)} → {formatSeconds(request.requestedDurationSeconds)}</span>
+                              {request.status === "pending_review" ? (
+                                <Badge tone="amber">Awaiting approval</Badge>
+                              ) : (
+                                <Badge tone="green">Resolved</Badge>
+                              )}
+                            </div>
+                            <p className="mt-1 text-xs text-ink-500">{request.reason}</p>
+                            {request.entry && <p className="mt-1 text-[11px] text-ink-400">{request.entry.user.name} · {formatDateTime(request.createdAt, timezone)}</p>}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )
+            )}
             {panel === "planner" && (
               <div className="space-y-3">
                 <Summary label="Assignee" value={localTask.assignee?.name ?? "Unassigned"} />
@@ -3630,7 +3735,7 @@ function startEditEntry(entry: TaskTimeEntry) {
         </div>
       </div>
     </Drawer>
-    <TimerStopDialog target={stopTarget} busy={timerBusy} onCancel={() => { setStopTarget(null); setPendingStatus(null); }} onSave={saveTimerLog} onDiscard={discardTimer} />
+    <TimerStopDialog target={stopTarget} busy={timerBusy} onCancel={() => { setStopTarget(null); setPendingSectionId(null); }} onSave={saveTimerLog} onDiscard={discardTimer} />
     <Modal
       open={confirmDelete}
       onClose={() => setConfirmDelete(false)}

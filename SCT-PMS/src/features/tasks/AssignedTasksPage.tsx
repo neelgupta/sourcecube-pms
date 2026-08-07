@@ -9,14 +9,9 @@ import { projectWorkspacePath } from "@/features/projects/projectRoutes";
 import { TaskWorkspaceDrawer, TimerStopDialog, type ActiveTaskTimer, type StopTimerInput, type StopTimerTarget } from "@/features/projects/ProjectDetailPage";
 import { usePermission } from "@/lib/session";
 import { cn } from "@/lib/cn";
-import type { AssignedTask, CompanyUser, ProjectMilestone, ProjectPriority, ProjectTaskStatus, TaskBreakdownRow, WorkspaceTask } from "@/types/tenant";
+import type { AssignedTask, CompanyUser, ProjectMilestone, ProjectPriority, ProjectSection, ProjectTaskStatus, TaskBreakdownRow, WorkspaceTask } from "@/types/tenant";
 import { groupByOptionLabels, groupTasks, type GroupByOption } from "./taskGrouping";
 
-const statusLabels: Record<ProjectTaskStatus, string> = {
-  new_request: "New Request",
-  in_progress: "In Progress",
-  done: "Done",
-};
 const statusTones: Record<ProjectTaskStatus, "neutral" | "blue" | "green"> = {
   new_request: "neutral",
   in_progress: "blue",
@@ -105,7 +100,7 @@ return estimated === "unestimated" ? { ...defaultTaskFilters, estimated } : defa
   const [tab, setTab] = useState("my-tasks");
 
   const [openTask, setOpenTask] = useState<AssignedTask | null>(null);
-  const [drawerContext, setDrawerContext] = useState<{ employees: CompanyUser[]; milestones: ProjectMilestone[]; workspaceTasks: WorkspaceTask[] } | null>(null);
+  const [drawerContext, setDrawerContext] = useState<{ employees: CompanyUser[]; milestones: ProjectMilestone[]; workspaceTasks: WorkspaceTask[]; sections: ProjectSection[] } | null>(null);
   const [drawerLoading, setDrawerLoading] = useState(false);
   const [activeTimer, setActiveTimer] = useState<ActiveTaskTimer | null>(null);
   const [stopTarget, setStopTarget] = useState<StopTimerTarget | null>(null);
@@ -285,7 +280,7 @@ return estimated === "unestimated" ? { ...defaultTaskFilters, estimated } : defa
       const workspaceTasks = workspace.sections.flatMap((section) => section.tasks);
       const fresh = workspaceTasks.find((item) => item.id === task.id);
       if (fresh) setOpenTask({ ...task, ...fresh });
-      setDrawerContext({ employees: eligible.users, milestones: workspace.milestones, workspaceTasks });
+      setDrawerContext({ employees: eligible.users, milestones: workspace.milestones, workspaceTasks, sections: workspace.sections });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not open task");
       setOpenTask(null);
@@ -375,6 +370,7 @@ activeTimer={activeTimer}
         projectId={openTask?.project.id ?? ""}
         projectName={openTask?.project.name ?? ""}
         allTasks={drawerContext?.workspaceTasks ?? []}
+        sections={drawerContext?.sections ?? []}
         employees={drawerContext?.employees ?? []}
         milestones={drawerContext?.milestones ?? []}
         taskActivities={[]}
@@ -574,7 +570,7 @@ function TaskGridRow({ task, onOpenTask, activeTimer, now, timerBusy, canEditTim
       <td className="whitespace-nowrap px-3 py-3"><span className={isOverdue(task) ? "font-medium text-danger-600" : "text-ink-600"}>{dateLabel(task.dueDate)}</span></td>
       <td className="whitespace-nowrap px-3 py-3 text-ink-600">{task.section.name}</td>
       <td className="whitespace-nowrap px-3 py-3 text-ink-600">{task.taskType ?? "—"}</td>
-      <td className="px-3 py-3"><Badge tone={statusTones[task.status]}>{statusLabels[task.status]}</Badge></td>
+      <td className="px-3 py-3"><Badge tone={statusTones[task.status]}>{task.section.name}</Badge></td>
       <td className="px-3 py-3">{task.tags.length ? <div className="flex flex-wrap gap-1">{task.tags.map((tag) => <Badge key={tag} tone="purple">{tag}</Badge>)}</div> : <span className="text-ink-400">—</span>}</td>
       <td className="whitespace-nowrap px-3 py-3 text-ink-600">{task.progress}%</td>
       <td className="whitespace-nowrap px-3 py-3"><div className="font-mono text-xs text-ink-700">{timeLabel(task.estimatedMinutes)}</div></td>
@@ -675,7 +671,7 @@ function OverdueTaskTable({ tasks, onOpenTask }: { tasks: AssignedTask[]; onOpen
                   <td className="w-64 min-w-[16rem] max-w-[16rem] px-4 py-3 pl-8"><div className="break-words font-medium text-ink-900">{task.name}</div><div className="mt-0.5 text-xs text-ink-400">#{task.code} · {task.section.name}</div></td>
                   <td className="px-4 py-3">{task.assignee ? <div className="flex items-center gap-2"><MemberAvatar id={task.assigneeId ?? task.assignee.id} name={task.assignee.name} size="sm" status="active" className="ring-0" /><span>{task.assignee.name}</span></div> : <span className="text-ink-400">Unassigned</span>}</td>
                   <td className="px-4 py-3"><span className="font-medium text-danger-600">{dateLabel(task.dueDate)}</span></td>
-                  <td className="px-4 py-3"><Badge tone={statusTones[task.status]}>{statusLabels[task.status]}</Badge></td>
+                  <td className="px-4 py-3"><Badge tone={statusTones[task.status]}>{task.section.name}</Badge></td>
                   <td className="px-4 py-3"><Badge tone={priorityTones[task.priority]} className="capitalize">{task.priority}</Badge></td>
                 </tr>
               ))}
