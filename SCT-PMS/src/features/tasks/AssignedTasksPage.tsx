@@ -8,6 +8,7 @@ import { TaskWorkspaceDrawer, TimerStopDialog, type ActiveTaskTimer, type StopTi
 import { usePermission } from "@/lib/session";
 import { cn } from "@/lib/cn";
 import type { AssignedTask, CompanyUser, ProjectMilestone, ProjectPriority, ProjectTaskStatus, TaskBreakdownRow, WorkspaceTask } from "@/types/tenant";
+import { groupByOptionLabels, groupTasks, type GroupByOption } from "./taskGrouping";
 
 const statusLabels: Record<ProjectTaskStatus, string> = {
   new_request: "New Request",
@@ -83,26 +84,6 @@ function formatSeconds(seconds: number) {
 }
 function isOverdue(task: AssignedTask) {
   return task.status !== "done" && Boolean(task.dueDate) && new Date(task.dueDate as string).getTime() < Date.now();
-}
-
-type AssignedDateBucket ="today"| "yesterday"  | "tomorrow";
-
-const assignedDateBucketLabels: Record<AssignedDateBucket, string> = {
-  today: "Assigned Today",
-  yesterday: "Assigned Yesterday",
-  tomorrow: "Assigned Tomorrow",
-};
-
-function assignedDateBucket(task: AssignedTask): AssignedDateBucket | null {
-  if (!task.startDate) return null;
-  const startOfDay = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate());
-  const taskDay = startOfDay(new Date(task.startDate));
-  const today = startOfDay(new Date());
-  const diffDays = Math.round((taskDay.getTime() - today.getTime()) / 86_400_000);
-  if (diffDays === -1) return "yesterday";
-  if (diffDays === 0) return "today";
-  if (diffDays === 1) return "tomorrow";
-  return null;
 }
 
 export function AssignedTasksPage() {
@@ -365,6 +346,7 @@ function TaskTable({
   onFiltersChange: Dispatch<SetStateAction<AssignedTaskFilters>>;
   onClearFilters: () => void;
 }) {
+  const [groupBy, setGroupBy] = useState<GroupByOption>("dates");
   const activeFilterCount = Object.values(filters).filter(Boolean).length;
   const openCount = tasks.filter((task) => task.status !== "done").length;
   const doneCount = tasks.filter((task) => task.status === "done").length;
@@ -464,12 +446,27 @@ function TaskTable({
           onChange={(range) => onFiltersChange((current) => ({ ...current, dueFrom: range.from ?? "", dueTo: range.to ?? "" }))}
           placeholder="Due date range"
         />
+        <FilterSelect
+          value={groupBy}
+          onChange={(value) => setGroupBy(value as GroupByOption)}
+          options={(Object.keys(groupByOptionLabels) as GroupByOption[]).map((option) => ({ value: option, label: `Group by: ${groupByOptionLabels[option]}` }))}
+        />
       </div>
 
       {tasks.length === 0 ? (
         <div className="flex flex-col items-center px-6 py-16 text-center"><CheckCircle2 size={36} className="text-brand-500" /><p className="mt-3 font-semibold text-ink-900">No matching tasks</p><p className="mt-1 text-sm text-ink-500">{emptyLabel}</p></div>
       ) : (
-        <TaskGrid tasks={tasks} onOpenTask={onOpenTask} activeTimer={activeTimer} now={now} timerBusy={timerBusy} canEditTimer={canEditTimer} onToggleTimer={onToggleTimer} />
+        <TaskGrid
+          tasks={tasks}
+          onOpenTask={onOpenTask}
+          activeTimer={activeTimer}
+          now={now}
+          timerBusy={timerBusy}
+          canEditTimer={canEditTimer}
+          onToggleTimer={onToggleTimer}
+          groupBy={groupBy}
+          dateRange={filters.dueFrom && filters.dueTo ? { from: filters.dueFrom, to: filters.dueTo } : null}
+        />
       )}
     </div>
   );
@@ -523,22 +520,15 @@ function TaskGridRow({ task, onOpenTask, activeTimer, now, timerBusy, canEditTim
   );
 }
 
-const assignedDateBucketOrder: AssignedDateBucket[] = ["today", "yesterday", "tomorrow"];
-
-function TaskGrid({ tasks, ...rowProps }: TaskGridRowProps & { tasks: AssignedTask[] }) {
+function TaskGrid({
+  tasks,
+  groupBy,
+  dateRange,
+  ...rowProps
+}: TaskGridRowProps & { tasks: AssignedTask[]; groupBy: GroupByOption; dateRange: { from: string; to: string } | null }) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
-  const groups = useMemo(() => {
-    const byBucket = new Map<AssignedDateBucket, AssignedTask[]>();
-    for (const task of tasks) {
-      const bucket = assignedDateBucket(task);
-      if (!bucket) continue;
-      const group = byBucket.get(bucket) ?? [];
-      group.push(task);
-      byBucket.set(bucket, group);
-    }
-    return assignedDateBucketOrder.map((bucket) => ({ bucket, tasks: byBucket.get(bucket) ?? [] }));
-  }, [tasks]);
+  const groups = useMemo(() => groupTasks(tasks, groupBy, dateRange), [tasks, groupBy, dateRange]);
 
   return (
     <div className="overflow-x-auto">
@@ -548,20 +538,20 @@ function TaskGrid({ tasks, ...rowProps }: TaskGridRowProps & { tasks: AssignedTa
         </thead>
         <tbody className="divide-y divide-ink-100">
           {groups.map((group) => (
-            <Fragment key={group.bucket}>
+            <Fragment key={group.key}>
               <tr className="bg-surface-muted">
                 <td colSpan={gridHeaders.length} className="px-3 py-2">
                   <button
-                    onClick={() => setCollapsed((current) => ({ ...current, [group.bucket]: !current[group.bucket] }))}
+                    onClick={() => setCollapsed((current) => ({ ...current, [group.key]: !current[group.key] }))}
                     className="flex items-center gap-2 text-xs font-semibold text-ink-700"
                   >
-                    {collapsed[group.bucket] ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-                    {assignedDateBucketLabels[group.bucket]}
+                    {collapsed[group.key] ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                    {group.label}
                     <span className="font-normal text-ink-400">({group.tasks.length})</span>
                   </button>
                 </td>
               </tr>
-              {!collapsed[group.bucket] && group.tasks.map((task) => <TaskGridRow key={task.id} task={task} {...rowProps} />)}
+              {!collapsed[group.key] && group.tasks.map((task) => <TaskGridRow key={task.id} task={task} {...rowProps} />)}
             </Fragment>
           ))}
         </tbody>

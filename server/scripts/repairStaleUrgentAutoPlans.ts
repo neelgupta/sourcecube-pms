@@ -1,14 +1,21 @@
 /**
- * One-time repair for TaskDailyAllocation rows written by autoPlanIfUrgentSameDay
- * (note === "Auto-planned: urgent same-day task") that are now stale because the task's dates
- * were later edited to no longer be a single day (startDate !== dueDate, or either date cleared)
- * — before the fix in lib/urgentAutoPlan.ts, editing a task's schedule away from same-day-urgent
- * never cleaned up the old day's allocation, so it kept consuming a full day's hours (often the
- * task's ENTIRE estimate) under a task that's no longer urgent.
+ * One-time repair for TaskDailyAllocation rows locked by either of the two "system-committed
+ * allocation" mechanisms that can go stale after a task's dates are edited:
  *
- * This script finds every such row and deletes it unless the task's CURRENT startDate/dueDate
- * still resolve to that exact same day in the company's timezone (i.e. it's still legitimately
- * that task's single urgent day).
+ *  - autoPlanIfUrgentSameDay (note === "Auto-planned: urgent same-day task") — locks the task's
+ *    full remaining estimate onto its single startDate=dueDate day.
+ *  - carryForwardRemainingToDueDate (note === "Auto-planned: remaining hours carried to due
+ *    date") — locks a leftover-hours row onto a task's due date after an earlier day's plan.
+ *
+ * Both mechanisms now clean up their own stale rows on every task edit (see
+ * lib/urgentAutoPlan.ts), but any row written before that fix — or by a request that somehow
+ * bypassed it — can still be sitting on a day that no longer matches the task's current
+ * startDate/dueDate, silently consuming (and locking) a full day's hours under dates the task no
+ * longer has.
+ *
+ * This script finds every row from either mechanism and deletes it unless it still sits on the
+ * task's CURRENT correct day (its single startDate=dueDate day for urgent-auto-plan rows, or its
+ * current dueDate for carry-forward rows).
  *
  * Usage:
  *   cd server
@@ -19,6 +26,7 @@ import { prisma } from "../src/lib/prisma.js";
 
 const APPLY = process.argv.includes("--apply");
 const urgentAutoPlanNote = "Auto-planned: urgent same-day task";
+const carryForwardNote = "Auto-planned: remaining hours carried to due date";
 
 function localDateKey(value: Date, timezone: string): string {
   try {
@@ -32,7 +40,7 @@ function localDateKey(value: Date, timezone: string): string {
 
 async function main() {
   const rows = await prisma.taskDailyAllocation.findMany({
-    where: { note: urgentAutoPlanNote },
+    where: { note: { in: [urgentAutoPlanNote, carryForwardNote] } },
     include: { task: { select: { code: true, name: true, startDate: true, dueDate: true, tenantId: true } } },
   });
 
@@ -48,19 +56,23 @@ async function main() {
     const startKey = row.task.startDate ? localDateKey(row.task.startDate, timezone) : null;
     const dueKey = row.task.dueDate ? localDateKey(row.task.dueDate, timezone) : null;
     const rowDateKey = row.date.toISOString().slice(0, 10);
-    const stillCurrent = Boolean(startKey && dueKey && startKey === dueKey && startKey === rowDateKey);
+
+    const stillCurrent = row.note === urgentAutoPlanNote
+      ? Boolean(startKey && dueKey && startKey === dueKey && startKey === rowDateKey)
+      : Boolean(dueKey && dueKey === rowDateKey);
     if (stillCurrent) continue;
 
     stale += 1;
+    const kind = row.note === urgentAutoPlanNote ? "auto-plan" : "carry-forward";
     if (APPLY) {
       await prisma.taskDailyAllocation.delete({ where: { id: row.id } });
-      console.log(`[applied] task ${row.task.code} "${row.task.name}": removed stale ${row.plannedMinutes}min auto-plan on ${rowDateKey}`);
+      console.log(`[applied] task ${row.task.code} "${row.task.name}": removed stale ${row.plannedMinutes}min ${kind} row on ${rowDateKey}`);
     } else {
-      console.log(`[dry-run] task ${row.task.code} "${row.task.name}": would remove stale ${row.plannedMinutes}min auto-plan on ${rowDateKey}`);
+      console.log(`[dry-run] task ${row.task.code} "${row.task.name}": would remove stale ${row.plannedMinutes}min ${kind} row on ${rowDateKey}`);
     }
   }
 
-  console.log(`\n${APPLY ? "Applied" : "Dry run complete"}: ${stale} stale auto-plan row(s) ${APPLY ? "removed" : "would be removed"}.`);
+  console.log(`\n${APPLY ? "Applied" : "Dry run complete"}: ${stale} stale locked row(s) ${APPLY ? "removed" : "would be removed"}.`);
   if (!APPLY) console.log("Re-run with --apply to delete these rows.");
 }
 
