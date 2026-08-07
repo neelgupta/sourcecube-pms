@@ -21,6 +21,8 @@ export async function requestDesktopNotificationPermission(): Promise<Notificati
   }
 }
 
+import type { Notification } from "@/types/tenant";
+
 export function showDesktopNotification(
   title: string,
   options: NotificationOptions & { onClick?: () => void } = {},
@@ -35,4 +37,11 @@ export function showDesktopNotification(
       notification.close();
     };
   }
+}
+
+export const APP_NOTIFICATION_EVENT = "app:notification";
+
+export function dispatchAppNotification(notification: Notification) {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent(APP_NOTIFICATION_EVENT, { detail: notification }));
 }

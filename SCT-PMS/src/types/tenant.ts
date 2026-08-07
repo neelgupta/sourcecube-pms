@@ -784,7 +784,8 @@ export type NotificationType =
   | "task_reestimate_request"
   | "task_reestimate_resolved"
   | "task_timelog_change_request"
-  | "task_timelog_change_resolved";
+  | "task_timelog_change_resolved"
+  | "timer_warning";
 
 export interface ChatUser {
   id: ID;

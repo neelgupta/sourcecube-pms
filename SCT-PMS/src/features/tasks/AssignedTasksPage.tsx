@@ -1,9 +1,11 @@
 import { Fragment, useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { CalendarDays, CheckCircle2, ChevronDown, ChevronRight, Clock3, FolderKanban, Play, Search } from "lucide-react";
 import { Badge, Card, DateRangePicker, FilterSelect, MemberAvatar, Tabs, type TabItem } from "@/components/common";
 import { api, ApiError } from "@/lib/api";
+import { dispatchAppNotification, showDesktopNotification } from "@/lib/desktopNotifications";
 import { useSession } from "@/lib/session";
+import { projectWorkspacePath } from "@/features/projects/projectRoutes";
 import { TaskWorkspaceDrawer, TimerStopDialog, type ActiveTaskTimer, type StopTimerInput, type StopTimerTarget } from "@/features/projects/ProjectDetailPage";
 import { usePermission } from "@/lib/session";
 import { cn } from "@/lib/cn";
@@ -26,6 +28,7 @@ const priorityTones: Record<ProjectPriority, "neutral" | "blue" | "amber" | "red
   high: "amber",
   critical: "red",
 };
+const timerWarningThresholdSeconds = 5 * 60;
 
 const breakdownRoles = new Set(["company_super_admin", "hr_admin", "auditor", "team_lead", "department_head"]);
 /** Roles for whom GET /projects/tasks/assigned already returns a broad task set (all tenant
@@ -108,7 +111,10 @@ return estimated === "unestimated" ? { ...defaultTaskFilters, estimated } : defa
   const [stopTarget, setStopTarget] = useState<StopTimerTarget | null>(null);
   const [nextTaskAfterStop, setNextTaskAfterStop] = useState<AssignedTask | null>(null);
   const [timerBusy, setTimerBusy] = useState<string | null>(null);
+  const [timerWarning, setTimerWarning] = useState<{ taskId: string; taskCode: number; taskName: string; projectId: string; projectName: string; remainingMinutes: number } | null>(null);
+  const [timerWarningsSent, setTimerWarningsSent] = useState<Set<string>>(new Set());
   const [now, setNow] = useState(Date.now());
+  const navigate = useNavigate();
 
   const canSeeBreakdown = session?.user.kind === "company" && session.user.roles.some((role) => breakdownRoles.has(role));
   const hasBroadVisibility = session?.user.kind === "company" && session.user.roles.some((role) => broadVisibilityRoles.has(role));
@@ -154,6 +160,64 @@ return estimated === "unestimated" ? { ...defaultTaskFilters, estimated } : defa
     const interval = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(interval);
   }, [activeTimer?.id]);
+
+  useEffect(() => {
+    if (!activeTimer) {
+      setTimerWarning(null);
+      return;
+    }
+    const currentTask = tasks.find((task) => task.id === activeTimer.taskId);
+    if (!currentTask || currentTask.estimatedMinutes <= 0) return;
+
+    const runningSeconds = Math.max(0, Math.floor((now - new Date(activeTimer.startedAt).getTime()) / 1000));
+    const totalTrackedSeconds = currentTask.trackedSeconds + runningSeconds;
+    const estimatedSeconds = currentTask.estimatedMinutes * 60;
+    const thresholdSeconds = Math.max(0, estimatedSeconds - timerWarningThresholdSeconds);
+
+    if (totalTrackedSeconds >= thresholdSeconds && totalTrackedSeconds < estimatedSeconds) {
+      if (timerWarningsSent.has(activeTimer.id)) return;
+      const remainingSeconds = estimatedSeconds - totalTrackedSeconds;
+      const remainingMinutes = Math.max(1, Math.ceil(remainingSeconds / 60));
+      const project = activeTimer.project ? activeTimer.project : currentTask.project;
+      const notificationMessage = `Only ${remainingMinutes} minute${remainingMinutes === 1 ? "" : "s"} left on #${currentTask.code} ${currentTask.name}.`;
+
+      setTimerWarning({
+        taskId: currentTask.id,
+        taskCode: currentTask.code,
+        taskName: currentTask.name,
+        projectId: project.id,
+        projectName: project.name,
+        remainingMinutes,
+      });
+      setTimerWarningsSent((current) => new Set(current).add(activeTimer.id));
+
+      dispatchAppNotification({
+        id: `timer-warning-${activeTimer.id}`,
+        tenantId: session?.user.kind === "company" ? session.user.tenantId : "",
+        userId: session?.user.id ?? "",
+        type: "timer_warning",
+        title: "Approaching estimated time",
+        body: notificationMessage,
+        taskId: currentTask.id,
+        projectId: project.id,
+        createdAt: new Date().toISOString(),
+        readAt: null,
+      });
+
+      showDesktopNotification("Approaching estimated time", {
+        body: notificationMessage,
+        onClick: () => {
+          navigate(`${projectWorkspacePath(project)}?task=${currentTask.id}`);
+        },
+      });
+    }
+  }, [activeTimer, tasks, now, navigate, timerWarningsSent]);
+
+  function goToTimerTask() {
+    if (!timerWarning) return;
+    navigate(`${projectWorkspacePath({ id: timerWarning.projectId, name: timerWarning.projectName })}?task=${timerWarning.taskId}`);
+    setTimerWarning(null);
+  }
 
   async function startTimer(task: AssignedTask) {
     setTimerBusy(task.id);
@@ -258,6 +322,20 @@ return estimated === "unestimated" ? { ...defaultTaskFilters, estimated } : defa
           <h1 className="text-xl font-semibold text-ink-900">Tasks</h1>
           <p className="mt-1 text-sm text-ink-500">Work assigned to you, projects you manage, and members of teams you lead.</p>
         </div>
+      {timerWarning && (
+        <div className="rounded-xl border border-warning-200 bg-warning-50 px-4 py-3 text-sm text-warning-900">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="font-semibold">Approaching estimated time</p>
+              <p>You are within {timerWarning.remainingMinutes} minute{timerWarning.remainingMinutes === 1 ? "" : "s"} of the estimate for task #{timerWarning.taskCode} {timerWarning.taskName}.</p>
+            </div>
+            <div className="flex items-center gap-3">
+              <button onClick={goToTimerTask} className="text-xs font-semibold text-warning-700 hover:underline">Open task</button>
+              <button onClick={() => setTimerWarning(null)} className="text-xs text-ink-500 hover:text-ink-700">Dismiss</button>
+            </div>
+          </div>
+        </div>
+      )}
 
         <Card className="overflow-hidden">
           <div className="border-b border-ink-200 px-2">

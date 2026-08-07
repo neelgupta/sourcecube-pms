@@ -204,7 +204,7 @@ export const api = {
   submitOverdueReason: (taskId: string, reason: string) =>
     request<{ review: TaskOverdueReview }>(`/resources/tasks/${taskId}/overdue-reason`, { method: "POST", body: JSON.stringify({ reason }) }),
   listOverdueReviews: () => request<{ reviews: TaskOverdueReview[] }>("/resources/overdue-reviews"),
-  resolveOverdueReview: (reviewId: string, input: { newEstimatedMinutes?: number; newDueDate?: string; newAssigneeId?: string }) =>
+  resolveOverdueReview: (reviewId: string, input: { newEstimatedMinutes?: number; newDueDate?: string; newAssigneeId?: string; carryToNextWorkingDay?: boolean }) =>
     request<{ review: TaskOverdueReview }>(`/resources/overdue-reviews/${reviewId}/resolve`, { method: "POST", body: JSON.stringify(input) }),
   requestReestimate: (projectId: string, taskId: string, input: { requestedMinutes: number; reason: string }) =>
     request<{ request: TaskReestimateRequest }>(`/projects/${projectId}/tasks/${taskId}/reestimate-request`, { method: "POST", body: JSON.stringify(input) }),

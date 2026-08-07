@@ -22,7 +22,6 @@ import {
   Kanban,
   LayoutDashboard,
   List,
-  Maximize2,
   MoreHorizontal,
   Pencil,
   PiggyBank,
@@ -63,7 +62,8 @@ import {
 } from "@/components/common";
 import { api, ApiError } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { projectSlug } from "./projectRoutes";
+import { projectSlug, projectWorkspacePath } from "./projectRoutes";
+import { dispatchAppNotification, getDesktopNotificationPermission, requestDesktopNotificationPermission, showDesktopNotification } from "@/lib/desktopNotifications";
 import { usePermission, useSession, useCompanyTimezone } from "@/lib/session";
 import { formatDateInZone, formatDateTime, formatTimeOnly } from "@/lib/formatDate";
 import { AddProjectDrawer } from "./components/AddProjectDrawer";
@@ -116,6 +116,7 @@ export type StopTimerTarget = {
   task?: WorkspaceTask;
   nextTask?: WorkspaceTask;
 };
+const timerWarningThresholdSeconds = 5 * 60;
 const views: { id: ViewId; label: string; icon: ReactNode }[] = [
   { id: "dashboard", label: "Dashboard", icon: <LayoutDashboard size={15} /> },
   { id: "list", label: "List", icon: <List size={15} /> },
@@ -822,6 +823,8 @@ function TaskListWorkspace({
   const [draftPriorities, setDraftPriorities] = useState<Record<string, ProjectPriority>>({});
   const [saving, setSaving] = useState<string | null>(null);
   const [savingField, setSavingField] = useState<string | null>(null);
+  const navigate = useNavigate();
+  const { session } = useSession();
   const [activeTimer, setActiveTimer] = useState<ActiveTaskTimer | null>(null);
   const [stopTarget, setStopTarget] = useState<StopTimerTarget | null>(null);
   const [pendingStatus, setPendingStatus] = useState<{ taskId: string; status: ProjectTaskStatus } | null>(null);
@@ -830,7 +833,13 @@ function TaskListWorkspace({
   const [bulkError, setBulkError] = useState<string | null>(null);
   const [timerBusy, setTimerBusy] = useState<string | null>(null);
   const [timerError, setTimerError] = useState<string | null>(null);
-  const [now, setNow] = useState(Date.now());  useEffect(() => {
+  const [timerWarning, setTimerWarning] = useState<{ taskId: string; taskCode: number; taskName: string; projectId: string; projectName: string; remainingMinutes: number } | null>(null);
+  const [timerWarningsSent, setTimerWarningsSent] = useState<Set<string>>(new Set());
+  const [desktopNotificationPermission, setDesktopNotificationPermission] = useState<NotificationPermission | "unsupported">(
+    getDesktopNotificationPermission(),
+  );
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
     const next: Record<string, boolean> = {};
     sections.flatMap((section) => section.tasks).forEach((task) => {
       if (sections.some((section) => section.tasks.some((candidate) => candidate.parentTaskId === task.id))) next[task.id] = collapseSubtasks;
@@ -847,6 +856,77 @@ function TaskListWorkspace({
     const interval = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(interval);
   }, [activeTimer?.id]);
+
+  useEffect(() => {
+    if (!activeTimer) {
+      setTimerWarning(null);
+      return;
+    }
+    const currentTask = sections.flatMap((section) => section.tasks).find((task) => task.id === activeTimer.taskId);
+    if (!currentTask || currentTask.estimatedMinutes <= 0) return;
+
+    const runningSeconds = Math.max(0, Math.floor((now - new Date(activeTimer.startedAt).getTime()) / 1000));
+    const totalTrackedSeconds = currentTask.trackedSeconds + runningSeconds;
+    const estimatedSeconds = currentTask.estimatedMinutes * 60;
+    const thresholdSeconds = Math.max(0, estimatedSeconds - timerWarningThresholdSeconds);
+
+    if (totalTrackedSeconds >= thresholdSeconds && totalTrackedSeconds < estimatedSeconds) {
+      if (timerWarningsSent.has(activeTimer.id)) return;
+      const remainingSeconds = estimatedSeconds - totalTrackedSeconds;
+      const remainingMinutes = Math.max(1, Math.ceil(remainingSeconds / 60));
+      const project = activeTimer.project ?? { id: projectId, name: "Project" };
+      const notificationMessage = `Only ${remainingMinutes} minute${remainingMinutes === 1 ? "" : "s"} left on #${currentTask.code} ${currentTask.name}.`;
+
+      setTimerWarning({
+        taskId: currentTask.id,
+        taskCode: currentTask.code,
+        taskName: currentTask.name,
+        projectId: project.id,
+        projectName: project.name,
+        remainingMinutes,
+      });
+      setTimerWarningsSent((current) => new Set(current).add(activeTimer.id));
+
+      dispatchAppNotification({
+        id: `timer-warning-${activeTimer.id}`,
+        tenantId: session?.user.kind === "company" ? session.user.tenantId : "",
+        userId: session?.user.id ?? "",
+        type: "timer_warning",
+        title: "Approaching estimated time",
+        body: notificationMessage,
+        taskId: currentTask.id,
+        projectId: project.id,
+        createdAt: new Date().toISOString(),
+        readAt: null,
+      });
+
+      const sendNotification = () => {
+        showDesktopNotification("Approaching estimated time", {
+          body: notificationMessage,
+          onClick: () => {
+            navigate(`${projectWorkspacePath({ id: project.id, name: project.name })}?task=${currentTask.id}`);
+          },
+        });
+      };
+
+      if (desktopNotificationPermission === "granted") {
+        sendNotification();
+      } else if (desktopNotificationPermission === "default") {
+        requestDesktopNotificationPermission().then((result) => {
+          setDesktopNotificationPermission(result);
+          if (result === "granted") {
+            sendNotification();
+          }
+        });
+      }
+    }
+  }, [activeTimer, sections, now, navigate, timerWarningsSent, projectId, desktopNotificationPermission]);
+
+  function goToTimerTask() {
+    if (!timerWarning) return;
+    navigate(`${projectWorkspacePath({ id: timerWarning.projectId, name: timerWarning.projectName })}?task=${timerWarning.taskId}`);
+    setTimerWarning(null);
+  }
 
   async function startTimer(task: WorkspaceTask) {
     setTimerBusy(task.id);
@@ -1029,6 +1109,19 @@ function TaskListWorkspace({
         <div className="m-3 flex items-center justify-between rounded-lg border border-danger-200 bg-danger-50 px-3.5 py-2.5 text-sm text-danger-700">
           {timerError}
           <button onClick={() => setTimerError(null)} className="text-danger-500 hover:text-danger-700">×</button>
+        </div>
+      )}
+      {timerWarning && (
+        <div className="m-3 rounded-lg border border-warning-200 bg-warning-50 px-4 py-3 text-sm text-warning-900">
+          <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+            <p>
+              You are within {timerWarning.remainingMinutes} minute{timerWarning.remainingMinutes === 1 ? "" : "s"} of the estimate for task #{timerWarning.taskCode} {timerWarning.taskName}.
+            </p>
+            <div className="flex gap-3">
+              <button onClick={goToTimerTask} className="text-xs font-semibold text-warning-700 hover:underline">Open task</button>
+              <button onClick={() => setTimerWarning(null)} className="text-xs text-ink-500 hover:text-ink-700">Dismiss</button>
+            </div>
+          </div>
         </div>
       )}
       {bulkError && (
@@ -2162,7 +2255,6 @@ function GanttWorkspace({ sections }: { sections: ProjectSection[] }) {
   const tasks = sections.flatMap((section) => section.tasks);
   const days = Array.from({ length: 31 }, (_, index) => index + 1);
   return <div className="min-w-[1250px] bg-white">
-    <div className="flex items-center gap-2 border-b border-ink-200 px-4 py-3"><span className="text-sm text-ink-600">Group by:</span><FilterSelect className="w-36" value="Tasks" onChange={() => {}} options={[{ value: "Tasks", label: "Tasks" }, { value: "Sections", label: "Sections" }]} /><Button variant="outline" size="icon"><Maximize2 size={15} /></Button><div className="ml-auto flex gap-2"><Button variant="outline" size="sm">Incomplete Tasks</Button><Button variant="outline" size="sm">Due Date</Button><Button variant="outline" size="sm">All Users</Button></div></div>
     <div className="grid grid-cols-[340px_1fr] border-b border-ink-200"><div className="px-4 py-4 font-semibold">Tasks</div><div><div className="border-b border-ink-200 py-1 text-center text-xs font-semibold">July 2026</div><div className="grid" style={{ gridTemplateColumns: "repeat(31, minmax(28px, 1fr))" }}>{days.map((day) => <div key={day} className="border-r border-ink-100 py-2 text-center text-[10px]">{day}</div>)}</div></div></div>
     {tasks.length === 0 ? <EmptyWorkspace label="No data to display" /> : tasks.map((task) => {
       const start = task.startDate ? new Date(task.startDate).getDate() : 1;
