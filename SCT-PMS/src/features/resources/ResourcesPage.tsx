@@ -4,6 +4,8 @@ import {
   Briefcase,
   CalendarDays,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Clock3,
   HelpCircle,
   ListChecks,
@@ -444,6 +446,27 @@ function AllocationEditor({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [markingDone, setMarkingDone] = useState<string | null>(null);
+  const [expandedSubtasksFor, setExpandedSubtasksFor] = useState<string | null>(null);
+  const [subtasksByTaskId, setSubtasksByTaskId] = useState<Record<string, WorkspaceTask[]>>({});
+  const [subtasksLoading, setSubtasksLoading] = useState<string | null>(null);
+
+  async function toggleSubtasks(task: ResourcePlannerDayDetail["tasks"][number]) {
+    if (expandedSubtasksFor === task.id) {
+      setExpandedSubtasksFor(null);
+      return;
+    }
+    setExpandedSubtasksFor(task.id);
+    if (subtasksByTaskId[task.id]) return;
+    setSubtasksLoading(task.id);
+    try {
+      const { tasks } = await api.listTaskSubtasks(task.project.id, task.id);
+      setSubtasksByTaskId((current) => ({ ...current, [task.id]: tasks }));
+    } catch {
+      setSubtasksByTaskId((current) => ({ ...current, [task.id]: [] }));
+    } finally {
+      setSubtasksLoading(null);
+    }
+  }
 
   async function markDone(task: ResourcePlannerDayDetail["tasks"][number]) {
     setMarkingDone(task.id);
@@ -561,8 +584,37 @@ function AllocationEditor({
                   <p className="truncate text-sm font-medium text-ink-900">{task.name}</p>
                   <p className="text-xs text-ink-500">{task.project.key} · {task.project.name}</p>
                 </div>
+                <button
+                  onClick={(event) => { event.stopPropagation(); toggleSubtasks(task); }}
+                  title="Subtasks"
+                  className="flex items-center gap-1 rounded px-1.5 py-1 text-[11px] font-medium text-ink-400 hover:bg-ink-100 hover:text-ink-700"
+                >
+                  {expandedSubtasksFor === task.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                  Subtasks
+                </button>
                 <Badge tone={task.status === "done" ? "green" : task.status === "in_progress" ? "amber" : "blue"}>{task.progress}%</Badge>
               </button>
+              {expandedSubtasksFor === task.id && (
+                <div className="mt-2 space-y-1.5 border-t border-ink-100 pt-2" onClick={(event) => event.stopPropagation()}>
+                  {subtasksLoading === task.id ? (
+                    <p className="text-xs text-ink-400">Loading subtasks…</p>
+                  ) : (subtasksByTaskId[task.id]?.length ?? 0) === 0 ? (
+                    <p className="text-xs text-ink-400">No subtasks.</p>
+                  ) : (
+                    subtasksByTaskId[task.id].map((subtask) => (
+                      <button
+                        key={subtask.id}
+                        onClick={() => onOpenTask(task.project.id, subtask.id)}
+                        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-ink-50"
+                      >
+                        <span className="rounded bg-ink-100 px-1.5 py-0.5 text-[10px]">#{subtask.code}</span>
+                        <span className="min-w-0 flex-1 truncate text-xs text-ink-700">{subtask.name}</span>
+                        <Badge tone={subtask.status === "done" ? "green" : subtask.status === "in_progress" ? "amber" : "blue"}>{subtask.progress}%</Badge>
+                      </button>
+                    ))
+                  )}
+                </div>
+              )}
               {editing && task.status !== "done" && task.isOwnTask && !task.isLocked ? (
                 <div className="mt-2 flex items-center gap-2" onClick={(event) => event.stopPropagation()}>
                   <input

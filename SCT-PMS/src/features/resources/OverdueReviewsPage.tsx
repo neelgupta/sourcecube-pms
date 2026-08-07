@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { AlertTriangle, Clock } from "lucide-react";
 import { Badge, Button, Card, DatePicker, EmployeePicker, Field, Input } from "@/components/common";
 import { api, ApiError } from "@/lib/api";
@@ -208,6 +208,7 @@ export function OverdueReviewsPage() {
   const [employees, setEmployees] = useState<CompanyUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const location = useLocation();
 
   function load() {
     setLoading(true);
@@ -222,7 +223,12 @@ export function OverdueReviewsPage() {
       .catch((err) => setError(err instanceof ApiError ? err.message : "Approvals could not be loaded"))
       .finally(() => setLoading(false));
   }
-  useEffect(load, []);
+  // location.key changes on every navigation, even a navigate("/overdue-reviews") from a
+  // notification click while this page is already the mounted route — a plain `useEffect(load,
+  // [])` only ever fires once on mount, so re-arriving here from a fresh notification (e.g. the
+  // approver was already sitting on this page) showed stale/empty data until a manual refresh
+  // forced a remount. Keying off location.key makes every arrival at this route refetch.
+  useEffect(load, [location.key]);
 
   function onResolved(review: TaskOverdueReview) {
     setReviews((current) => current.filter((row) => row.id !== review.id));

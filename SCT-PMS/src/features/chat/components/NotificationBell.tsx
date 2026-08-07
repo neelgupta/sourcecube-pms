@@ -37,6 +37,15 @@ const typeIcons: Record<NotificationType, React.ReactNode> = {
  *  numeric-id project route if the project fetch fails, mirroring how the Resources page's
  *  "open task" action already handles the same project-name-slug requirement. */
 async function goToNotificationTarget(navigate: NavigateFunction, notification: Notification) {
+  // These two land in the approver's inbox, not on the task itself — the task's own estimate/
+  // work-log hours haven't changed yet (that only happens once the approver acts), so sending
+  // the approver to the task page would show them nothing to act on. The requester's OWN
+  // "...resolved" notifications intentionally still fall through to the task below, since by
+  // then the change has actually landed and the task page is the right place to see it.
+  if (notification.type === "task_reestimate_request" || notification.type === "task_timelog_change_request") {
+    navigate("/overdue-reviews");
+    return;
+  }
   if (notification.taskId && notification.projectId) {
     try {
       const result = await api.getProject(notification.projectId);

@@ -95,6 +95,39 @@ export async function autoPlanIfUrgentSameDay(
     },
   });
 
+  // The due date can stay exactly where it was while the ESTIMATE changes (e.g. an approved
+  // re-estimate request bumping 42h to 43h) — the delete above only catches a moved due date, so
+  // an existing carry-forward row sitting on the still-correct due date would otherwise keep
+  // showing its pre-re-estimate leftover forever. Recompute and update it in place: estimate
+  // minus tracked minus everything else already planned for this task (mirrors the identical
+  // formula in carryForwardRemainingToDueDate, routes/resources.ts).
+  if (dueKey && task.assigneeId) {
+    const dueDateValue = new Date(`${dueKey}T00:00:00.000Z`);
+    const existingCarryForwardRow = await prisma.taskDailyAllocation.findUnique({
+      where: { taskId_userId_date: { taskId: task.id, userId: task.assigneeId, date: dueDateValue } },
+      select: { id: true, note: true },
+    });
+    if (existingCarryForwardRow?.note === carryForwardNote) {
+      const otherAllocations = await prisma.taskDailyAllocation.aggregate({
+        where: {
+          tenantId: tid,
+          taskId: task.id,
+          userId: task.assigneeId,
+          id: { not: existingCarryForwardRow.id },
+          OR: [{ note: null }, { note: { not: carryForwardNote } }],
+        },
+        _sum: { plannedMinutes: true },
+      });
+      const plannedElsewhere = otherAllocations._sum.plannedMinutes ?? 0;
+      const correctLeftover = Math.max(0, remainingMinutesFor(task) - plannedElsewhere);
+      if (correctLeftover <= 0) {
+        await prisma.taskDailyAllocation.delete({ where: { id: existingCarryForwardRow.id } });
+      } else {
+        await prisma.taskDailyAllocation.update({ where: { id: existingCarryForwardRow.id }, data: { plannedMinutes: correctLeftover, updatedBy: actor.userId } });
+      }
+    }
+  }
+
   if (!isSingleDay || !startKey) return;
 
   const todayKey = localDateKey(new Date(), company.timezone);

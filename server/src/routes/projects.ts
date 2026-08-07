@@ -1002,6 +1002,7 @@ const projectTaskQuerySchema = z.object({
   milestoneId: z.string().optional(),
   due: z.enum(["overdue", "today", "this_week", "no_date"]).optional(),
   estimated: z.enum(["unestimated"]).optional(),
+  parentTaskId: z.string().optional(),
 });
 
 projectsRouter.get("/:id/tasks/query", requirePermission("tasks", "view"), async (req, res) => {
@@ -1039,6 +1040,7 @@ projectsRouter.get("/:id/tasks/query", requirePermission("tasks", "view"), async
   if (input.status) filters.push({ status: input.status });
   if (input.taskType) filters.push({ taskType: input.taskType });
   if (input.milestoneId) filters.push({ milestoneId: input.milestoneId === "none" ? null : input.milestoneId });
+  if (input.parentTaskId) filters.push({ parentTaskId: input.parentTaskId });
   if (input.due) {
     const start = new Date();
     start.setHours(0, 0, 0, 0);
