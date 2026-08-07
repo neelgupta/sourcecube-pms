@@ -391,13 +391,14 @@ resourcesRouter.get("/planner/:employeeId/allocations", requirePermission("resou
 });
 
 /** After saving a day's plan, any task due on a later date that still has remaining minutes left
- *  over (its estimate minus tracked time minus what was just planned today) gets that leftover
- *  automatically booked onto its own due date — reserving the time it must be finished by,
- *  without the person having to separately go plan that future day themselves. Written with the
- *  carryForwardNote marker so buildDayDetail locks it from manual editing (see isLocked) — it
- *  represents "this must happen by the due date," not a discretionary plan. Only tasks actually
- *  submitted in this save (i.e. the ones the person just decided today's amount for) are
- *  considered; tasks left untouched this save aren't re-carried on every unrelated save. */
+ *  over (its estimate minus tracked time minus everything already planned across every day up to
+ *  and including today) gets that leftover automatically booked onto its own due date —
+ *  reserving the time it must be finished by, without the person having to separately go plan
+ *  that future day themselves. Written with the carryForwardNote marker so buildDayDetail locks
+ *  it from manual editing (see isLocked) — it represents "this must happen by the due date," not
+ *  a discretionary plan. Only tasks actually submitted in this save (i.e. the ones the person
+ *  just decided today's amount for) are considered; tasks left untouched this save aren't
+ *  re-carried on every unrelated save. */
 async function carryForwardRemainingToDueDate(
   tid: string,
   uid: string,
@@ -408,6 +409,7 @@ async function carryForwardRemainingToDueDate(
   tasks: { id: string; estimatedMinutes: number; trackedSeconds: number; dueDate: Date | null }[],
 ) {
   const taskById = new Map(tasks.map((task) => [task.id, task]));
+  const dateValue = new Date(`${dateParam}T00:00:00.000Z`);
   for (const row of allocations) {
     // The frontend resubmits every editable own-task shown for the day on every save, not just
     // the ones the person actually changed — so a task the person never intended to plan today
@@ -421,7 +423,23 @@ async function carryForwardRemainingToDueDate(
     if (!task || !task.dueDate) continue;
     const dueKey = localDateKey(task.dueDate, timezone);
     if (dueKey <= dateParam) continue; // due today or already overdue — nothing to carry forward
-    const leftover = Math.max(0, remainingMinutesFor(task) - row.plannedMinutes);
+    // Leftover must account for EVERY day already planned for this task up to and including
+    // today, not just today's own row — otherwise each save recomputes leftover as
+    // "estimate minus only today's hours," ignoring whatever was already committed on earlier
+    // days, and overwrites the due-date row with a wildly inflated figure (e.g. 4h+5h+6h+6h
+    // planned across four days of a 42h task, but the final save computing 42h - 6h = 36h
+    // instead of the correct 42h - 21h = 21h).
+    const priorAllocations = await prisma.taskDailyAllocation.aggregate({
+      // Prisma's `note: { not: carryForwardNote }` silently excludes rows where note is NULL too
+      // (SQL three-valued logic: NULL != 'x' is NULL, not true) — since a manually-planned day's
+      // row has note: null, that filter alone would drop every ordinary allocation from the sum,
+      // leaving only non-carry-forward rows that happen to have some OTHER note set. Explicit OR
+      // for the null case is required to actually include normal plans.
+      where: { tenantId: tid, taskId: task.id, userId: employeeId, date: { lte: dateValue }, OR: [{ note: null }, { note: { not: carryForwardNote } }] },
+      _sum: { plannedMinutes: true },
+    });
+    const plannedSoFar = priorAllocations._sum.plannedMinutes ?? 0;
+    const leftover = Math.max(0, remainingMinutesFor(task) - plannedSoFar);
     if (leftover <= 0) continue;
     const dueDateValue = new Date(`${dueKey}T00:00:00.000Z`);
     // Never clobber a due-date row the person already set by hand — only ever create one, or

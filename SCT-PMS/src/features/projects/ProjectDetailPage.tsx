@@ -2688,11 +2688,13 @@ function ReestimateRequestPanel({
   projectId,
   taskId,
   pendingRequest,
+  latestRejected,
   onRequested,
 }: {
   projectId: string;
   taskId: string;
   pendingRequest: TaskReestimateRequest | null;
+  latestRejected: TaskReestimateRequest | null;
   onRequested: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -2715,9 +2717,16 @@ function ReestimateRequestPanel({
   }
   if (!open) {
     return (
-      <button type="button" onClick={() => setOpen(true)} className="mt-1.5 text-xs font-semibold text-brand-600 hover:underline">
-        Request re-estimate
-      </button>
+      <div className="mt-1.5 space-y-0.5">
+        {latestRejected && (
+          <p className="text-xs font-medium text-danger-600">
+            Your request for {formatMinutes(latestRejected.requestedEstimatedMinutes)} was rejected.
+          </p>
+        )}
+        <button type="button" onClick={() => setOpen(true)} className="text-xs font-semibold text-brand-600 hover:underline">
+          Request re-estimate
+        </button>
+      </div>
     );
   }
 
@@ -2814,13 +2823,47 @@ currentUserId,
   const [reestimateRequests, setReestimateRequests] = useState<TaskReestimateRequest[]>([]);
 
   useEffect(() => {
-    if (!localTask) return;
+    if (!task) return;
     let cancelled = false;
-    api.listTaskReestimateRequests(projectId, localTask.id).then((result) => {
+    // Keyed on the `task` prop (not localTask.id) so this refetches every time the drawer is
+    // reopened for the same task, not just the first time — otherwise a request resolved by the
+    // approver elsewhere (the Approvals page) while this task was previously open keeps showing
+    // its stale pre-resolution "awaiting approval" state until a full page refresh, since
+    // localTask.id stays the same string across a close/reopen of the same task and would never
+    // re-trigger an effect keyed on it.
+    api.listTaskReestimateRequests(projectId, task.id).then((result) => {
       if (!cancelled) setReestimateRequests(result.requests);
     }).catch(() => undefined);
     return () => { cancelled = true; };
-  }, [projectId, localTask?.id]);
+  }, [projectId, task]);
+
+  // The effect above only catches a resolution that happened before this drawer was (re)opened —
+  // if the approver acts while the requester is sitting here with the drawer already open (e.g.
+  // on the Approvals page in another tab), nothing changes the `task` prop to re-trigger it, so
+  // the "awaiting approval" banner would otherwise sit stale until a manual page refresh. Poll
+  // only while there's an actual pending request to watch, and stop the moment it resolves —
+  // never polls in the common case of a task with no re-estimate request in flight. Also
+  // refetches immediately on window focus/tab-visible, since a throttled/backgrounded tab can
+  // delay a plain setInterval well past its nominal period — the person switching back to this
+  // tab (the moment they'd actually look at it) should never have to wait out a stale timer.
+  const hasPendingReestimateRequest = reestimateRequests.some((request) => request.status === "pending_review");
+  useEffect(() => {
+    if (!task || !hasPendingReestimateRequest) return;
+    let cancelled = false;
+    function refetch() {
+      api.listTaskReestimateRequests(projectId, task!.id).then((result) => { if (!cancelled) setReestimateRequests(result.requests); }).catch(() => undefined);
+    }
+    const interval = window.setInterval(refetch, 8000);
+    function onVisible() { if (document.visibilityState === "visible") refetch(); }
+    window.addEventListener("focus", refetch);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refetch);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [projectId, task, hasPendingReestimateRequest]);
   const [scheduleStartDate, setScheduleStartDate] = useState(task?.startDate ? task.startDate.slice(0, 10) : "");
   const [scheduleDueDate, setScheduleDueDate] = useState(task?.dueDate ? task.dueDate.slice(0, 10) : "");
   const [scheduleSaving, setScheduleSaving] = useState(false);
@@ -3362,10 +3405,17 @@ function startEditEntry(entry: TaskTimeEntry) {
                     <p className="text-xs font-medium text-warning-700">No estimate — this task won't appear in the Resource Planner until it has one.</p>
                   )}
                   {(() => {
-                    const resolved = reestimateRequests.find((request) => request.status === "resolved" && request.approvedEstimatedMinutes);
-                    return resolved ? (
+                    // reestimateRequests is newest-first (see listTaskReestimateRequests, ordered
+                    // createdAt desc) — only the MOST RECENT resolved request should ever drive
+                    // this line. Without pinning to the latest one specifically, a rejected
+                    // request submitted after an earlier approved one would still find that
+                    // earlier approval and misreport the rejected attempt as if it had gone
+                    // through, since .find() would just skip past the (correctly null-approved)
+                    // rejected row to the older approved one.
+                    const latestResolved = reestimateRequests.find((request) => request.status === "resolved");
+                    return latestResolved && latestResolved.approvedEstimatedMinutes ? (
                       <p className="text-xs text-ink-500">
-                        Originally estimated {formatMinutes(resolved.previousEstimatedMinutes)} — now {formatMinutes(resolved.approvedEstimatedMinutes as number)} (re-estimated on request)
+                        Originally estimated {formatMinutes(latestResolved.previousEstimatedMinutes)} — now {formatMinutes(latestResolved.approvedEstimatedMinutes)} (re-estimated on request)
                       </p>
                     ) : null;
                   })()}
@@ -3374,6 +3424,10 @@ function startEditEntry(entry: TaskTimeEntry) {
                       projectId={projectId}
                       taskId={localTask.id}
                       pendingRequest={reestimateRequests.find((request) => request.status === "pending_review") ?? null}
+                      latestRejected={(() => {
+                        const latestResolved = reestimateRequests.find((request) => request.status === "resolved");
+                        return latestResolved && !latestResolved.approvedEstimatedMinutes ? latestResolved : null;
+                      })()}
                       onRequested={() => { api.listTaskReestimateRequests(projectId, localTask.id).then((result) => setReestimateRequests(result.requests)).catch(() => undefined); }}
                     />
                   )}

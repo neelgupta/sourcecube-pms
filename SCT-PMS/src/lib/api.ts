@@ -430,6 +430,8 @@ export const api = {
     });
     return request<{ tasks: WorkspaceTask[]; options: ProjectTaskFilterOptions }>(`/projects/${id}/tasks/query?${params.toString()}`);
   },
+  listTaskSubtasks: (projectId: string, parentTaskId: string) =>
+    request<{ tasks: WorkspaceTask[] }>(`/projects/${projectId}/tasks/query?parentTaskId=${encodeURIComponent(parentTaskId)}`),
   createProjectSection: (projectId: string, input: { name: string; status?: ProjectTaskStatus }) =>
     request<{ section: ProjectSection }>(`/projects/${projectId}/sections`, { method: "POST", body: JSON.stringify(input) }),
   createProjectTask: (
